@@ -73,10 +73,11 @@ async function hashFile(file) {
     return { ...physical(after), bytes: String(after.size), sha256: hash.digest("hex") };
   } finally { await h.close(); }
 }
-async function immutableLink(source, destination) {
+async function immutableLink(source, destination, assertCurrent = null) {
   const parent = physical(await plain(path.dirname(destination), true));
   const sourceParent = physical(await plain(path.dirname(source), true));
   const before = await hashFile(source);
+  if (assertCurrent) await assertCurrent();
   try { await link(source, destination); }
   catch (e) { if (e.code !== "EEXIST") throw e; }
   const after = await hashFile(destination);
@@ -354,7 +355,7 @@ export class OwnedNativeObjectStore {
           if (!files.includes(stem + ".idx") || !files.includes(stem + ".pack")) throw fail("Owned pack pair is incomplete");
           if (!selectedPacks.has(stem)) continue;
         } else if (!required.has(directory.name + file)) continue;
-        await immutableLink(path.join(from, file), path.join(to, file));
+        await immutableLink(path.join(from, file), path.join(to, file), () => this.#guard());
         linked.add(path.relative(repository, path.join(to, file)).split(path.sep).join("/"));
       }
     }

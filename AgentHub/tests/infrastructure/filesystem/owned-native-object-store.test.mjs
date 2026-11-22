@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -94,6 +96,30 @@ test("v2 pack membership agrees with Git for ordinary and extended indexes", asy
   const legacy = await readFile(legacyPath);
   assert.equal(ownedPackIndexContains(legacy, checksum, new Set([f.result])), null);
   assert.match(await gitAt(f.source, ["show-index"], { input: legacy }), new RegExp(f.result, "u"));
+});
+
+test("v2 pack selection stops before aliasing after the owner changes", async t => {
+  const ownerLost = new Error("fixture owner changed during index selection");
+  let selectionRead = false;
+  const f = await fixture(t, { assertCurrent: async () => { if (selectionRead) throw ownerLost; } });
+  const consumerPack = path.join(f.root, "one/repository/.git/objects/pack");
+  const poolPack = path.join(f.objects.repository, "objects/pack");
+  const originalRead = fs.readFile;
+  fs.readFile = async (file, ...args) => {
+    const value = await originalRead(file, ...args);
+    if (typeof file === "string" && path.dirname(file) === poolPack && file.endsWith(".idx")
+        && await lstat(consumerPack).then(stat => stat.isDirectory(), () => false)) selectionRead = true;
+    return value;
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(compose(f, "one"), error => error === ownerLost);
+    assert.equal(selectionRead, true);
+    assert.deepEqual(await readdir(consumerPack), []);
+  } finally {
+    fs.readFile = originalRead;
+    syncBuiltinESMExports();
+  }
 });
 
 test("two real native checks share immutable history once with independent metadata and survive pool removal/consumer GC", async t => {

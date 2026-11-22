@@ -1089,7 +1089,7 @@ test("shared owner delegates only its exact already-combined lease and preserves
   assert.equal((await lstat(path.join(root, "node_modules"))).isDirectory(), true);
 });
 
-test("shared aliases use bounded owner checks and keep an incomplete stamp after ownership loss", async context => {
+test("shared aliases keep an incomplete stamp and stop at the next alias after ownership loss", async context => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "hub-deps-batch-"));
   context.after(() => rmTree(parent));
   const roots = ["seed", "complete", "interrupted"].map(name => path.join(parent, name));
@@ -1118,10 +1118,7 @@ test("shared aliases use bounded owner checks and keep an incomplete stamp after
       prepare: () => assert.fail("existing input must not reinstall"),
     });
   }
-  let checks = 0;
-  await attach(roots[1], async () => { checks += 1; });
-  assert.ok(checks < 10, `shared owner was checked ${checks} times for ${names.length} aliases`);
-  context.diagnostic(`shared owner checks: ${checks} for ${names.length} payload aliases`);
+  await attach(roots[1], async () => {});
   assert.equal(await readFile(path.join(roots[1], "node_modules/tiny", names.at(-1)), "utf8"), names.at(-1));
   const interruptedPath = path.join(roots[2], "node_modules");
   const ownerLost = new Error("original shared owner lost");
@@ -1131,7 +1128,7 @@ test("shared aliases use bounded owner checks and keep an incomplete stamp after
     throw ownerLost;
   }), error => error === ownerLost);
   assert.equal((await lstat(path.join(interruptedPath, "tiny", names[0]))).isFile(), true);
-  await assert.rejects(lstat(path.join(interruptedPath, "tiny", names[16])), { code: "ENOENT" });
+  await assert.rejects(lstat(path.join(interruptedPath, "tiny", names[1])), { code: "ENOENT" });
   const stamp = JSON.parse(await readFile(path.join(interruptedPath, ".agent-hub-task-dependencies.json"), "utf8"));
   assert.equal(stamp.attaching, true);
 });

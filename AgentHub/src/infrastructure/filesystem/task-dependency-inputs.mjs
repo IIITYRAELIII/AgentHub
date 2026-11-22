@@ -166,28 +166,20 @@ export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, mani
       const original = JSON.parse(await readFile(path.join(modules, MARKER)));
       await exclusive(stamp, JSON.stringify({ ...original, sharedStorage, attaching: true }));
       for (const dir of slot.content.directories) await mkdir(path.join(target, dir), { recursive: true });
-      for (let offset = 0; offset < slot.content.files.length; offset += FILE_BATCH_SIZE) {
-        const batch = slot.content.files.slice(offset, offset + FILE_BATCH_SIZE);
+      for (const file of slot.content.files) {
+        const from = path.join(modules, file.path);
+        const to = path.join(target, file.path);
+        await plainRoot(path.dirname(from));
+        await plainRoot(path.dirname(to));
+        // An earlier alias can finish while ownership changes. Fence each
+        // dispatch after the path checks, before making another alias visible.
         await assertOwners();
-        // This batch belongs to the current attaching stamp. Join its effects
-        // before checking ownership again or allowing the owner to release it.
-        const results = await Promise.allSettled(batch.map(async file => {
-          const from = path.join(modules, file.path);
-          const to = path.join(target, file.path);
-          await plainRoot(path.dirname(from));
-          await plainRoot(path.dirname(to));
-          lease?.signal?.throwIfAborted();
-          sharedLease.signal?.throwIfAborted();
-          if (file.target) {
-            await symlink(file.target, to);
-            return 0;
-          }
+        lease?.signal?.throwIfAborted();
+        sharedLease.signal?.throwIfAborted();
+        if (file.target) await symlink(file.target, to);
+        else {
           await link(from, to);
-          return file.bytes;
-        }));
-        for (const result of results) {
-          if (result.status === "rejected") throw result.reason;
-          linkedBytes += result.value;
+          linkedBytes += file.bytes;
         }
       }
       // Existing stamp writer is used by the caller after complete validation.
