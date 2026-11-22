@@ -3,7 +3,6 @@ import { lstat, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { acquireCodexExecutableCustody, validBundleMemberName } from "./codex-executable-custody.mjs";
 
-export const CODEX_BUNDLE_SIGNATURE_REJECTED = "CODEX_BUNDLE_SIGNATURE_REJECTED";
 export const CODEX_REQUIRED_HELPER_MISSING = "required-helper-missing";
 const signatureStatuses = "Valid|UnknownError|NotSigned|HashMismatch|NotTrusted|NotSupportedFileFormat|Incompatible|unknown";
 const memberPattern = "[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*";
@@ -12,19 +11,9 @@ const signatureMessage = new RegExp(
   `^Codex bundle member signature is not trusted \\(member=(?:${memberPattern}|<unavailable>), status=(?:${signatureStatuses}), reason=(?:signature-invalid|publisher-not-openai), version=(?:${versionPattern}|unknown)\\)$`, "u",
 );
 
+// Existing state and installer receipts can still carry helper signature diagnostics.
 export function isCodexBundleSignatureRejectionMessage(message) {
   return typeof message === "string" && message.length <= 380 && signatureMessage.test(message);
-}
-
-function bundleSignatureRejection(name, signature, version) {
-  const member = name.length <= 180 && new RegExp(`^${memberPattern}$`, "u").test(name) ? name : "<unavailable>";
-  const status = signatureStatuses.split("|").includes(signature?.status) ? signature.status : "unknown";
-  const reason = status === "Valid" ? "publisher-not-openai" : "signature-invalid";
-  const checkedVersion = typeof version === "string" && version.length <= 64
-    && new RegExp(`^${versionPattern}$`, "u").test(version) ? version : "unknown";
-  return Object.assign(new Error(
-    `Codex bundle member signature is not trusted (member=${member}, status=${status}, reason=${reason}, version=${checkedVersion})`,
-  ), { code: CODEX_BUNDLE_SIGNATURE_REJECTED });
 }
 
 export function codexBundleDigest(files, codeModeHost) {
@@ -41,8 +30,20 @@ export function validCodexBundle(bundle) {
     && bundle.digest === codexBundleDigest(bundle.files, bundle.codeModeHost);
 }
 
+function sameBundleFiles(left, right) {
+  return left.length === right.length && left.every((file, index) =>
+    file.name === right[index].name && file.sha256 === right[index].sha256);
+}
+
+export function sameCodexBundleIdentity(left, right) {
+  if (!left || !right) return !left && !right;
+  // Verify the old serialized digest before ignoring its publisher metadata.
+  return validCodexBundle(left) && validCodexBundle(right)
+    && left.codeModeHost === right.codeModeHost && sameBundleFiles(left.files, right.files);
+}
+
 export async function inspectCodexExecutableBundle(candidate, {
-  hashFile, verifySignature, readFeatures, executableArgs = [], trustedBundle = candidate.bundle,
+  hashFile, readFeatures, executableArgs = [], expectedBundle,
   installRoot = path.dirname(path.dirname(candidate.path)),
   beforeFeatures = async () => {},
   acquireInspectionCustody = acquireCodexExecutableCustody,
@@ -57,24 +58,14 @@ export async function inspectCodexExecutableBundle(candidate, {
       const name = path.relative(root, file).split(path.sep).join("/");
       const sha256 = await hashFile(file);
       if (file === candidate.path && sha256 !== candidate.sha256) throw new Error("Codex executable changed during bundle verification");
-      let publisher;
-      if (/\.(?:exe|dll)$/iu.test(name)) {
-        const trusted = validCodexBundle(trustedBundle) && trustedBundle.files.find(prior =>
-          prior.name === name && prior.sha256 === sha256 && prior.publisher === candidate.publisher);
-        if (file === candidate.path) publisher = candidate.publisher;
-        else if (trusted) publisher = trusted.publisher;
-        else {
-          const signature = await verifySignature(file);
-          if (!signature?.valid) throw bundleSignatureRejection(name, signature, candidate.version);
-          if (sha256 !== await hashFile(file)) throw new Error("Codex bundle member changed during signature verification");
-          publisher = signature.publisher;
-        }
-      }
-      files.push({ name, sha256, ...(publisher ? { publisher } : {}) });
+      files.push({ name, sha256, ...(file === candidate.path && candidate.publisher ? { publisher: candidate.publisher } : {}) });
     }
   };
   await walk(root);
   files.sort((left, right) => left.name.localeCompare(right.name, "en"));
+  if (expectedBundle && (!validCodexBundle(expectedBundle) || !sameBundleFiles(files, expectedBundle.files))) {
+    throw Object.assign(new Error("Recorded Codex bundle identity changed"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
+  }
   // Probe the executable only while the complete verified bundle is held.
   const custody = await acquireInspectionCustody({ installRoot, root, files });
   let features;

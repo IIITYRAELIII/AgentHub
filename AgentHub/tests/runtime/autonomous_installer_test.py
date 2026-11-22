@@ -823,6 +823,9 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             bundle_module = SOURCE.parents[1] / 'src/infrastructure/process/codex-executable-bundle.mjs'
             module('src/infrastructure/process/codex-executable-bundle.mjs',
                    "export * from " + json.dumps(bundle_module.as_uri()))
+            executable_module = SOURCE.parents[1] / 'src/infrastructure/process/codex-executable.mjs'
+            module('src/infrastructure/process/codex-executable.mjs',
+                   "export * from " + json.dumps(executable_module.as_uri()))
             rejection = ("Codex bundle member signature is not trusted (member=helper.dll, status=Valid, "
                          "reason=publisher-not-openai, version=0.151.0)")
             module('src/runtime/publication-readiness.mjs',(SOURCE.parents[1]/'src/runtime/publication-readiness.mjs').read_text(encoding='utf-8'))
@@ -832,6 +835,8 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             (root/'data').mkdir(); (root/'data/bot.lock').write_text('{"pid":123}')
             (root/'config.json').write_text('{"miniApp":{"host":"127.0.0.1","port":8787}}')
             value=dict(releaseId='new',hostPid=456,hostCreated='789',python=sys.executable,installer=str(assertion))
+            preflight=dict(status='eligible', rejection='Codex executable signature is not trusted (NotSigned)')
+            value['codexPreflight']=preflight
             input_path=base/'input.json'; installer._write_record(input_path,value)
             for state in ['ready','failed','disabled']:
                 with self.subTest(state=state):
@@ -858,9 +863,11 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                         self.assertEqual(rolled_back.returncode,0,rolled_back.stderr)
                         op=installer._read_record(root/'data/operation.json')
                         self.assertEqual(op['outcome'],'rolled-back')
+                        self.assertEqual(installer.original_status('same-original',op).get('codexPreflight'),preflight)
                         self.assertEqual(op['metadata']['autonomousCodexStartupRejection'],rejection)
                     else:
                         self.assertEqual(result.returncode,0,result.stderr); self.assertEqual(op['status'],'succeeded')
+                        self.assertEqual(installer.original_status('same-original',op).get('codexPreflight'),preflight)
                         asserted=json.loads((root/'asserted.json').read_text(encoding='utf-8'))
                         self.assertEqual(asserted[:4],['--assert-launch',str(root),'456','789'])
                         self.assertEqual(len(asserted),4 if state=='disabled' else 5)
@@ -1159,11 +1166,12 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             runtime.mkdir(parents=True)
             bundle = local / "OpenAI/Codex/bin/old"
             bundle.mkdir(parents=True)
+            rejected = bundle.parent / "new/codex.exe"
+            rejected.parent.mkdir()
+            rejected.write_bytes(b"inert unsigned main executable fixture")
             executable = bundle / "codex.exe"
-            executable.write_bytes(b"inert recorded executable fixture")
-            (bundle / "codex-code-mode-host.exe").write_bytes(b"inert unsigned helper fixture")
             original = dict(schemaVersion=1, lastKnownGood=dict(
-                path=str(executable.resolve()), sha256=installer.file_hash(executable).upper(),
+                path=str(executable.resolve()), sha256="A" * 64,
                 version="0.151.0", publisher='CN="OpenAI Opco, LLC", O=OpenAI', source="desktop"))
             state = data / "codex-executable-state.json"
             installer._write_record(state, original)
@@ -1172,7 +1180,7 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             for name in (
                 "src/infrastructure/filesystem/config.mjs",
                 "src/infrastructure/process/codex-executable-update-service.mjs",
-                "src/infrastructure/process/codex-executable-bundle.mjs",
+                "src/infrastructure/process/codex-executable.mjs",
                 "src/infrastructure/persistence/maintenance-operation-store.mjs",
             ):
                 output = runtime / name
@@ -1218,8 +1226,7 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             status = installer.original_status("codex-preflight-test", original_readback)
             self.assertEqual(status["status"], "failed")
             self.assertEqual(status["phase"], "codex-preflight-blocked")
-            self.assertRegex(status["codexPreflight"]["rejection"],
-                             r"member=codex-code-mode-host\.exe, status=\w+, reason=signature-invalid, version=0\.151\.0")
+            self.assertRegex(status["codexPreflight"]["rejection"], r"^Codex executable signature is not trusted \(\w+\)$")
             self.assertEqual(status["codexPreflight"]["reason"], "no-eligible-trusted-codex")
             self.assertEqual(installer._read_record(cache / "result.json"), original_readback)
             self.assertEqual(installer._read_record(root / "current.json")["current"], "old")

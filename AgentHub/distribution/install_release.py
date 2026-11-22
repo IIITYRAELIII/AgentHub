@@ -1857,11 +1857,11 @@ if(action==='wait-probe') {
   console.log(JSON.stringify(await callDesktopControl('runtime-health',{}, {runtimeRoot:root,timeoutMs:5000})));
   process.exit(0);
 } else if(action==='codex-preflight-blocked') {
-  const {isCodexBundleSignatureRejectionMessage}=await load('src/infrastructure/process/codex-executable-bundle.mjs');
+  const {isCodexPreflightRejectionMessage}=await load('src/infrastructure/process/codex-executable.mjs');
   if(!op || op.status!=='running' || !['installer-waiting','installer-stopping'].includes(op.phase)
      || !op.metadata?.autonomousInstaller || value.status!=='blocked'
      || !['pin-unavailable','no-eligible-trusted-codex','automatic-update-disabled'].includes(value.reason)
-     || !isCodexBundleSignatureRejectionMessage(value.rejection)) throw Error('Invalid Codex pre-stop refusal');
+     || !isCodexPreflightRejectionMessage(value.rejection)) throw Error('Invalid Codex pre-stop refusal');
   const changed=await mutate(()=>store.transition(id,{status:'failed',outcome:'codex-preflight-refused',
     phase:'codex-preflight-blocked',metadata:{autonomousCodexPreflight:{status:value.status,reason:value.reason,rejection:value.rejection}}},
     {expectedRevision:op.revision}));
@@ -1968,8 +1968,10 @@ if(action==='wait-probe') {
   const unresolved=recovered && value.retirementUnknown===true;
   let codexPreflight;
   if(value.codexPreflight?.status==='eligible' && typeof value.codexPreflight.rejection==='string') {
+    const {isCodexPreflightRejectionMessage}=await load('src/infrastructure/process/codex-executable.mjs');
     const {isCodexBundleSignatureRejectionMessage}=await load('src/infrastructure/process/codex-executable-bundle.mjs');
-    if(isCodexBundleSignatureRejectionMessage(value.codexPreflight.rejection))
+    if(isCodexPreflightRejectionMessage(value.codexPreflight.rejection)
+       || isCodexBundleSignatureRejectionMessage(value.codexPreflight.rejection))
       codexPreflight={status:'eligible',rejection:value.codexPreflight.rejection};
   }
   const metadata={...await storageCheckpoint(),...(signatureRejection?{autonomousCodexStartupRejection:signatureRejection}:{}),
