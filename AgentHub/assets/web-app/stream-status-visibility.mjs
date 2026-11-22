@@ -76,7 +76,7 @@ function fitContour(card) {
   };
   const transform = `translate(${frame.x} ${frame.y})`;
   const runInset = Math.max(frame.edge, card.hasAttribute("data-interstream-run") ? 1.75 : 1);
-  for (const [path, inset] of [[outline, runInset], [layer.querySelector(".stream-maintenance-track"), 4.5]]) {
+  for (const [path, inset] of [[outline, runInset], [layer.querySelector(".stream-frame-inner"), 4.5]]) {
     const d = contourPath(frame.width, frame.height, corners, frame.cut, inset);
     if (path.getAttribute("transform") !== transform) path.setAttribute("transform", transform);
     if (path.getAttribute("d") !== d) path.setAttribute("d", d);
