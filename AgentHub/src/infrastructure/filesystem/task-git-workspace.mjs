@@ -3093,6 +3093,9 @@ export class TaskGitWorkspaceService {
           await this.prepareDependencies({ projectRoot: workspace.projectRoot, lockfiles,
             verify: dependencyMode === "verify", lease: taskDependencyLease,
             directoryReuse: true,
+            resolveMainProjectRoot: async () => await gitMaybe(["symbolic-ref", "--quiet", "HEAD"], {
+              cwd: custody.source.repositoryRoot,
+            }) === "refs/heads/main" ? custody.source.projectRoot : null,
             sharedDependencies: this.#sharedDependencies(workspace.projectRoot, taskDependencyLease),
             runNpm: (args, options) => this.#runOwnedNpm(args, options) });
         });
@@ -3223,6 +3226,9 @@ export class TaskGitWorkspaceService {
             verify: dependencyMode === "verify",
             lease: taskDependencyLease,
             directoryReuse: true,
+            resolveMainProjectRoot: async () => await gitMaybe(["symbolic-ref", "--quiet", "HEAD"], {
+              cwd: repoRoot,
+            }) === "refs/heads/main" ? path.join(repoRoot, selection.relativePath) : null,
             sharedDependencies: this.#sharedDependencies(workspace.projectRoot, taskDependencyLease),
             runNpm: (args, options) => this.#runOwnedNpm(args, options),
           });

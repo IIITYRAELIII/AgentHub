@@ -25,6 +25,73 @@ async function exclusive(file, bytes) {
   const h = await open(file, "wx");
   try { await h.writeFile(bytes); await h.sync(); } finally { await h.close(); }
 }
+
+function containedBy(root, file) {
+  const relative = path.relative(root, file);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+// Copy an existing installation only when creating its compatible input.
+// Keep the registered checkout writable and independent of the new input.
+export async function snapshotInstalledDependencies({ projectRoot, source, destination, limits, signal }) {
+  const root = await plainRoot(source);
+  const pending = [{ from: source, to: destination, lineage: [] }];
+  let entries = 0;
+  while (pending.length) {
+    signal?.throwIfAborted();
+    const { from, to, lineage, observed } = pending.pop();
+    if (lineage.some(parent => samePath(parent, from))) throw fail("Installed dependency directory contains a cycle");
+    const next = [...lineage, from];
+    const before = await lstat(from);
+    if (!before.isDirectory() || before.isSymbolicLink() || observed && !same(observed, physical(before))) {
+      throw fail("Installed dependency directory changed before reuse");
+    }
+    const names = await readdir(from);
+    if (names.length > limits.maxEntriesPerDirectory) throw fail("Installed dependency directory exceeds existing tree bound");
+    entries += names.length;
+    if (entries > limits.maxTotalDirectoryEntries) throw fail("Installed dependency tree exceeds existing tree bound");
+    await mkdir(to);
+    for (let offset = 0; offset < names.length; offset += FILE_BATCH_SIZE) {
+      signal?.throwIfAborted();
+      const batch = names.slice(offset, offset + FILE_BATCH_SIZE);
+      const outcomes = await Promise.allSettled(batch.map(async name => {
+        if (from === source && [MARKER, ".cache", ".agent-hub-task-dependencies-failure.json"].includes(name)) return;
+        const input = path.join(from, name);
+        const output = path.join(to, name);
+        const entry = await lstat(input);
+        let actual = input;
+        if (entry.isSymbolicLink()) {
+          const target = await readlink(input);
+          actual = await realpath(input);
+          if (!containedBy(projectRoot, actual)) throw fail("Installed dependency link escapes its checkout");
+          if (containedBy(source, actual) && !path.isAbsolute(target)
+              && containedBy(source, path.resolve(from, target))) {
+            await symlink(target, output);
+            return;
+          }
+        }
+        const item = entry.isSymbolicLink() ? await lstat(actual) : entry;
+        if (item.isDirectory()) {
+          pending.push({ from: actual, to: output, lineage: next, observed: physical(item) });
+          return;
+        }
+        if (!item.isFile()) throw fail("Installed dependency tree contains an unsupported file");
+        await copyFile(actual, output);
+        const after = await lstat(actual);
+        if (!same(physical(item), physical(after)) || item.size !== after.size
+            || item.mtimeMs !== after.mtimeMs || item.ctimeMs !== after.ctimeMs) {
+          throw fail("Installed dependency file changed while being reused");
+        }
+      }));
+      for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
+    }
+    const after = await lstat(from);
+    if (!same(physical(before), physical(after)) || before.mtimeMs !== after.mtimeMs) {
+      throw fail("Installed dependency directory changed while being reused");
+    }
+  }
+  if (!same(root, await plainRoot(source))) throw fail("Installed dependency root changed while being reused");
+}
 async function inventory(root, limits, payloads = new Map()) {
   return measureTaskOperation("dependency-inventory", () => inventoryOwned(root, limits, payloads), { detail: true });
 }
@@ -222,9 +289,11 @@ export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, mani
       // and mutable .cache; package/bin aliases retain their relative layout.
       for (const file of content.files) if (!file.target) await chmod(path.join(modules, file.path), 0o444);
       const marker = await readFile(path.join(modules, MARKER));
-      await exclusive(slotFile, JSON.stringify({ fingerprint, root: await plainRoot(root),
+      const installed = { fingerprint, root: await plainRoot(root),
         modules: await plainRoot(modules), manifestSha256: digest(manifestContent), lockSha256: digest(lockfileContent),
-        markerSha256: digest(marker), content }));
+        markerSha256: digest(marker), content };
+      await assertCurrent();
+      await exclusive(slotFile, JSON.stringify(installed));
     }
     if (await missing(slotFile)) throw fail("Unfinished dependency input requires its original owning recovery; retained");
     const slot = JSON.parse(await readFile(slotFile));

@@ -1011,39 +1011,41 @@ test("compatible Task dependency inputs install once and own local cache without
     compatibleInstalls: 1, copiedPackageBytes: 0, sharedPayloadLinks: 3, changedInputInstalls: 1 }));
 });
 
-test("ensure uses an installed shared input without following a main checkout replacement", async context => {
+test("ensure reuses installed main without npm and holds that version after main is replaced", async context => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "hub-main-deps-"));
   context.after(() => rmTree(parent));
   const main = path.join(parent, "main");
   const task = path.join(parent, "task");
-  const owner = path.join(parent, "owner");
   const project = {
     dependencies: { tiny: "1.0.0" },
     packageEntries: { "node_modules/tiny": { version: "1.0.0" } },
   };
   await writeNpmProject(main, project);
   await writeNpmProject(task, project);
-  await writeNpmProject(owner, project);
   await materializeLockedState(main);
   await mkdir(path.join(main, "node_modules/.cache"));
   await writeFile(path.join(main, "node_modules/.cache/keep"), "main cache");
   await writeFile(path.join(main, "node_modules/tiny/payload.bin"), "1.0.0");
+  const retainedPackage = path.join(main, "retained-packages", "tiny");
+  await mkdir(path.dirname(retainedPackage));
+  await fsRename(path.join(main, "node_modules/tiny"), retainedPackage);
+  await symlink(retainedPackage, path.join(main, "node_modules/tiny"), process.platform === "win32" ? "junction" : "dir");
   const events = [];
   const lease = { async assertOwned() {} };
   const sharedDependencies = (key, run) => run({ root: path.join(parent, "inputs", key), lease, coveredLease: lease });
-  await prepareTaskWorktreeDependencies({ projectRoot: owner, lockfiles: [path.join(owner, "package-lock.json")],
-    lease, sharedDependencies, runNpm: async (_, { cwd }) => {
-      await materializeLockedState(cwd);
-      await writeFile(path.join(cwd, "node_modules/tiny/payload.bin"), "1.0.0");
-    } });
   const inputs = { projectRoot: task, lockfiles: [path.join(task, "package-lock.json")], lease,
     directoryReuse: true, verify: false, sharedDependencies,
-    runNpm: () => assert.fail("npm started despite the compatible shared installation") };
+    resolveMainProjectRoot: async () => main,
+    runNpm: () => assert.fail("npm started despite the compatible installation in main") };
   const ensure = () => withTaskOperationTiming({
     operationId: "main-dependency-reuse", taskId: "task", record: event => events.push(event),
   }, () => prepareTaskWorktreeDependencies(inputs));
-  assert.equal((await ensure())[0].prepared, true);
+  const [first] = await ensure();
+  assert.equal(first.prepared, true);
+  assert.equal(events.filter(event => event.stage === "dependency-reuse-installed-main" && event.phase === "end").length, 1);
+  events.length = 0;
   assert.equal((await ensure())[0].prepared, false);
+  assert.equal(events.filter(event => event.stage === "dependency-reuse-installed-main").length, 0);
   assert.equal(events.filter(event => event.stage === "dependency-inventory").length, 0);
   assert.equal((await lstat(path.join(task, "node_modules"))).isSymbolicLink(), false);
   await fsRename(path.join(main, "node_modules"), path.join(main, "replaced"));
@@ -1056,7 +1058,7 @@ test("ensure uses an installed shared input without following a main checkout re
   assert.equal(await readFile(path.join(task, "node_modules/tiny/payload.bin"), "utf8"), "1.0.0");
   await assert.rejects(readFile(path.join(task, "node_modules/.cache/keep")), { code: "ENOENT" });
   await rmTree(path.join(task, "node_modules/tiny"));
-  assert.equal(await readFile(path.join(owner, "node_modules/tiny/payload.bin"), "utf8"), "1.0.0");
+  assert.equal(await readFile(path.join(first.sharedStorage.modules, "tiny/payload.bin"), "utf8"), "1.0.0");
   assert.equal((await ensure())[0].prepared, true);
 });
 

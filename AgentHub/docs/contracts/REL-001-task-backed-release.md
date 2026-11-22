@@ -205,8 +205,11 @@ updates of a regular checkout's `node_modules`. Each Task keeps a local
 `node_modules` directory and its own cache. A warm attachment publishes
 package directory references once without rehashing or linking individual
 package payload files. Explicit verify still validates the installed source.
-Replaced per-file attachments retain their local files and cache. A project
-with task-local install inputs keeps its local npm path.
+When the shared input is absent, a compatible installation already in the
+registered main checkout seeds it once without running npm. The shared input
+owns its own bytes so an update of main cannot change a running Task's
+packages. Replaced per-file attachments retain their local files and cache. A
+project with task-local install inputs keeps its local npm path.
 
 Test integrates the addressed Task result into dev through the existing native
 Git owner. A conflict issues a bound native checkout; a normal resolution commit
