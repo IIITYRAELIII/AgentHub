@@ -36,6 +36,10 @@ const LOCAL_ONLY_ACTIONS = Object.freeze([
   "attachment-upload",
   "update-server-configuration",
   "start-provider-login",
+  "connect-github-account",
+  "disconnect-github-account",
+  "poll-github-account-login",
+  "cancel-github-account-login",
   "submit-provider-login-code",
   "refresh-model-catalog",
   "cancel-provider-login",
@@ -126,6 +130,18 @@ export function createDesktopApplicationRouter({
       "start-provider-login": (params) => {
         if (!handlers.startProviderLogin) throw new Error("Вход в аккаунт недоступен в этой версии");
         return handlers.startProviderLogin(params);
+      },
+      // Secret input deliberately bypasses command receipts/fingerprints. Like
+      // provider login codes it is accepted only on the protected local route.
+      "connect-github-account": (params) => {
+        if (!handlers.connectGitHub) throw new Error("Подключение GitHub недоступно");
+        return handlers.connectGitHub(params);
+      },
+      "poll-github-account-login": (params) => handlers.pollGitHubLogin(params),
+      "cancel-github-account-login": (params) => handlers.cancelGitHubLogin(params),
+      "disconnect-github-account": () => {
+        if (!handlers.disconnectGitHub) throw new Error("Подключение GitHub недоступно");
+        return handlers.disconnectGitHub();
       },
       // Not a durable mutation: the manual code must not enter command receipts.
       "submit-provider-login-code": (params) => {

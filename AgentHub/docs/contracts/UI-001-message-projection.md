@@ -1,5 +1,17 @@
 # UI-001 — Canonical message projection
 
+The Server accounts panel projects the shared GitHub account's public identity and
+connected/disconnected/expired state. Connect, reconnect and disconnect use protected
+local control; remote clients cannot start or poll authorization. Primary sign-in
+is GitHub OAuth in the default browser, including from VS Code. The existing
+"?" disclosure next to the GitHub title contains the explanatory text and opens
+by hover, keyboard or touch. Actual state, action, errors and pending confirmation
+remain visible. The short-lived authorization URL comes only from the local start
+response and stays in page memory across snapshot refresh. No manual code is required.
+The private PKCE verifier and token never enter the page. Cancellation/replacement fences late responses. Credentials
+are never persisted as a client draft, command receipt or shared snapshot. A failed
+request is displayed without reflecting response secrets. See ADR-HUB-254.
+
 ## Addressed queue receipts and deferred Task presentation
 
 An addressed lookup projects the same result as the recent window. The command

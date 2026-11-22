@@ -44,6 +44,7 @@ export function createRuntimeRestartComposition({
   failedUpdateStore,
   stopCodexAppServerTree,
   providerLogin = null,
+  githubAccount = null,
   miniAppLifecycle,
   desktopAttachments,
   desktopControlServer,
@@ -92,9 +93,11 @@ export function createRuntimeRestartComposition({
   const runtimeResources = new RuntimeResourceRegistry({
     captureException: (error, context) => sentryDiagnostics.captureException(error, context),
     quiesce: [
+      { name: "GitHub account", run: () => githubAccount?.pause?.() },
       { name: "file transfer", run: () => fileTransferService?.quiesce() },
     ],
     drain: [
+      { name: "GitHub account", run: () => githubAccount?.drain?.() },
       { name: "storage retention", run: () => storageRetention?.close?.() },
       { name: "journal startup", run: () => journalStartupReady },
       { name: "state writes", run: () => runtimeStateCoordinator.flush() },
@@ -130,9 +133,11 @@ export function createRuntimeRestartComposition({
       { name: "instance lock", run: () => instanceGuard.release() },
     ],
     recover: [
+      { name: "GitHub account", run: () => githubAccount?.resume?.() },
       { name: "file transfer", run: () => fileTransferService?.resume() },
     ],
     finalize: [
+      { name: "GitHub account", run: () => githubAccount?.dispose?.() },
       { name: "provider sign-in", run: () => providerLogin?.dispose?.() },
       { name: "work log usage", run: () => workLogUsageStore.close() },
       { name: "rate limit history", run: () => rateLimitHistoryStore.close() },

@@ -1334,7 +1334,12 @@ def stop_selected(root, *, inspect_only=False, trace=None, capture=None, scope=N
                     seen.add(current)
                     row=bypid.get(current) or known_rows.get(current)
                     if not row: break
-                    current=int(row["ParentProcessId"])
+                    parent_pid = int(row["ParentProcessId"])
+                    parent = bypid.get(parent_pid) or known_rows.get(parent_pid)
+                    # A reused PID can point to a younger process in this same tree.
+                    if parent_pid not in wanted or not parent or not descendant_birth_matches(parent, row):
+                        break
+                    current = parent_pid
                 return len(seen)
             for pid in sorted(wanted,key=depth):
                 budget()

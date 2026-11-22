@@ -5621,6 +5621,88 @@ agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async ()
   applyProviderLoginReply(result);
   agentHub.toast(result?.message ?? "Вход отменён");
 }));
+// Local control only, no durable command receipt or draft persistence for PATs.
+// Reuse the existing protected-local-session owner before collecting/submitting
+// a credential; remote command relays must never receive a token-bearing body.
+let githubLocalAccess = false;
+void localSessionReady.then(() => hasLocalWorkspaceFileAccess()).then(
+  allowed => { githubLocalAccess = allowed; agentHub.setGitHubLocalAccess(allowed); },
+  () => agentHub.setGitHubLocalAccess(false),
+);
+let githubLoginEpoch = 0;
+let githubLogin = null;
+let githubLoginTimer = null;
+function clearGitHubLogin() {
+  ++githubLoginEpoch;
+  clearTimeout(githubLoginTimer);
+  githubLogin = null;
+  agentHub.setGitHubLogin(null);
+}
+function pollGitHubLogin(epoch, waitMs) {
+  githubLoginTimer = setTimeout(async () => {
+    if (epoch !== githubLoginEpoch || !githubLogin) return;
+    try {
+      if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+      const result = await control("poll-github-account-login", { attemptId: githubLogin.attemptId });
+      if (epoch !== githubLoginEpoch) return;
+      if (result.login?.status === "pending") return pollGitHubLogin(epoch, result.login.waitMs);
+      clearGitHubLogin();
+      agentHub.setGitHubAccount(result.githubAccount, result.login?.message ?? "");
+    } catch (error) {
+      if (epoch !== githubLoginEpoch) return;
+      clearGitHubLogin();
+      agentHub.setGitHubAccount(null, error.message);
+    }
+  }, waitMs);
+}
+agentHub.on("server:github-connect", () => runAction(async () => {
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
+  // Reserve a tab during the local click so delayed start cannot trip popup blocking.
+  const tab = githubLocalAccess && !vscode ? window.open("about:blank", "_blank") : null;
+  if (tab) tab.opener = null;
+  let opened = false;
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("connect-github-account", {});
+    if (epoch !== githubLoginEpoch) return;
+    const url = new URL(result.login.authorizationUrl);
+    if (url.origin !== "https://github.com" || url.pathname !== "/login/oauth/authorize" || url.username || url.password) {
+      throw new Error("Сервис вернул неверный адрес входа GitHub");
+    }
+    agentHub.setGitHubAccount(result?.githubAccount);
+    githubLogin = result.login;
+    agentHub.setGitHubLogin(githubLogin);
+    pollGitHubLogin(epoch, result.login.waitMs);
+    if (tab && !tab.closed) { tab.location.replace(url.href); opened = true; }
+    if (vscode) await openProviderLoginPage(url.href).catch(() => {
+      if (epoch === githubLoginEpoch) agentHub.toast("Открой GitHub по ссылке рядом с кнопкой отмены");
+    });
+  } catch (error) {
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message);
+  } finally { if (tab && !opened) tab.close(); }
+}));
+agentHub.on("server:github-cancel", () => runAction(async () => {
+  const previous = githubLogin;
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("cancel-github-account-login", { attemptId: previous?.attemptId });
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(result?.githubAccount);
+  } catch (error) { if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message); }
+}));
+agentHub.on("server:github-disconnect", () => runAction(async () => {
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("disconnect-github-account", {});
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(result?.githubAccount);
+  } catch (error) {
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message);
+  }
+}));
 agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {
   /* Страница сохраняет всю карточку разом, поэтому принимаем и набор правок,
      и одиночную настройку. */

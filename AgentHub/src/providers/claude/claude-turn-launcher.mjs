@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import { githubAgentEnvironment } from "../../infrastructure/filesystem/github-git-profile.mjs";
 
 import {
   buildClaudeArgs,
@@ -86,7 +87,7 @@ export class ClaudeTurnLauncher {
       command: invocation.command,
       args: [...invocation.prefixArgs, ...args],
       cwd: sessionCwd,
-      env: { ...process.env },
+      env: githubAgentEnvironment(process.env),
       input: prompt,
     });
   }

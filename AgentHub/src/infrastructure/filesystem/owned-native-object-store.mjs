@@ -367,6 +367,15 @@ export class OwnedNativeObjectStore {
         await this.#retireTransferAliases(row);
         return stored;
       }
+      if (!row.metadata.gitIdentity) {
+        // Bind new synthetic anchor authorship once to this original archive.
+        // Captured original commit objects are imported byte-for-byte below.
+        const identity = String(await this.#git(this.repository, ["-c", "user.name=Agent Hub Storage",
+          "-c", "user.email=storage@invalid", "var", "GIT_AUTHOR_IDENT"]));
+        const match = /^(.*) <([^<>\r\n]+)> \d+ [+-]\d{4}$/u.exec(identity);
+        if (!match || /[\r\n<>]/u.test(match[1])) throw fail("Archive Git identity is invalid");
+        row = await this.#patch(row, "git-identity-bound", { gitIdentity: { name: match[1], email: match[2] } });
+      }
       const grafts = String(await this.#git(sourceRoot, ["rev-parse", "--path-format=absolute", "--git-path", "info/grafts"]));
       if (!await absent(path.resolve(sourceRoot, grafts))) throw fail("Archive source has rewritten history");
       await this.#git(sourceRoot, ["fsck", "--full", "--no-reflogs", "--no-dangling"]);
@@ -413,8 +422,8 @@ export class OwnedNativeObjectStore {
       const commitTree = async (tree, ancestors, message) => String(await this.#git(this.repository,
         ["hash-object", "-t", "commit", "-w", "--stdin"], { input: "tree " + tree + "\n"
           + ancestors.map(c => "parent " + c + "\n").join("")
-          + "author Agent Hub Storage <storage@invalid> " + timestamp + " +0000\n"
-          + "committer Agent Hub Storage <storage@invalid> " + timestamp + " +0000\n\n" + message + "\n" }));
+          + "author " + row.metadata.gitIdentity.name + " <" + row.metadata.gitIdentity.email + "> " + timestamp + " +0000\n"
+          + "committer " + row.metadata.gitIdentity.name + " <" + row.metadata.gitIdentity.email + "> " + timestamp + " +0000\n\n" + message + "\n" }));
       while (roots.length > 32) {
         const next = [];
         for (let i = 0; i < roots.length; i += 32) next.push(await commitTree(originalTree, roots.slice(i, i + 32), "Preserved original Git DAG"));

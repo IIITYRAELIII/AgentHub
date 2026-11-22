@@ -1,5 +1,48 @@
 # REL-001 — Task Git integration
 
+## Connected GitHub account (ADR-HUB-254)
+
+The Hub owns one optional GitHub connection for its managed Git work. Protected
+local control verifies the account before saving its credential under current-user
+Windows DPAPI and the existing private-directory ACL. No credential enters a Task,
+command receipt, agent instruction, provider environment or ordinary diagnostic.
+The shared public profile contains only name/email and a generation-bound credential
+helper locator. GitHub permissions remain those of the user's access token.
+Browser OAuth uses the shared registered application. Only explicit local sign-in
+starts it. The GitHub callback marks its bounded attempt at the isolated OAuth Worker.
+The initiating Hub polls over HTTPS and proves its possession of the PKCE verifier.
+The exchange uses the Worker's secret, redeems only once, and sends the token only to
+that caller without storing it at the Worker. The existing account owner verifies
+the final token before atomic selection. The OAuth
+request matches the existing Git and GitHub CLI scope set
+`gist read:org repo workflow`. Actual permissions are the intersection of the grant,
+account rights, and organization policies. No separate private email scope is
+requested; the authenticated account's numeric noreply address is the fallback.
+Persisted expiry is enforced at the shared Git/gh/API credential owner and requires
+sign-in again. Application registration and real grants are owner actions, not tests.
+Cancellation/replacement invalidate pending authorization immediately, but replies
+join the existing credential writer through publication/readback and cleanup.
+Pre-publication cancellation preserves the original selection; a publication that
+wins is reported as the actual selected account. A completed reply cannot report
+an old account and then be followed by that cancelled attempt's publication.
+Quiesced snapshots join the same section; ordinary live reads stay independent.
+
+Internal commit/merge/commit-tree writers and both provider launch paths consume
+that same profile for new work. A persistent provider reads the latest atomic profile
+on each Git invocation; reconnect does not restart a turn. GitHub HTTPS credentials
+go only to Git's credential pipe; the gh launcher supplies its token only to its own
+GitHub CLI child and redacts accidental token output. Foreign hosts receive no Hub
+credential. HTTP 401/rejected credentials require reconnect; permission refusals are
+not retried publicly or treated as successful authentication.
+
+Global Git configuration, existing keys, original commit objects/authors/hashes,
+Task ownership/CAS and native content/history guards are unchanged. New synthetic
+archive anchors bind their Git identity once to the original archive receipt, so
+retry cannot change an already-created anchor after account reconnection. With no
+connection the previous Git defaults remain; this is not a server-side authorship
+enforcement or signature policy. Offline historical source projection is not a new
+interactive writer and must not re-attribute historical work to the current account.
+
 ## Exact retained insertion (ADR-HUB-460)
 
 The existing literal replay proof may also verify one pure insertion independently
