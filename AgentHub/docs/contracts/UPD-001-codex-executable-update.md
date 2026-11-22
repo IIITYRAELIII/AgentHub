@@ -103,6 +103,8 @@ availability. See ADR-0138.
   directory handles that forbid writes/deletion/rename, validate canonical plain
   paths, and hash the held files. The lifecycle re-reads exact durable
   selection and proves custody is still live immediately before spawn.
+  The Windows custody process reads its JSON request as explicit UTF-8 on
+  stdin so canonical paths and file names are independent of the console code page.
   Custody lasts until that exact owned App
   Server's process `close`, including initialize-to-first-tool. Release frees the
   old bundle for the external updater. No files are copied into another bundle,
