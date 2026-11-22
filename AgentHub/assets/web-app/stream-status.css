@@ -31,7 +31,6 @@
   stroke-width: 3.5px;
   stroke-linecap: round;
   stroke-dasharray: .1 99.9;
-  stroke-dashoffset: calc(-1px * (var(--stream-travel) + var(--dot-position)));
 }
 
 [data-interstream-run] .stream-run-dot { display: inline; }
