@@ -14,11 +14,25 @@ import {
   runTestSuite,
   prepareTestDependencies,
 } from "../../test-suite.mjs";
+import { githubAgentEnvironment } from "../../src/infrastructure/filesystem/github-git-profile.mjs";
 import {
   explainTestInputFingerprint,
   parallelTestExecution,
 } from "../../src/infrastructure/persistence/test-input-fingerprint.mjs";
 import { withPublicationLock } from "../../src/infrastructure/process/publication-lock.mjs";
+
+test("isolated test child never inherits the launching Hub's GitHub account capability", async () => {
+  const names = ["AGENT_HUB_GITHUB_DIRECTORY", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "PATH", "Path"];
+  const before = new Map(names.map(name => [name, process.env[name]]));
+  const environment = githubAgentEnvironment(process.env, path.join(os.tmpdir(), "not-a-real-connected-vault"));
+  try {
+    for (const name of names) if (environment[name] !== undefined) process.env[name] = environment[name];
+    await runIsolatedTestCommand(process.execPath, ["-e",
+      "if(process.env.AGENT_HUB_GITHUB_DIRECTORY || process.env.GIT_CONFIG_COUNT || (process.env.PATH||'').includes('not-a-real-connected-vault')) process.exit(9);"]);
+  } finally {
+    for (const [name, value] of before) if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  }
+});
 
 test("isolated file failure retains the actual owned Node close receipt after cleanup", async () => {
   let observed;

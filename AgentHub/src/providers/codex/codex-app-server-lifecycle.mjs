@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { githubAgentEnvironment, githubCodexEnvironmentArguments } from "../../infrastructure/filesystem/github-git-profile.mjs";
 
 import { AGENT_HUB_VERSION } from "../../infrastructure/filesystem/agent-hub-package.mjs";
 import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
@@ -52,8 +53,10 @@ export class CodexAppServerLifecycle {
     this.#startupTimings.verificationMs = Math.round(performance.now() - phaseStartedAt);
     phaseStartedAt = performance.now();
     d.logger.error(`Starting Codex: ${command}`);
-    const child = (d.spawnProcess ?? spawn)(command, [...d.executableArgs, ...mcp.args, ...args], {
+    const environment = githubAgentEnvironment();
+    const child = (d.spawnProcess ?? spawn)(command, [...d.executableArgs, ...githubCodexEnvironmentArguments(environment), ...mcp.args, ...args], {
       cwd: d.projectRoot(),
+      env: environment,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });

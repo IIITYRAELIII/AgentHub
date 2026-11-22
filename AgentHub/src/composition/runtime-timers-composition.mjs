@@ -24,11 +24,13 @@ export function createRuntimeTimersComposition({
   storageRetention = null,
   testContourJournalSync = null,
   providerLogin = null,
+  githubAccount = null,
 }) {
   function stopRuntimeTimers() {
     stopTyping();
     contextCompactions.dispose();
     providerLogin?.pause?.();
+    githubAccount?.pause?.();
     usageSyncAuto?.stop?.();
     storageRetention?.stop?.();
     testContourJournalSync?.stop?.();
@@ -44,6 +46,7 @@ export function createRuntimeTimersComposition({
 
   function startRuntimeTimers() {
     providerLogin?.resume?.();
+    githubAccount?.resume?.();
     deferredInputController.startExpiryMaintenance?.();
     codexContextMaintenance.schedulePeriodic();
     if (!deferredInputController.wakeAll()) {

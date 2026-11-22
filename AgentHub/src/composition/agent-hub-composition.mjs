@@ -85,6 +85,7 @@ const { value: {
   workLogUsageStore, workLogUsageIdentityStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, taskReleasePlanner, preTurnInstructions, taskBoard, taskVoiceTranscriber, hubMcpService, hubMcpServer, mcpAdmissionCoordinator,
   miniAppServer,
   publicMiniAppServer,
+  githubAccount,
   attachmentDirectory,
   usdRubRateStore,
   instanceGuard,
@@ -582,6 +583,7 @@ const interactionShell = createInteractionShellPhase({
   infrastructure: {
     trustedDeviceStore, workLogUsageStore, workLogUsageRemoteConfigStore, workspaceCatalogStore, preTurnInstructions, taskBoard, taskVoiceTranscriber,
     hubMcpService,
+    githubAccount,
     taskReleasePlanner,
     taskLifecycle,
     attachmentDirectory,
@@ -635,6 +637,7 @@ const executionBootstrap = createExecutionBootstrapPhase({
   },
   infrastructure: {
     instanceGuard, runtimeCommandServer, fileTransferService,
+    githubAccount,
     runtimeStateStore, taskReadStateStore,
     workLogUsageStore, rateLimitHistoryStore, providerTurnTelemetryStore, taskBoard, hubMcpServer, hubMcpService, sqliteRecovery, acknowledgeSqliteRecovery,
     preTurnInstructions, commandTrace, commandTraceService,

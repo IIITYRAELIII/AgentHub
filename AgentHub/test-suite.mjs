@@ -17,9 +17,11 @@ import { clearInheritedPublicationOwnership } from "./src/infrastructure/process
 import { testResourceAdmission } from "./src/infrastructure/process/test-resource-admission.mjs";
 import { prepareTaskWorktreeDependencies } from "./src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 import { runTaskGitCommand } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
+import { withoutGithubAccountEnvironment } from "./src/infrastructure/filesystem/github-git-profile.mjs";
 
 const ROOT = import.meta.dirname;
 const RUNNER_INPUTS = [
+  "src/infrastructure/filesystem/github-git-profile.mjs",
   "src/infrastructure/persistence/test-file-checkpoint.mjs",
   "src/infrastructure/process/test-resource-admission.mjs",
   "src/infrastructure/process/test-resource-monitor.mjs",
@@ -54,7 +56,7 @@ export async function discoverTestFiles(directory = ROOT) {
 
 function run(command, args, { cwd = ROOT, env, onChild } = {}) {
   return new Promise((resolve, reject) => {
-    const childEnvironment = { ...process.env, ...(env ?? {}) };
+    const childEnvironment = withoutGithubAccountEnvironment({ ...process.env, ...(env ?? {}) });
     clearInheritedPublicationOwnership(childEnvironment);
     const identity = { requestedAt: new Date().toISOString() };
     const observe = () => { try { onChild?.({ ...identity }); } catch { /* Diagnostic only. */ } };
@@ -88,7 +90,7 @@ export async function testFingerprint(file, { cwd = ROOT, root = cwd, declaratio
 export function isolatedTestEnvironment(environment, childRoot, platform = process.platform) {
   // Windows environment keys are case-insensitive. Use the same effective map
   // for execution and input proof, including caller profile overrides.
-  const result = Object.fromEntries(Object.entries(environment).map(([key, value]) =>
+  const result = Object.fromEntries(Object.entries(withoutGithubAccountEnvironment(environment)).map(([key, value]) =>
     [platform === "win32" ? key.toUpperCase() : key, value]));
   clearInheritedPublicationOwnership(result);
   for (const key of ["LOCALAPPDATA", "APPDATA", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TEMP", "TMP", "TMPDIR"]) {

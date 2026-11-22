@@ -114,6 +114,7 @@ export function createInteractionShellPhase({
     spawnCapture: provider.spawnCapture,
     preTurnInstructions: infrastructure.preTurnInstructions,
     providerLogin: clients.providerLogin,
+    githubAccount: infrastructure.githubAccount,
   });
 
   const desktopShell = createDesktopShellComposition({

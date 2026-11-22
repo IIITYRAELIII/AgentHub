@@ -16,6 +16,7 @@ export function createServerControlComposition({
   spawnCapture,
   preTurnInstructions,
   providerLogin = null,
+  githubAccount = null,
   controllerOptions = {},
 }) {
   return new ServerControlController({
@@ -31,6 +32,7 @@ export function createServerControlComposition({
     spawnCapture,
     preTurnInstructions,
     providerLogin,
+    githubAccount,
     ...controllerOptions,
   });
 }
