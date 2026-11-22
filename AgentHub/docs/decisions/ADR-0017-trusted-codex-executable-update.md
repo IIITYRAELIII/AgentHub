@@ -79,8 +79,9 @@ The Hub can adopt a newer already installed official Codex without becoming a
 package manager. Operators retain deterministic disable and pin controls and a
 readable reason whenever adoption is deferred or rejected.
 
-On Windows, the autonomous installer checks a recorded member-signature refusal
-with the same official selection owner before stopping the working runtime.
+On Windows, the autonomous installer checks recorded identity with the same
+official selection owner before stopping the working runtime. ADR-HUB-496
+supersedes the original member-signature policy.
 Existing policy and exact recorded identity remain authoritative. A definitive
 failure may stop the upgrade before retirement; discovery can independently
 verify a complete fallback. Neither the availability observation nor the
