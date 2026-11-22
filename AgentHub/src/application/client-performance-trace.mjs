@@ -14,6 +14,7 @@ const NUMBERS = new Set(["count", "longTaskCount", "maxLongTaskMs", "totalLongTa
 const FAILURE_KINDS = new Set(["aborted", "timeout", "error", "hidden", "superseded"]);
 const READ_IDS = new Set(["streamId", "threadId", "turnId", "instanceId", "releaseId", "documentId"]);
 const READ_FLAGS = new Set(["viewport", "tabReady", "cardReady", "tabPresent", "cardPresent"]);
+const READ_HTTP_DURATIONS = new Set(["sessionWaitMs", "fetchToRequestMs", "requestToHeadersMs"]);
 
 // Client diagnostics are measurements, never command or lifecycle authority.
 // Accept only content-free fields; no arbitrary metadata, error text or URLs.
@@ -35,6 +36,7 @@ export function clientPerformanceTraceSpans(body, { now = Date.now() } = {}) {
       throw new TypeError("Invalid client trace timing");
     }
     const metadata = {};
+    const action = String(event.metadata?.action ?? "");
     for (const [key, value] of Object.entries(event.metadata ?? {})) {
       if (LABELS.has(key) && typeof value === "string" && TOKEN.test(value)) metadata[key] = value;
       if (IDENTIFIERS.has(key) && typeof value === "string" && ID.test(value)) metadata[key] = value;
@@ -48,12 +50,25 @@ export function clientPerformanceTraceSpans(body, { now = Date.now() } = {}) {
         && value >= now - 86_400_000 && value <= at) metadata[key] = value;
       if (key === "statusCode" && Number.isInteger(value) && value >= 0 && value <= 599) metadata[key] = value;
       if (key === "failureKind" && FAILURE_KINDS.has(value)) metadata[key] = value;
-      if (String(event.metadata?.action ?? "").startsWith("read-marker-")) {
+      if (action.startsWith("read-marker-")) {
         if (READ_IDS.has(key) && typeof value === "string" && ID.test(value)) metadata[key] = value;
         if (key === "provider" && ["codex", "claude"].includes(value)) metadata[key] = value;
         if (key === "terminalRevision" && Number.isSafeInteger(value) && value > 0) metadata[key] = value;
         if (READ_FLAGS.has(key) && typeof value === "boolean") metadata[key] = value;
         if (key === "codeMarker" && typeof value === "string" && TOKEN.test(value)) metadata[key] = value;
+      }
+      if (action === "read-marker-http") {
+        if (READ_HTTP_DURATIONS.has(key) && Number.isFinite(value) && value >= 0 && value <= duration) {
+          metadata[key] = value;
+        }
+        if (key === "fetchCount" && Number.isInteger(value) && value >= 0 && value <= 2) metadata[key] = value;
+        if (key === "fetchInvokedAtMs" && Number.isSafeInteger(value)
+          && value >= now - 86_400_000 && value <= at) metadata[key] = value;
+        if (key === "httpProtocol" && ["http/1.1", "h2", "h3"].includes(value)) metadata[key] = value;
+      }
+      if (action === "selected-gate" || action === "snapshot-live-dom") {
+        if ((["beforeUnread", "afterUnread"].includes(key) || READ_FLAGS.has(key))
+          && typeof value === "boolean") metadata[key] = value;
       }
     }
     return {

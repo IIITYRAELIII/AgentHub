@@ -947,6 +947,16 @@ These spans and gated browser measurements distinguish removed I/O dependencies
 from actual production server/SQLite latency; they do not establish a universal
 latency percentage or a deployed improvement before installation and observation.
 
+An optional history follow-up owned by the selected chat releases its browser
+HTTP request when a different navigation supersedes it, including while the
+follow-up waits to dispatch. Explicit history requests and background reads for
+other still-owned columns keep their existing owners. The original exact-final
+read trace records session wait, available browser dispatch and response-header
+intervals, and the same document identity used for snapshot paint. The browser
+dispatch interval includes scheduling and connection setup. Missing resource
+timing is unknown. The origin's request callback does not timestamp socket
+arrival or establish that the server event loop was available earlier.
+
 Leaving Chat for Dashboard must not expand the hidden conversation's DOM. A
 zero-sized history viewport is not underfilled; automatic paging rechecks the
 currently visible owner before each page and resumes when Chat becomes visible.

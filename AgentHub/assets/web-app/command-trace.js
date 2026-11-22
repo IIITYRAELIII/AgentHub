@@ -29,6 +29,8 @@
   let activeId = "";
   let retryDelayMs = 1_000;
   const pendingPaints = new Set();
+  const watchedResources = new Map();
+  let resourceObserver = null;
   const now = () => global.performance.now();
   const newId = () => typeof global.crypto.randomUUID === "function" ? global.crypto.randomUUID()
     : `ui-${Array.from(global.crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
@@ -254,6 +256,36 @@
     return true;
   }
 
+  function rememberResourceEntries(entries) {
+    for (const entry of entries) {
+      const watched = watchedResources.get(entry.name);
+      if (watched && entry.initiatorType === "fetch") watched.entry = entry;
+    }
+  }
+
+  function watchResource(name) {
+    if (watchedResources.size >= BATCH_SIZE || !global.PerformanceObserver?.supportedEntryTypes?.includes("resource")) {
+      return () => global.performance.getEntriesByName?.(name, "resource")?.at(-1);
+    }
+    const watched = { entry: null };
+    watchedResources.set(name, watched);
+    if (!resourceObserver) {
+      try {
+        resourceObserver = new global.PerformanceObserver(list => rememberResourceEntries(list.getEntries()));
+        resourceObserver.observe({ type: "resource" });
+      } catch { resourceObserver = null; }
+    }
+    return () => {
+      if (resourceObserver) rememberResourceEntries(resourceObserver.takeRecords());
+      watchedResources.delete(name);
+      if (watchedResources.size === 0 && resourceObserver) {
+        resourceObserver.disconnect();
+        resourceObserver = null;
+      }
+      return watched.entry ?? global.performance.getEntriesByName?.(name, "resource")?.at(-1);
+    };
+  }
+
   function interaction(event) {
     const target = event.target?.closest?.("button, a, summary, select, input, form, [role='button']");
     if (!target || (event.type === "change" && !target.matches("select, input[type='checkbox'], input[type='radio']"))) return;
@@ -299,7 +331,7 @@
   global.addEventListener?.("pagehide", () => { void flush(); });
 
   global.AgentHubCommandTrace = Object.freeze({
-    record, measure, upload, afterPaint, now, newId, surface,
+    record, measure, upload, afterPaint, watchResource, now, newId, surface,
     http(action, operation, commandId) {
       return measure("ui-control", action, operation, commandId, (response) => ({
         outcome: response.status >= 400 ? "failed" : "succeeded",
