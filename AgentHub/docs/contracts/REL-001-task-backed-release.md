@@ -199,15 +199,14 @@ Git uses the established Task checkout and its existing locks. The withdrawn
 request remains fenced from assignment and result writes. A new ordinary binding
 also supersedes an unconsumed declared successor.
 
-Dependency ensure uses the compatible installation already present in the
-registered main checkout. If main has no matching installation, the existing
-shared input owner supplies the compatible installed set. Each Task keeps a
-local `node_modules` directory and its own cache. A fresh attachment publishes
+Dependency ensure reuses the existing installed set by exact dependency
+compatibility under the shared input owner. That source remains stable across
+updates of a regular checkout's `node_modules`. Each Task keeps a local
+`node_modules` directory and its own cache. A warm attachment publishes
 package directory references once without rehashing or linking individual
-payload files. Explicit verify still validates the installed source. Existing
-per-file attachments are retained when replaced so their local files and cache
-remain available. A project with task-local install inputs keeps its local npm
-path.
+package payload files. Explicit verify still validates the installed source.
+Replaced per-file attachments retain their local files and cache. A project
+with task-local install inputs keeps its local npm path.
 
 Test integrates the addressed Task result into dev through the existing native
 Git owner. A conflict issues a bound native checkout; a normal resolution commit

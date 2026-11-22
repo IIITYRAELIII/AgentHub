@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rename, rm, symlink } from "node:fs/promises";
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rename, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
@@ -118,10 +118,21 @@ export async function attachTaskDependencyDirectories({ packageRoot, modules, fi
   const identity = await plainRoot(modules);
   const target = path.join(packageRoot, "node_modules");
   const sharedStorage = { kind: DIRECTORY_INPUT, modules, identity, fingerprint };
-  const packageDirectories = (await readdir(modules, { withFileTypes: true }))
-    .filter(entry => entry.isDirectory() && entry.name !== ".cache").map(entry => entry.name).sort();
+  const roots = new Map();
+  for (const entry of await readdir(modules, { withFileTypes: true })) {
+    if (entry.name === MARKER || entry.name === ".cache") continue;
+    const source = path.join(modules, entry.name);
+    const resolved = entry.isSymbolicLink() ? await realpath(source) : source;
+    const relative = path.relative(modules, resolved);
+    if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw fail("Dependency directory reference escapes its installed input");
+    }
+    const installed = entry.isSymbolicLink() ? await lstat(resolved) : entry;
+    if (!installed.isDirectory() && !installed.isFile()) throw fail("Dependency directory reference is unsupported");
+    roots.set(entry.name, { source: resolved, directory: installed.isDirectory() });
+  }
 
-  if (same(previous?.sharedStorage, sharedStorage) && await usableProjection(target, modules, packageDirectories)) {
+  if (same(previous?.sharedStorage, sharedStorage) && await usableProjection(target, roots)) {
     await assertCurrent();
     if (!same(identity, await plainRoot(modules))) throw fail("Dependency directory source changed");
     return { prepared: false, reused: true, sharedStorage };
@@ -134,9 +145,13 @@ export async function attachTaskDependencyDirectories({ packageRoot, modules, fi
   try {
     // Publish the private root once. npm can unlink these directory entries
     // without traversing a shared node_modules root, and .cache stays local.
-    for (const name of packageDirectories) {
-      const source = path.join(modules, name);
-      await symlink(source, path.join(staging, name), process.platform === "win32" ? "junction" : "dir");
+    for (const [name, { source, directory }] of roots) {
+      const destination = path.join(staging, name);
+      if (directory) {
+        await symlink(source, destination, process.platform === "win32" ? "junction" : "dir");
+      } else {
+        await copyFile(source, destination);
+      }
     }
     await exclusive(path.join(staging, MARKER), JSON.stringify({ lockfileSha256: fingerprint, sharedStorage }));
     if (!same(identity, await plainRoot(modules))) throw fail("Dependency directory source changed");
@@ -149,18 +164,25 @@ export async function attachTaskDependencyDirectories({ packageRoot, modules, fi
   }
 }
 
-async function usableProjection(target, modules, packageDirectories) {
+async function usableProjection(target, roots) {
   const entries = await readdir(target, { withFileTypes: true });
   const aliases = entries.filter(entry => entry.name !== MARKER && entry.name !== ".cache");
-  if (aliases.length !== packageDirectories.length || !aliases.every(entry => entry.isSymbolicLink())) return false;
-  const expected = new Set(packageDirectories);
-  const resolved = await Promise.all(aliases.map(async ({ name }) => {
-    if (!expected.has(name)) return false;
-    const source = await realpath(path.join(target, name)).catch(error => {
-      if (error.code === "ENOENT") return null;
+  if (aliases.length !== roots.size) return false;
+  const resolved = await Promise.all(aliases.map(async entry => {
+    const root = roots.get(entry.name);
+    if (!root) return false;
+    const alias = path.join(target, entry.name);
+    try {
+      if (root.directory) return entry.isSymbolicLink() && samePath(await realpath(alias), root.source);
+      if (!entry.isFile()) return false;
+      const [actual, source] = await Promise.all([lstat(alias), lstat(root.source)]);
+      if (actual.size !== source.size) return false;
+      const [actualBytes, sourceBytes] = await Promise.all([readFile(alias), readFile(root.source)]);
+      return actualBytes.equals(sourceBytes);
+    } catch (error) {
+      if (error.code === "ENOENT") return false;
       throw error;
-    });
-    return samePath(source, path.join(modules, name));
+    }
   }));
   return resolved.every(Boolean);
 }
@@ -181,6 +203,9 @@ export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, mani
       await assertSourceContext();
       if (!(await readFile(path.join(packageRoot, "package.json"))).equals(manifestContent)
           || !(await readFile(path.join(packageRoot, "package-lock.json"))).equals(lockfileContent)) throw fail("Task dependency inputs changed");
+      await assertOwners();
+      lease?.signal?.throwIfAborted();
+      sharedLease.signal?.throwIfAborted();
     };
     await assertCurrent();
     const parent = path.dirname(root); await mkdir(parent, { recursive: true }); await plainRoot(parent);

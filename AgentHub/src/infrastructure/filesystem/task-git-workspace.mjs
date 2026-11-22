@@ -3090,11 +3090,8 @@ export class TaskGitWorkspaceService {
         const lockfiles = await trackedNpmLockfiles(custody.namespace.root, workspace.projectRoot);
         if (lockfiles.length) await withInterprocessLocks([path.join(this.dataDir, "locks", `task-dependencies-${id}-${custody.namespace.epoch}`)], async dependencyLease => {
           const taskDependencyLease = combinedLease(lease, dependencyLease);
-          const repository = custody.source.repositoryRoot;
           await this.prepareDependencies({ projectRoot: workspace.projectRoot, lockfiles,
             verify: dependencyMode === "verify", lease: taskDependencyLease,
-            mainProjectRoot: await gitMaybe(["symbolic-ref", "--quiet", "HEAD"], { cwd: repository }) === "refs/heads/main"
-              ? custody.source.projectRoot : null,
             directoryReuse: true,
             sharedDependencies: this.#sharedDependencies(workspace.projectRoot, taskDependencyLease),
             runNpm: (args, options) => this.#runOwnedNpm(args, options) });
@@ -3225,8 +3222,6 @@ export class TaskGitWorkspaceService {
             lockfiles,
             verify: dependencyMode === "verify",
             lease: taskDependencyLease,
-            mainProjectRoot: await gitMaybe(["symbolic-ref", "--quiet", "HEAD"], { cwd: repoRoot }) === "refs/heads/main"
-              ? path.join(repoRoot, selection.relativePath) : null,
             directoryReuse: true,
             sharedDependencies: this.#sharedDependencies(workspace.projectRoot, taskDependencyLease),
             runNpm: (args, options) => this.#runOwnedNpm(args, options),
