@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { chmod, link, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, symlink } from "node:fs/promises";
 import path from "node:path";
 import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 
 const MARKER = ".agent-hub-task-dependencies.json";
+const FILE_BATCH_SIZE = 16;
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 const physical = stat => ({ dev: String(stat.dev), ino: String(stat.ino), birthtimeMs: stat.birthtimeMs });
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -30,36 +32,60 @@ async function inventoryOwned(root, limits, payloads) {
   let payloadReadBytes = 0;
   let payloadReads = 0;
   let reusedPayloads = 0;
+  async function inspect(relative, name) {
+    const key = relative ? relative + "/" + name : name;
+    const file = path.join(root, key);
+    const before = await lstat(file);
+    if (before.isSymbolicLink()) {
+      const target = await readlink(file);
+      const resolved = path.resolve(path.dirname(file), target);
+      if (path.isAbsolute(target) || !resolved.startsWith(path.resolve(root) + path.sep)) throw fail("Dependency input link escapes its input");
+      return { path: key, target };
+    }
+    if (before.isDirectory()) return { path: key, directory: true };
+    if (!before.isFile()) throw fail("Dependency input contains an unsupported file");
+    const identity = physical(before);
+    const payloadKey = JSON.stringify([identity, before.size, before.mtimeMs, before.ctimeMs]);
+    let payload = payloads.get(payloadKey);
+    if (!payload) {
+      payload = (async () => {
+        const hash = createHash("sha256");
+        let bytes = 0;
+        for await (const chunk of createReadStream(file)) {
+          hash.update(chunk);
+          bytes += chunk.length;
+        }
+        payloadReads += 1;
+        payloadReadBytes += bytes;
+        return { bytes, sha256: hash.digest("hex") };
+      })();
+      payloads.set(payloadKey, payload);
+    } else reusedPayloads += 1;
+    const content = await payload;
+    const after = await lstat(file);
+    if (!same(identity, physical(after)) || before.mtimeMs !== after.mtimeMs
+        || before.ctimeMs !== after.ctimeMs || content.bytes !== after.size) throw fail("Dependency input changed while read");
+    return { path: key, ...content, identity: physical(after) };
+  }
   while (pending.length) {
     const relative = pending.pop(), dir = path.join(root, relative);
     await plainRoot(dir);
     const names = await readdir(dir);
     if (names.length > limits.maxEntriesPerDirectory) throw fail("Dependency input directory exceeds existing tree bound");
-    for (const name of names.sort()) {
-      if (!relative && [MARKER, ".cache"].includes(name)) continue;
-      if (++entries > limits.maxTotalDirectoryEntries) throw fail("Dependency input exceeds existing tree bound");
-      const key = relative ? relative + "/" + name : name, file = path.join(root, key), before = await lstat(file);
-      if (before.isSymbolicLink()) {
-        const target = await readlink(file), resolved = path.resolve(path.dirname(file), target);
-        if (path.isAbsolute(target) || !resolved.startsWith(path.resolve(root) + path.sep)) throw fail("Dependency input link escapes its input");
-        files.push({ path: key, target });
-      } else if (before.isDirectory()) { directories.push(key); pending.push(key); }
-      else if (before.isFile()) {
-        const identity = physical(before);
-        const payloadKey = JSON.stringify([identity, before.size, before.mtimeMs, before.ctimeMs]);
-        let payload = payloads.get(payloadKey);
-        if (!payload) {
-          const bytes = await readFile(file);
-          payload = { bytes: bytes.length, sha256: digest(bytes) };
-          payloadReads += 1;
-          payloadReadBytes += bytes.length;
-        } else reusedPayloads += 1;
-        const after = await lstat(file);
-        if (!same(identity, physical(after)) || before.mtimeMs !== after.mtimeMs
-            || before.ctimeMs !== after.ctimeMs || payload.bytes !== after.size) throw fail("Dependency input changed while read");
-        payloads.set(payloadKey, payload);
-        files.push({ path: key, ...payload, identity: physical(after) });
-      } else throw fail("Dependency input contains an unsupported file");
+    const included = names.filter(name => relative || ![MARKER, ".cache"].includes(name)).sort();
+    entries += included.length;
+    if (entries > limits.maxTotalDirectoryEntries) throw fail("Dependency input exceeds existing tree bound");
+    for (let offset = 0; offset < included.length; offset += FILE_BATCH_SIZE) {
+      const batch = included.slice(offset, offset + FILE_BATCH_SIZE);
+      const results = await Promise.allSettled(batch.map(name => inspect(relative, name)));
+      for (const result of results) {
+        if (result.status === "rejected") throw result.reason;
+        const entry = result.value;
+        if (entry.directory) {
+          directories.push(entry.path);
+          pending.push(entry.path);
+        } else files.push(entry);
+      }
     }
   }
   recordTaskOperationTiming("dependency-inventory-result", { entries, payloadReads, payloadReadBytes, reusedPayloads }, { detail: true });
@@ -140,12 +166,29 @@ export async function reuseTaskDependencyInputs({ packageRoot, fingerprint, mani
       const original = JSON.parse(await readFile(path.join(modules, MARKER)));
       await exclusive(stamp, JSON.stringify({ ...original, sharedStorage, attaching: true }));
       for (const dir of slot.content.directories) await mkdir(path.join(target, dir), { recursive: true });
-      for (const file of slot.content.files) {
+      for (let offset = 0; offset < slot.content.files.length; offset += FILE_BATCH_SIZE) {
+        const batch = slot.content.files.slice(offset, offset + FILE_BATCH_SIZE);
         await assertOwners();
-        const from = path.join(modules, file.path), to = path.join(target, file.path);
-        await plainRoot(path.dirname(from)); await plainRoot(path.dirname(to));
-        if (file.target) await symlink(file.target, to);
-        else { await link(from, to); linkedBytes += file.bytes; }
+        // This batch belongs to the current attaching stamp. Join its effects
+        // before checking ownership again or allowing the owner to release it.
+        const results = await Promise.allSettled(batch.map(async file => {
+          const from = path.join(modules, file.path);
+          const to = path.join(target, file.path);
+          await plainRoot(path.dirname(from));
+          await plainRoot(path.dirname(to));
+          lease?.signal?.throwIfAborted();
+          sharedLease.signal?.throwIfAborted();
+          if (file.target) {
+            await symlink(file.target, to);
+            return 0;
+          }
+          await link(from, to);
+          return file.bytes;
+        }));
+        for (const result of results) {
+          if (result.status === "rejected") throw result.reason;
+          linkedBytes += result.value;
+        }
       }
       // Existing stamp writer is used by the caller after complete validation.
       await assertCurrent();

@@ -1088,3 +1088,50 @@ test("shared owner delegates only its exact already-combined lease and preserves
   }) }), /shared lease lost/u);
   assert.equal((await lstat(path.join(root, "node_modules"))).isDirectory(), true);
 });
+
+test("shared aliases use bounded owner checks and keep an incomplete stamp after ownership loss", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-deps-batch-"));
+  context.after(() => rmTree(parent));
+  const roots = ["seed", "complete", "interrupted"].map(name => path.join(parent, name));
+  for (const root of roots) await writeNpmProject(root, { dependencies: { tiny: "1.0.0" },
+    packageEntries: { "node_modules/tiny": { version: "1.0.0", resolved: "https://registry.example.invalid/tiny.tgz", integrity: "sha512-fixture" } } });
+  const names = Array.from({ length: 34 }, (_, index) => `part-${String(index).padStart(2, "0")}.bin`);
+  const lease = { async assertOwned() {} };
+  const sharedRoot = key => path.join(parent, "inputs", key);
+  const [seed] = await prepareTaskWorktreeDependencies({
+    projectRoot: roots[0], lockfiles: [path.join(roots[0], "package-lock.json")], lease,
+    sharedDependencies: (key, operation) => operation({ root: sharedRoot(key), lease, coveredLease: lease }),
+    runNpm: async (_args, { cwd }) => {
+      await materializeLockedState(cwd);
+      for (const name of names) await writeFile(path.join(cwd, "node_modules/tiny", name), name);
+    },
+  });
+  async function attach(root, assertOwned) {
+    return reuseTaskDependencyInputs({
+      packageRoot: root, fingerprint: seed.fingerprint, lease,
+      manifestContent: await readFile(path.join(root, "package.json")),
+      lockfileContent: await readFile(path.join(root, "package-lock.json")),
+      limits: { maxEntriesPerDirectory: 100, maxTotalDirectoryEntries: 200 },
+      withOwner: (key, operation) => operation({
+        root: sharedRoot(key), lease: { assertOwned }, coveredLease: lease,
+      }),
+      prepare: () => assert.fail("existing input must not reinstall"),
+    });
+  }
+  let checks = 0;
+  await attach(roots[1], async () => { checks += 1; });
+  assert.ok(checks < 10, `shared owner was checked ${checks} times for ${names.length} aliases`);
+  context.diagnostic(`shared owner checks: ${checks} for ${names.length} payload aliases`);
+  assert.equal(await readFile(path.join(roots[1], "node_modules/tiny", names.at(-1)), "utf8"), names.at(-1));
+  const interruptedPath = path.join(roots[2], "node_modules");
+  const ownerLost = new Error("original shared owner lost");
+  await assert.rejects(attach(roots[2], async () => {
+    try { await lstat(path.join(interruptedPath, "tiny", names[0])); }
+    catch (error) { if (error.code === "ENOENT") return; throw error; }
+    throw ownerLost;
+  }), error => error === ownerLost);
+  assert.equal((await lstat(path.join(interruptedPath, "tiny", names[0]))).isFile(), true);
+  await assert.rejects(lstat(path.join(interruptedPath, "tiny", names[16])), { code: "ENOENT" });
+  const stamp = JSON.parse(await readFile(path.join(interruptedPath, ".agent-hub-task-dependencies.json"), "utf8"));
+  assert.equal(stamp.attaching, true);
+});

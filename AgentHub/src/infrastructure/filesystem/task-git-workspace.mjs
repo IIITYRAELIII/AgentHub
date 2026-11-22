@@ -41,7 +41,8 @@ import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mj
 import { readClaimCustodyWip, copyClaimCustodyWip } from "./claim-source-custody.mjs";
 import { claimCustodyHash } from "../../domain/claim-forward-custody.mjs";
 import { readDirectTaskPublication } from "./direct-task-publication.mjs";
-import { withInterprocessLocks as acquireInterprocessLocks, interprocessLockAdmissionTimeoutPath } from "../process/interprocess-lock.mjs";
+import { withInterprocessLocks as acquireInterprocessLocks, assertInterprocessLeasesOwned,
+  interprocessLockAdmissionTimeoutPath } from "../process/interprocess-lock.mjs";
 import {
   measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming, withTaskOperationTiming,
 } from "../process/task-operation-timing.mjs";
@@ -343,10 +344,7 @@ function combinedLease(primary, secondary, { repositoryKey = null } = {}) {
     ownerId: `${primary.ownerId}|${secondary.ownerId}`,
     repositoryLockKeys,
     signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] ?? null,
-    async assertOwned() {
-      await primary.assertOwned();
-      await secondary.assertOwned();
-    },
+    assertOwned: () => assertInterprocessLeasesOwned(primary, secondary),
   };
 }
 

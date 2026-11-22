@@ -8,9 +8,10 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  withInterprocessLocks,
+  assertInterprocessLeasesOwned, withInterprocessLocks,
 } from "../../../src/infrastructure/process/interprocess-lock.mjs";
 import { runOwnedGit, runTaskGitCommand, TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
 
 function ownerPath(lock, token) {
   const digest = createHash("sha256").update(String(token)).digest("hex");
@@ -45,6 +46,29 @@ test("held ownership fences an ambiguous extra owner before allowing work", asyn
     effected = true;
   }), /durable ownership was lost/u);
   assert.equal(effected, false);
+});
+
+test("composed lock checks join repeated in-flight reads and refuse a later owner change", async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-composed-fence-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const target = path.join(root, "ledger");
+  const lock = `${target}.lock`;
+  async function observedReads(operationId, operation) {
+    const events = [];
+    await withTaskOperationTiming({ operationId, taskId: "task", record: event => events.push(event) }, operation);
+    return events.find(event => event.stage === "trace-summary")
+      .stageAggregates.find(entry => entry.stage === "lock-owner-read-await").count;
+  }
+  await assert.rejects(withInterprocessLocks([target], async lease => {
+    const outer = { assertOwned: () => lease.assertOwned() };
+    const inner = { assertOwned: () => lease.assertOwned() };
+    assert.equal(await observedReads("independent-checks", () =>
+      Promise.all([outer.assertOwned(), inner.assertOwned()])), 2);
+    assert.equal(await observedReads("one-composed-fence", () => assertInterprocessLeasesOwned(outer, inner)), 1);
+    assert.equal(await observedReads("fresh-composed-fence", () => assertInterprocessLeasesOwned(outer, inner)), 1);
+    await writeOwner(lock, { ...await currentOwner(lock), token: "ambiguous-after-proof" });
+    await assertInterprocessLeasesOwned(outer, inner);
+  }), /durable ownership was lost/u);
 });
 
 test("owned Git rechecks primary ownership after waiting for another fence", async t => {
