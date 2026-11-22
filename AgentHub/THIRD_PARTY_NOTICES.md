@@ -10,7 +10,7 @@ Copyright (c) 2023 Phosphor Icons
 
 ## Bootstrap Icons
 
-Agent Hub uses the SVG paths for `eye` and `eye-fill` from Bootstrap Icons 1.13.1.
+Agent Hub uses the SVG paths for `eye`, `eye-fill`, `pencil`, `arrow-up` and `arrow-down` from Bootstrap Icons 1.13.1.
 
 Source: <https://github.com/twbs/icons/tree/v1.13.1>
 

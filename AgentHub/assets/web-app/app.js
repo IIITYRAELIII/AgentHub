@@ -4159,7 +4159,7 @@ function streamEffectAttributes(tasks) {
 
 let streamFrameId = 0;
 
-function streamEffectLayer(previousCard) {
+function streamEffectLayer(previousCard, { activityRail = false } = {}) {
   const existing = previousCard?.node.querySelector(STREAM_STATUS_LAYER_SELECTOR);
   if (existing) return existing;
   const outline = `stream-frame-${++streamFrameId}`;
@@ -4184,9 +4184,16 @@ function streamEffectLayer(previousCard) {
     }));
   }
   return svgEl("svg", { class: "stream-effect-layer", "aria-hidden": "true" }, [
-    svgEl("defs", {}, [svgEl("path", { id: outline, class: "stream-frame-outline", pathLength: 100 })]),
+    svgEl("defs", {}, [
+      svgEl("path", { id: outline, class: "stream-frame-outline", pathLength: 100 }),
+      svgEl("path", { id: outline + "-inner", class: "stream-frame-inner", pathLength: 100 }),
+    ]),
+    activityRail ? svgEl("g", { class: "activity-run-frame" }, [
+      svgEl("use", { href: "#" + outline }),
+      svgEl("use", { href: "#" + outline + "-inner", class: "activity-run-frame-inner" }),
+    ]) : null,
     svgEl("g", { class: "stream-run-track" }, trail),
-    svgEl("path", { class: "stream-maintenance-track", pathLength: 100 }),
+    svgEl("use", { class: "stream-maintenance-track", href: "#" + outline + "-inner" }),
     svgEl("line", { class: "stream-ready-strike", x1: "4%", x2: "96%", y1: "calc(100% - 9px)", y2: "calc(100% - 9px)" }),
   ]);
 }
@@ -4318,7 +4325,7 @@ function renderActivityRail() {
         .filter(Boolean).join(". "),
       title,
     }, [
-      streamEffectLayer(reusableActivityCards.get(task.id)),
+      streamEffectLayer(reusableActivityCards.get(task.id), { activityRail: true }),
       renderStreamStatusCard(task, activityTitle, presentation),
     ]), cardAnswerIdentity([task]));
   };
@@ -8562,6 +8569,9 @@ function renderApprovals() {
 }
 
 const queueIconPaths = {
+  "pencil": "M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325",
+  "arrow-up": "M8 15a.5.5 0 0 0 .5-.5V2.707l3.146 3.147a.5.5 0 0 0 .708-.708l-4-4a.5.5 0 0 0-.708 0l-4 4a.5.5 0 1 0 .708.708L7.5 2.707V14.5a.5.5 0 0 0 .5.5",
+  "arrow-down": "M8 1a.5.5 0 0 1 .5.5v11.793l3.146-3.147a.5.5 0 0 1 .708.708l-4 4a.5.5 0 0 1-.708 0l-4-4a.5.5 0 0 1 .708-.708L7.5 13.293V1.5A.5.5 0 0 1 8 1",
   steer: "M3 8l5-5 5 5 M3 13l5-5 5 5",
   pause: "M5.5 3.5v9 M10.5 3.5v9",
   cancel: "M4 4l8 8 M12 4l-8 8",
@@ -8656,20 +8666,20 @@ function renderQueueForTask(taskId, container) {
           disabled: !steerAvailable,
         }));
       }
-      actions.push(queueActionButton("Изменить", "✎", {
+      actions.push(queueActionButton("Изменить", "pencil", {
         "data-action": "queue-edit",
         "data-queue-id": entry.id,
         "aria-description": "Вернуть весь исходный черновик в основной композер",
       }));
       if (["queued", "paused"].includes(entry.state)) {
         const movableIndex = movable.findIndex((candidate) => candidate.id === entry.id);
-        actions.push(queueActionButton("Поднять сообщение в очереди", "↑", {
+        actions.push(queueActionButton("Поднять сообщение в очереди", "arrow-up", {
           "data-action": "queue-move",
           "data-direction": "up",
           "data-queue-id": entry.id,
           disabled: movableIndex <= 0,
         }));
-        actions.push(queueActionButton("Опустить сообщение в очереди", "↓", {
+        actions.push(queueActionButton("Опустить сообщение в очереди", "arrow-down", {
           "data-action": "queue-move",
           "data-direction": "down",
           "data-queue-id": entry.id,
