@@ -17,17 +17,17 @@ const previousRoot = { role: "user", itemId: "previous-root", clientUserMessageI
 const previousSteer = { role: "user", itemId: "previous-steer", clientUserMessageId: "steer-original",
   text: "Same-turn clarification", turnUserSlot: "steer", author: "Reviewer",
   submittedAt: "2026-11-23T19:00:41.000Z" };
+const imageUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==";
 const attachments = ["first.png", "second.png"].map((name) => ({
-  id: name, name, type: "image/png",
-  url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==",
+  id: name, name, type: "image/png", url: imageUrl, thumbnailUrl: imageUrl,
 }));
 const previousTurnHistory = { id: previousTurn, completed: true, status: "completed", terminalRevision: 1,
   startedAt: "2026-11-23T18:59:02.000Z", completedAt, messages: [previousRoot, previousSteer,
     { role: "agent", itemId: previousTurn + ":rollout-agent:final", text: finalText, phase: "final", time: null }] };
 
 function history(version, items) {
-  return { ...identity, version, start: 47, end: 47 + items.length, total: 47 + items.length,
-    messageTotal: items.reduce((count, item) => count + item.messages.length, 0), nextBefore: 47, items };
+  return { ...identity, version, start: 0, end: items.length, total: items.length,
+    messageTotal: items.reduce((count, item) => count + item.messages.length, 0), nextBefore: null, items };
 }
 
 async function readHistory(page, value) {
@@ -146,16 +146,17 @@ for (const first of ["snapshot", "history"]) {
       }, { ...nowAccepted, version: "reconnected" });
       await page.waitForFunction(() => window.__clientAppliedVersion === "reconnected");
       await assertOrder(page, clientId, first + "-reconnect");
-      await page.evaluate(({ data, model }) => {
+      await page.evaluate((model) => {
         localStorage.setItem("fixture:snapshot", JSON.stringify(model));
-        localStorage.setItem("fixture:history", JSON.stringify(data));
-      }, { data: persisted, model: nowAccepted });
+      }, nowAccepted);
       await page.reload({ waitUntil: "load" });
       await readHistory(page, persisted);
       await page.locator('[data-chat-pane] [data-turn-id="' + nextTurn + '"][data-role="user"]').waitFor({ state: "attached" });
       await assertOrder(page, clientId, first + "-reload");
       assert.equal((await bridgeCalls(page, "send-message")).length, 1);
       assert.deepEqual(errors, []);
+      assert.equal(await page.evaluate(() => window.__clientProjectionFixture.toasts.some(
+        (message) => message.includes("не ту страницу истории"))), false);
     } finally { await browser.close(); }
   });
 }
