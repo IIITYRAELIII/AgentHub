@@ -19,8 +19,10 @@ The Worker stores the admission before contacting GitHub. The original verifier
 proves possession and protects the result with AES-GCM for the existing five-minute
 authorization interval. The Worker persists neither the verifier nor the pair
 in plaintext. Reopening after a lost response retrieves the same sealed result.
-After the result is purged, the Worker retains only the admission and terminal
-status until the original refresh grant expires. A temporary transport failure
+The sealed result and admission have separate object identities in the existing
+namespace. This keeps the previous Worker's whole-object alarm cleanup safe
+during a rollback. After the result is purged, the admission and terminal status
+stay until the original refresh grant expires. A temporary transport failure
 keeps the local attempt available for readback. An authoritative unknown outcome
 keeps that attempt and both credentials in storage and requires explicit sign-in.
 

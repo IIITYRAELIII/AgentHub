@@ -93,7 +93,7 @@ export default {
             || body.deadline > Date.now() + GITHUB_OAUTH_REFRESH_MAX_MS + GITHUB_OAUTH_LIFETIME_MS) return invalid();
         if (body.deadline <= Date.now()) return status("unknown");
         const key = await githubOAuthChallenge("refresh:" + body.refreshToken);
-        return await attempt(env, key, "refresh", body);
+        return await attempt(env, "refresh-admission:" + key, "refresh", { ...body, key });
       }
       if (request.method === "GET" && url.pathname === "/github/callback") {
         const states = url.searchParams.getAll("state");
@@ -127,6 +127,8 @@ export class GitHubOAuthAttempt {
     if (action === "/receive") return this.#receive(body.code);
     if (action === "/poll") return this.#poll(body.verifier, body.refresh);
     if (action === "/refresh") return this.#refresh(body);
+    if (action === "/store-refresh-result") return this.#storeRefreshResult(body);
+    if (action === "/read-refresh-result") return this.#readRefreshResult(body.challenge);
     return missing();
   }
 
@@ -171,16 +173,15 @@ export class GitHubOAuthAttempt {
     return json({ status: "authorized", ...(includeRefresh ? token : { token: token.token, expiresAt: token.expiresAt }) });
   }
 
-  async #refresh({ refreshToken, verifier, deadline }) {
+  async #refresh({ refreshToken, verifier, deadline, key }) {
     const challenge = await githubOAuthChallenge(verifier);
+    const resultName = "refresh-result:" + key;
     const current = this.storage.kv.get("refresh");
     const now = Date.now();
     if (deadline <= now) return status("unknown");
     if (current) {
       if (current.challenge !== challenge || current.deadline !== deadline) return status("unknown");
-      if (current.status === "refreshed") {
-        return now < current.resultUntil ? json({ status: current.status, result: current.result }) : status("unknown");
-      }
+      if (current.status === "refreshed") return attempt(this.env, resultName, "read-refresh-result", { challenge });
       if (current.status === "exchanging") return status(now - current.startedAt < 20_000 ? "pending" : "unknown");
       return status(current.status);
     }
@@ -189,30 +190,39 @@ export class GitHubOAuthAttempt {
     await this.storage.setAlarm(deadline);
     await this.storage.sync();
     if (Date.now() >= deadline) return status("unknown");
-    let completed = { challenge, deadline, status: "unknown" };
+    const completed = { challenge, deadline, status: "unknown" };
+    let result;
     try {
       const pair = await exchange(this.env, { grant_type: "refresh_token", refresh_token: refreshToken });
       if (pair === "reconnect") completed.status = "reconnect";
       else if (githubOAuthRefreshPair(pair) && pair.refreshToken !== refreshToken) {
-        completed = { ...completed, status: "refreshed", result: await sealGitHubRefreshResult(pair, verifier),
-          resultUntil: Math.min(deadline, Date.now() + GITHUB_OAUTH_LIFETIME_MS) };
+        const until = Math.min(deadline, Date.now() + GITHUB_OAUTH_LIFETIME_MS);
+        result = await sealGitHubRefreshResult(pair, verifier);
+        // A previous Worker can delete one whole object on alarm. Purging the
+        // sealed result must never delete the separate provider admission.
+        const stored = await attempt(this.env, resultName, "store-refresh-result", { challenge, until, result });
+        if (stored.ok) completed.status = "refreshed";
       }
     } catch { /* An indeterminate provider exchange cannot be replayed. */ }
     if (Date.now() >= deadline) return status("unknown");
     this.storage.kv.put("refresh", completed);
-    if (completed.resultUntil < deadline) await this.storage.setAlarm(completed.resultUntil);
     await this.storage.sync();
-    return completed.status === "refreshed" ? json({ status: completed.status, result: completed.result }) : status(completed.status);
+    return completed.status === "refreshed" ? json({ status: completed.status, result }) : status(completed.status);
   }
 
-  async alarm() {
-    const current = this.storage.kv.get("refresh");
-    const now = Date.now();
-    if (!current || now >= current.deadline) return this.storage.deleteAll();
-    if (current.status === "refreshed") {
-      if (now < current.resultUntil) return this.storage.setAlarm(current.resultUntil);
-      this.storage.kv.put("refresh", { challenge: current.challenge, deadline: current.deadline, status: "unknown" });
-    }
-    await this.storage.setAlarm(current.deadline);
+  async #storeRefreshResult({ challenge, until, result }) {
+    if (Date.now() >= until) return json({ status: "unknown" }, 409);
+    await this.storage.setAlarm(until);
+    this.storage.kv.put("result", { challenge, until, result });
+    await this.storage.sync();
+    return status("stored");
   }
+
+  #readRefreshResult(challenge) {
+    const current = this.storage.kv.get("result");
+    return current?.challenge === challenge && Date.now() < current.until
+      ? json({ status: "refreshed", result: current.result }) : status("unknown");
+  }
+
+  async alarm() { await this.storage.deleteAll(); }
 }

@@ -217,3 +217,24 @@ test("late old API 401 and Git erase leave the rotated credential usable", async
   assert.equal((await f.service.snapshot()).status, "connected");
   assert.equal(await f.vault.token(await f.vault.read()), rotated);
 });
+
+test("API 401 after natural expiry allows the next request to rotate", async t => {
+  const f = await fixture(t);
+  const entered = Promise.withResolvers(), finish = Promise.withResolvers();
+  f.api(async options => {
+    if (options.headers.Authorization === "Bearer " + original) {
+      entered.resolve();
+      await finish.promise;
+      return new Response(null, { status: 401 });
+    }
+    return Response.json({ authorized: true });
+  });
+  const old = assert.rejects(f.service.request("/repos/owned/repo"), { status: 401 });
+  await entered.promise;
+  f.advance(28_800_001);
+  finish.resolve();
+  await old;
+  assert.equal((await f.service.snapshot()).status, "connected");
+  assert.equal((await (await f.service.request("/repos/owned/repo")).json()).authorized, true);
+  assert.equal(f.calls.length, 1);
+});

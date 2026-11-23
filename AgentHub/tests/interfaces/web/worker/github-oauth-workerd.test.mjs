@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
-import { GitHubOAuthAttempt } from "../../../../cloudflare-github-oauth/worker.mjs";
+import worker, { GitHubOAuthAttempt } from "../../../../cloudflare-github-oauth/worker.mjs";
 import { GitHubBrowserAuthorization } from "../../../../src/infrastructure/network/github-browser-authorization.mjs";
 import { GITHUB_OAUTH_ORIGIN } from "../../../../src/infrastructure/network/github-oauth-protocol.mjs";
 
@@ -153,14 +153,40 @@ test("native Worker gives a rotated pair back once admitted, including a lost Hu
   }
 });
 
-test("refresh result retention removes the sealed pair without reopening provider admission", async () => {
-  const deadline = Date.now() + 60_000, challenge = "fixture-proof-digest";
-  const state = new Map([["refresh", { deadline, challenge, status: "refreshed",
-    result: { iv: "sealed-fixture", ciphertext: "sealed-fixture" }, resultUntil: Date.now() - 1 }]]);
-  let alarm;
-  const storage = { kv: { get: key => state.get(key), put: (key, value) => state.set(key, value) },
-    setAlarm: async at => { alarm = at; }, deleteAll: async () => state.clear() };
-  await new GitHubOAuthAttempt({ storage }, {}).alarm();
-  assert.deepEqual(state.get("refresh"), { deadline, challenge, status: "unknown" });
-  assert.equal(alarm, deadline);
+test("legacy whole-object alarm cleanup clears the sealed result without reopening provider admission", async t => {
+  const deadline = Date.now() + 86_400_000, objects = new Map();
+  let exchanges = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    exchanges++;
+    return Response.json({ token_type: "bearer", access_token: "gho_ROLLBACK_FIXTURE_ROTATED_123456789",
+      expires_in: 28_800, refresh_token: "ghr_ROLLBACK_FIXTURE_ROTATED_123456789", refresh_token_expires_in: 15_897_600 });
+  });
+  const env = { GITHUB_OAUTH_CLIENT_SECRET: "synthetic-client-secret", ATTEMPTS: {
+    getByName(name) {
+      if (!objects.has(name)) {
+        const rows = new Map();
+        const record = { rows, alarmAt: null };
+        const storage = { kv: { get: key => rows.get(key), put: (key, value) => rows.set(key, value) },
+          setAlarm: async at => { record.alarmAt = at; }, sync: async () => {}, deleteAll: async () => rows.clear() };
+        record.runAlarm = () => storage.deleteAll(); // The previously deployed Worker uses whole-object cleanup.
+        record.fetch = (url, options) => new GitHubOAuthAttempt({ storage }, env).fetch(new Request(url, options));
+        objects.set(name, record);
+      }
+      return objects.get(name);
+    },
+  } };
+  const proof = { refreshToken: "ghr_ROLLBACK_FIXTURE_INITIAL_123456789", verifier: "v".repeat(43), deadline };
+  const refresh = () => worker.fetch(new Request(GITHUB_OAUTH_ORIGIN + "/github/refresh", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(proof),
+  }), env);
+  assert.equal((await (await refresh()).json()).status, "refreshed"); // The original Hub response is lost.
+  const receipts = [...objects.values()].sort((a, b) => a.alarmAt - b.alarmAt);
+  assert.equal(receipts.length, 2);
+  assert.ok(receipts[0].alarmAt < deadline);
+  assert.equal(receipts[1].alarmAt, deadline);
+  await receipts[0].runAlarm();
+  assert.equal(receipts[0].rows.size, 0);
+  assert.equal(receipts[1].rows.get("refresh").status, "refreshed");
+  assert.deepEqual(await (await refresh()).json(), { status: "unknown" });
+  assert.equal(exchanges, 1);
 });

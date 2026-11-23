@@ -116,6 +116,9 @@ export class GitHubAccountVault {
     return this.#withCredential(credential.id, async lease => {
       const row = await this.read();
       if (row?.id === credential.id && row.secret === credential.secret) {
+        // A request may cross the access token's expiry in flight. Use the
+        // refresh exchange to distinguish that normal expiry from lost consent.
+        if (this.#expired(row) && this.#canRefresh(row)) return;
         await lease.assertOwned();
         await this.#markRejected(row);
       }
