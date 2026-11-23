@@ -3271,3 +3271,37 @@ test("unaccepted and foreign start evidence cannot move an original message", ()
   assert.ok(ordered.indexOf(unknown) < ordered.indexOf(previous));
   assert.equal(ordered.find((item) => item.id === foreign.id).time, null);
 });
+
+test("a next-turn terminal overlay at its start cannot jump an earlier durable final", () => {
+  const identity = { provider: "codex", threadId: "same-thread", operationKind: "user-turn" };
+  const boundary = "2026-11-23T19:01:05.613Z";
+  const previousStart = "2026-11-23T19:00:00.000Z";
+  const submission = "2026-11-23T19:00:16.313Z";
+  const previous = [
+    { ...identity, id: "old-root", turnId: "z-old", role: "user", turnUserSlot: "root",
+      historyOrder: 47_000, startedAt: previousStart, time: previousStart },
+    { ...identity, id: "old-final", turnId: "z-old", role: "agent",
+      projectionAuthority: "canonical", projectionState: "completed", terminalRevision: 1,
+      historyOrder: 47_002, turnCompletedAt: boundary, time: boundary },
+  ];
+  const nextRoot = { ...identity, id: "new-root", turnId: "a-new", role: "user", turnUserSlot: "root",
+    clientUserMessageId: "next-original", startedAt: boundary, providerAccepted: true,
+    time: submission, submittedAt: submission };
+  const nextFinal = { ...identity, id: "new-final", turnId: "a-new", role: "agent",
+    projectionAuthority: "terminal", projectionState: "completed", terminalRevision: 1,
+    turnCompletedAt: boundary, time: boundary };
+  const expected = ["old-root", "old-final", "new-root", "new-final"];
+  for (const input of [
+    [...previous, nextRoot, nextFinal],
+    [nextFinal, nextRoot, ...previous.toReversed()],
+    [...previous.map(({ historyOrder, ...message }) => message),
+      { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],
+    [...previous, { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],
+  ]) {
+    const result = lifecycle.chronologicalMessages(projection.projectCanonicalMessages(input));
+    assert.deepEqual(Array.from(result, (message) => message.id), expected);
+    assert.equal(result[2].submittedAt, submission);
+    assert.equal(result[2].time, submission);
+    assert.equal(result[2].clientUserMessageId, "next-original");
+  }
+});

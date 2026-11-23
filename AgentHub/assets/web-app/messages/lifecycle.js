@@ -1512,6 +1512,11 @@ function chronologicalMessages(messages) {
     // belongs no earlier than the observed start of its exact provider turn.
     item.startedAt = providerStarts.get(identity);
     item.orderTime = Number.isFinite(item.startedAt) ? Math.max(item.time, item.startedAt) : item.time;
+    const startsHere = item.startedAt === item.orderTime;
+    const completesHere = providerCompletions.get(identity) === item.orderTime;
+    // Equal wall-clock readings still distinguish an ending turn from a turn
+    // beginning at that boundary, including one already completed in the same tick.
+    item.boundaryOrder = Number(startsHere) - Number(completesHere);
   }
   const ordered = decorated
     .sort((left, right) => {
@@ -1540,10 +1545,8 @@ function chronologicalMessages(messages) {
       if (!sameTurn && left.message?.provider && left.message.threadId
         && left.message.provider === right.message?.provider
         && left.message.threadId === right.message.threadId) {
-        const leftCompleted = providerCompletions.get(leftTurnIdentity) === leftTime;
-        const rightCompleted = providerCompletions.get(rightTurnIdentity) === rightTime;
-        if (leftCompleted && !rightCompleted && right.startedAt === rightTime) return -1;
-        if (rightCompleted && !leftCompleted && left.startedAt === leftTime) return 1;
+        const boundaryDifference = left.boundaryOrder - right.boundaryOrder;
+        if (boundaryDifference) return boundaryDifference;
       }
       const identityOrder = compareChronologyIdentity(
         chronologyEntityIdentity(left.message),

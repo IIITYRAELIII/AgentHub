@@ -160,3 +160,38 @@ for (const first of ["snapshot", "history"]) {
     } finally { await browser.close(); }
   });
 }
+
+test("a completed successor at the same timestamp stays below the prior durable turn", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage({ viewport: { width: 1366, height: 900 }, timezoneId: "UTC" });
+  const successor = "earlier-lexical-id";
+  const originalId = "38181ce8-1621-40c0-9a4f-8340b20b4765";
+  try {
+    await page.clock.setFixedTime(completedAt);
+    const initial = snapshot();
+    const prior = history("prior-durable", [previousTurnHistory]);
+    const errors = await openClientEventFixture(page, { surface: "web", fixtureSnapshot: initial, fixtureHistory: prior });
+    await readHistory(page, prior);
+    const next = structuredClone(initial);
+    next.version = "equal-boundary-terminal-overlay";
+    next.tasks[0] = { ...next.tasks[0], lastAnswer: "Next terminal overlay", lastAnswerAt: completedAt,
+      lastAnswerTurnId: successor, lastAnswerRevision: 1 };
+    next.messageReceipts = [{ ...identity, clientUserMessageId: originalId, id: "retained-outgoing",
+      turnId: successor, runId: "successor-run", accepted: true, providerAccepted: true,
+      submittedAt, startedAt: completedAt, completed: true, completedAt, displayText: sentText }];
+    await page.evaluate((value) => {
+      window.__agentHubFixture.snapshot = value;
+      return window.__dispatchClientFixture("connection:retry");
+    }, next);
+    await page.getByText("Next terminal overlay", { exact: true }).waitFor({ state: "visible", timeout: 5_000 });
+    const rows = await page.locator('[data-chat-pane] [data-turn-id][data-role]').evaluateAll((nodes) => nodes.map(
+      (node) => [node.dataset.turnId, node.dataset.role]));
+    assert.deepEqual(rows, [[previousTurn, "user"], [previousTurn, "user"], [previousTurn, "agent"],
+      [successor, "user"], [successor, "agent"]]);
+    const root = await page.evaluate((id) => window.__clientProjectionFixture.messages["stream-a"].find(
+      (message) => message.clientUserMessageId === id), originalId);
+    assert.equal(root.submittedAt, submittedAt);
+    assert.equal(root.time, submittedAt);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
