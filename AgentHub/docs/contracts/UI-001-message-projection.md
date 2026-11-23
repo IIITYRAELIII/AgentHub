@@ -1065,8 +1065,13 @@ command. Other callers receive the ordinary selection snapshot.
 
 Canonical history supplies the complete last request and final response. Existing
 history pages, older-page cursors, retained windows and exact navigation provide
-the rest of the conversation. The same rendered-final and durable read-cursor
-owner clears Ready on both tabs and activity cards. See ADR-HUB-427.
+the rest of the conversation. The cold tab starts with the latest two turns
+from that owner, with the ordinary wider read under the same navigation identity
+if this tail misses the known complete exchange. Selection, identity, exact
+final revision and freshness guards still apply. After the first paint, the
+existing refresh path widens the page while retaining its scroll and cursor.
+The same rendered-final and durable read-cursor owner clears Ready on both
+tabs and activity cards. See ADR-HUB-427 and ADR-HUB-517.
 ## Task attachment and retired Spark actions (ADR-HUB-434)
 
 Attaching a Dashboard Task keeps the visible composer reference, draft,

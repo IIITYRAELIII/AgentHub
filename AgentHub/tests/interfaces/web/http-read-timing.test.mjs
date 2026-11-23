@@ -72,3 +72,40 @@ test("compression timing preserves async fallback and exactly one terminal recor
   assert.equal(spans.filter(x => x.stage === "http-json-compress" && x.outcome === "failed").length, 1);
   assert.doesNotMatch(JSON.stringify(spans), /private compressor error/u);
 });
+
+test("small cold history can write while the gzip worker is occupied", () => {
+  const pending = [];
+  const json = createJsonResponder({ compress: (body, done) => pending.push({ body, done }) });
+  const target = () => ({
+    headers: {},
+    getHeader(key) { return this.headers[key]; },
+    writeHead(status, headers) { this.statusCode = status; this.headers = headers; },
+    end(body) { this.body = body; this.writableEnded = true; },
+    destroy() {},
+  });
+  const body = { text: "x".repeat(32 * 1_024) };
+  const background = target();
+  const cold = target();
+  const acceptsGzip = { acceptEncoding: "gzip" };
+  json(background, 200, body, "POST", acceptsGzip);
+  json(cold, 200, body, "POST", { ...acceptsGzip, coldHistory: true });
+  assert.deepEqual(JSON.parse(cold.body), body);
+  assert.equal(cold.headers["Content-Encoding"], undefined);
+  assert.equal(background.body, undefined);
+  assert.equal(pending.length, 1);
+  pending.shift().done(new Error("controlled compression failure"));
+
+  const needsGzip = target();
+  json(needsGzip, 200, body, "POST", { coldHistory: true, acceptEncoding: "gzip, identity;q=0" });
+  assert.equal(needsGzip.body, undefined);
+  assert.equal(pending.length, 1);
+  pending.shift().done(null, Buffer.from("gzip fixture"));
+  assert.equal(needsGzip.headers["Content-Encoding"], "gzip");
+
+  const large = target();
+  json(large, 200, { text: "x".repeat(160 * 1_024) }, "POST", { ...acceptsGzip, coldHistory: true });
+  assert.equal(large.body, undefined);
+  assert.equal(pending.length, 1);
+  pending.shift().done(null, Buffer.from("gzip fixture"));
+  assert.equal(large.headers["Content-Encoding"], "gzip");
+});

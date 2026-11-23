@@ -1173,3 +1173,15 @@ script work, heap/long tasks and separately qualified test-process CPU/I/O count
 Fixture delays and renderer counters have their own attribution. Natural loaded
 runtime observations and source/fixture AFTER are distinct acceptance evidence.
 The existing bounded recorder owns these measurements. See ADR-HUB-427.
+
+The direct HTTP history route uses the original navigation trace ID for the
+local page, terminal repair, attachment hydration, projection, response
+budget, versioning, JSON encode, optional compression and response-write
+phases. The browser measures request-to-headers, body transfer and JSON
+parsing separately when its resource timing includes the matching HTTP
+request. Node response finish describes handoff to the OS, and a gzip callback
+interval can include native-worker queue and event-loop scheduling. Neither
+is exclusive network time. A cold two-turn page of up to 128 KiB can use
+identity encoding when accepted, allowing the complete latest exchange to
+paint independently of the shared gzip pool. Wider reads and all trace-page
+requests retain ordinary compression. See ADR-HUB-517.

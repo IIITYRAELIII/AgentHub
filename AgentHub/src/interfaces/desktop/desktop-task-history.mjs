@@ -510,7 +510,10 @@ export function createDesktopTaskHistoryFactory({
       .finally(() => { catalogRefresh = null; });
   }
 
-  return async function desktopTaskHistory(params) {
+  return async function desktopTaskHistory(params, context) {
+    const timing = context?.historyTiming;
+    const sync = (stage, operation) => timing ? timing.sync(stage, operation) : operation();
+    const measure = (stage, operation) => timing ? timing.measure(stage, operation) : operation();
     const provider = String(params.provider ?? selection.activeProvider()).trim();
     const selectedStreamId = String(params.streamId ?? "").trim();
     const selectedThreadId = String(params.threadId ?? selection.threadId() ?? "").trim();
@@ -571,6 +574,7 @@ export function createDesktopTaskHistoryFactory({
         tracePage: { ...tracePage, groups: tracePage.groups.map(assistantTraceAnnotationPresentation) } };
     }
     const history = [];
+    const deferProviderRefresh = params.coldHistory === true && params.before == null;
     let sourceRefreshFailed = false;
     const currentThreadBinding = threadBindings.find((threadBinding) => (
       threadBinding.provider === binding.provider && threadBinding.threadId === binding.threadId
@@ -581,16 +585,18 @@ export function createDesktopTaskHistoryFactory({
       throw new Error("Invalid subagent recovery turn IDs");
     }
     if (params.refreshSource === true || repairSubagentTurnIds.length) {
-      sourceRefreshFailed = await scheduleRefresh(currentThreadBinding, { force: true, repairSubagentTurnIds }) === false;
+      sourceRefreshFailed = await measure("history-provider-refresh",
+        () => scheduleRefresh(currentThreadBinding, { force: true, repairSubagentTurnIds })) === false;
     }
     const pagedHistory = typeof historyReader.readPage === "function"
-      ? await historyReader.readPage(threadBindings, {
+      ? await measure("history-local-read", () => historyReader.readPage(threadBindings, {
+        timing,
         before: params.before,
         limit,
         hiddenProvider: "codex",
         hiddenTurnIdPrefixes: [CODEX_AUTO_COMPACTION_TURN_ID_PREFIX],
         emptyCompletionText: EMPTY_TURN_COMPLETION_TEXT,
-      })
+      }))
       : null;
     if (pagedHistory) {
       for (const source of pagedHistory.items) {
@@ -611,7 +617,7 @@ export function createDesktopTaskHistoryFactory({
         history.push(item);
         historySources.set(item, { key, provider: source.provider, threadId: source.threadId });
       }
-      scheduleRefresh(currentThreadBinding);
+      if (!deferProviderRefresh) scheduleRefresh(currentThreadBinding);
     } else for (const threadBinding of threadBindings) {
       const key = `${threadBinding.provider}:${threadBinding.threadId}`;
       const currentThread = threadBinding.provider === binding.provider
@@ -630,7 +636,7 @@ export function createDesktopTaskHistoryFactory({
       );
       threadHistory = await visibleProviderHistory(threadBinding.provider, threadHistory,
         (turn) => noteLegacyProbe(threadBinding, turn));
-      if (currentThread) scheduleRefresh(threadBinding);
+      if (currentThread && !deferProviderRefresh) scheduleRefresh(threadBinding);
       for (const item of threadHistory) {
         history.push(item);
         historySources.set(item, {
@@ -768,12 +774,12 @@ export function createDesktopTaskHistoryFactory({
       rawPage = orderedHistory.slice(start, end);
     }
     const pageSources = rawPage.map((item) => historySources.get(item));
-    const page = await hydrateHistory(rawPage);
+    const page = await measure("history-attachment-hydration", () => hydrateHistory(rawPage));
     for (let index = 0; index < page.length; index += 1) {
       const source = pageSources[index];
       if (source?.key) cacheHistory(hydratedHistories, source.key, [page[index]]);
     }
-    const payload = {
+    const payload = sync("history-project-page", () => ({
       ...(binding.streamId ? { streamId: binding.streamId } : {}),
       // A Stream reference is authoritative.  The caller may still carry the
       // provider/thread pair that was current before a rebirth, so expose the
@@ -1068,17 +1074,17 @@ export function createDesktopTaskHistoryFactory({
           threadId: itemThreadId,
         });
       }),
-    };
-    const fitted = responseBudget.fit(payload, {
+    }));
+    const fitted = sync("history-fit-page", () => responseBudget.fit(payload, {
       maxBytes: Math.min(
         Math.max(Number(params.maxResponseBytes) || 3_500_000, 64 * 1_024),
         3_500_000,
       ),
-    });
-    const version = createHash("sha256")
+    }));
+    const version = sync("history-version", () => createHash("sha256")
       .update(JSON.stringify(fitted))
       .digest("base64url")
-      .slice(0, 22);
+      .slice(0, 22));
     if (params.knownVersion && String(params.knownVersion) === version) {
       return {
         ...(binding.streamId ? { streamId: binding.streamId } : {}),
