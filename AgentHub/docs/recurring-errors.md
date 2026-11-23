@@ -16,9 +16,11 @@ and describe the mechanism here using synthetic examples.
 
 ### R02. An old turn keeps the queue busy
 Remove old-turn recovery from startup, retries and observers. The local execution
-owner retires its binding while preserving history, receipts, attachments and
-queued input. Exercise a cold start with a provider that cannot load the old turn
-and verify that new input proceeds without replay or a fabricated provider result.
+owner retires its binding before freeing the lane and preserves history, receipts,
+attachments and queued input. An independently live foreign turn stays with its
+owner and is never adopted or terminated automatically. Test a cold start with
+an unavailable old turn and a live foreign turn. Verify that new input proceeds
+without replay or a fabricated provider result.
 
 ### R03. Intake, provider acceptance and rendering are conflated
 Keep the Hub receipt, provider acceptance and display as separate facts. Reconcile
@@ -37,8 +39,10 @@ Retain the original request ID when the new target is unavailable.
 
 ### R07. Message identity or origin disappears
 Carry client, submission and provider item IDs through parsing, storage and
-rendering. Establish origin before normalizing text. Test identical messages with
-different IDs, cross-Stream and native input, attachments, and a cold reload.
+rendering. Establish origin from verified durable metadata before normalizing
+text. Leave textual envelopes without proof literal and keep empty provider
+item IDs out of shared identity keys. Test identical messages with different
+IDs, missing item IDs, cross-Stream and native input, attachments and cold reload.
 
 ### R21. A rotated Stream still targets its old Thread
 Resolve the logical Stream to its current Thread at the routing owner. Rebind
@@ -47,8 +51,10 @@ during rotation, including retry of the same request.
 
 ### R23. Completion is saved while delivery of the final or projection fails
 Persist the canonical final and make journal, usage and view delivery resumable by
-the existing owner. Exercise terminal before final body, reconnect, and SQLite
-contention followed by recovery. Expect one derived record for the original turn.
+the existing owner. Keep commentary distinct from final and retain interrupted
+partial output. Verify phase, body and item ID after history handoff and reload.
+Exercise terminal before final body, reconnect and SQLite contention with recovery.
+Expect one derived record for the original turn.
 
 ### R31. A partial durable transition is treated as complete
 Track reservation, effect and remaining persistence or cleanup separately.
@@ -130,9 +136,10 @@ records and the existing append or snapshot path for progress. Test a second
 write and an observer failure after an effect without repeating the effect.
 
 ### R26. An asynchronous continuation applies a stale decision
-Capture exact target identity before waiting and recheck it just before applying
-the result. Exercise selection changes, a new active run and two writes that
-finish in reverse order.
+Capture exact target identity before waiting and recheck it at the mutation.
+The durable writer merges with the current saved fields or checks the revision
+at commit. Wait for workers outside SQL. Exercise selection changes, a new
+active run and two writes that finish in reverse order.
 
 ### R28. The current directory replaces the session's creation context
 Keep the project, current cwd and provider lookup context separate. Resolve the
@@ -203,13 +210,16 @@ original cleanup receipt and actual storage. Keep ambiguous and foreign copies.
 
 ### R16. Git composition loses accepted content
 Bind selection and parent order to exact bases and tree entries, including mode,
-type and binary content. Check native merge and resolution against a real graph,
-including divergent bases, later additions and dropped accepted bytes.
+type and binary content. Carry mandatory selection and review proof from the
+adapter through the durable result to its consumer, including duplicate and reuse
+paths. Check that propagation and the native resolution on a real graph with
+divergent bases, later additions and dropped accepted bytes.
 
 ### R44. A Task operation uses the wrong Git project
-Resolve the active executor's project through the existing Task Git owner.
-Verify claim, start and status use the issued managed root across UI and MCP.
-Use different caller, executor and historical Thread contexts in the check.
+Resolve the active executor's project through the existing Task Git owner, and
+retain the issued managed root and original operation binding. Verify Claim,
+Start, status and Await across UI and MCP with different caller, executor and
+historical Thread contexts.
 
 ### R46. A Git command acts in a different checkout than the one verified
 Pass the exact root to Git and verify branch, expected HEAD and index in that
