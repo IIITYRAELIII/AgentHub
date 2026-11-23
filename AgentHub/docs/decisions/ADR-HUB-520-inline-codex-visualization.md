@@ -21,12 +21,18 @@ same turn and a modification time inside that turn. Canonical containment,
 file identity, single-link and size checks apply to both. The legacy path is
 read-only compatibility for older turns and only useful while those direct
 files are present. Recording contours do not read captured production rollouts.
+The normal Codex launch prepares that exact directory and announces it in its
+current application context. Workspace-write grants the project and that one
+output directory. The shared parent and other Thread directories are outside
+the added grant.
 
 The chat loads a fixed sandboxed frame from its packaged assets. That shell
 admits only the parent-provided data document in a separate opaque-origin frame.
 The fragment's policy restricts network, frame, form, and object access, and
 permits the skill's static resources and interactive script. The optional mode
 and title are presentation hints only.
+Artifacts that reference Lucide receive the skill's pinned ISC-licensed build
+from its allowed static CDN, with Subresource Integrity checked in the sandbox.
 The Hub accepts only a bounded resize from the exact frame and discards bridge
 messages originating in descendant frames. No persistence or follow-up API is
 exposed to artifact code. An absent, out-of-budget or invalid source has the same

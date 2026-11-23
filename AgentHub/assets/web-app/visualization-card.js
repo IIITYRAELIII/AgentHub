@@ -2,6 +2,8 @@
   const PREFIX = "\uE200visualize\uE202";
   const END = "\uE201";
   const UNAVAILABLE = "Визуализация недоступна";
+  const LUCIDE = '<script src="https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js"'
+    + ' crossorigin="anonymous" integrity="sha384-mB5yN6ht29opTeLuaWk+os1xURIPXV1kaH+TrwgB4vDhbgo4HasARHOtSjMaavQn"></script>';
   const STATIC_SOURCES = [
     "https://cdnjs.cloudflare.com", "https://esm.sh", "https://cdn.jsdelivr.net",
     "https://unpkg.com", "https://fonts.googleapis.com", "https://fonts.gstatic.com",
@@ -35,6 +37,7 @@
 
   function frameDocument(html, dark) {
     const scheme = dark ? "dark" : "light";
+    const icons = /\blucide\b/u.test(html) ? LUCIDE : "";
     return '<!doctype html><html><head><meta charset="utf-8">'
       + '<meta name="referrer" content="no-referrer"><meta name="viewport" content="width=device-width, initial-scale=1">'
       + '<meta http-equiv="Content-Security-Policy" content="' + POLICY + '">'
@@ -45,6 +48,7 @@
       + '<script>addEventListener("DOMContentLoaded",()=>{const report=()=>parent.postMessage('
       + '{kind:"agent-hub-visualization-size",height:Math.ceil(document.body.getBoundingClientRect().height)},"*");'
       + 'new ResizeObserver(report).observe(document.body);report();});</script>'
+      + icons + (icons ? '<script>addEventListener("DOMContentLoaded",()=>globalThis.lucide?.createIcons());</script>' : "")
       + html + "</body></html>";
   }
 

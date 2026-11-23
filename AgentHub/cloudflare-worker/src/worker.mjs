@@ -4833,6 +4833,8 @@ async function secureStaticResponse(response, request) {
   const headers = new Headers(response.headers);
   const contentType = String(headers.get("Content-Type") ?? "").toLowerCase();
   const url = new URL(request.url);
+  const visualizationFrame = (url.pathname === "/visualization-frame.html" || url.pathname === "/visualization-frame")
+    && contentType.includes("text/html");
   const directAssetOrigin = url.hostname.startsWith("hub.")
     ? `https://home.${url.hostname.slice(4)}`
     : "";
@@ -4856,7 +4858,7 @@ async function secureStaticResponse(response, request) {
     `script-src 'self'${directAssetOrigin ? ` ${directAssetOrigin}` : ""} https://telegram.org`,
     `style-src 'self'${directAssetOrigin ? ` ${directAssetOrigin}` : ""}`,
   ].join("; "));
-  if (url.pathname === "/visualization-frame.html") {
+  if (visualizationFrame) {
     headers.set("Content-Security-Policy", "frame-ancestors 'self'");
   }
   headers.set("Referrer-Policy", "no-referrer");
@@ -4865,6 +4867,9 @@ async function secureStaticResponse(response, request) {
   if (body && contentType.includes("text/html")) {
     body = new Uint8Array(await response.arrayBuffer());
     replaceBodyHeaders(headers);
+    // This small opaque-origin document cannot run the main shell's fetch
+    // bootstrap. Its own CSP is in the exact packaged document.
+    if (visualizationFrame) return new Response(body, { status: response.status, statusText: response.statusText, headers });
     const chunkValue = url.searchParams.get(STATIC_SHELL_CHUNK_PARAM);
     if (chunkValue !== null) {
       const chunkIndex = Number(chunkValue);

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { lstat, open, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, open, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { codexVisualizationIdentity } from "../../domain/codex-visualization-reference.mjs";
+import { codexVisualizationIdentity, codexVisualizationThreadId } from "../../domain/codex-visualization-reference.mjs";
 import { assertCodexRolloutReadAllowed } from "../../infrastructure/filesystem/test-contour-rollout-policy.mjs";
 import { IgnoredTraceRecord } from "./codex-trace-record.mjs";
 
@@ -69,6 +69,24 @@ async function* rolloutRecords(handle, size) {
 function pathKey(value) {
   const normal = path.resolve(value);
   return process.platform === "win32" ? normal.toLowerCase() : normal;
+}
+
+export async function prepareCodexVisualizationDirectory(attachmentDirectory, threadId) {
+  if (!attachmentDirectory || !codexVisualizationThreadId(threadId)) return "";
+  try {
+    await mkdir(attachmentDirectory, { recursive: true });
+    const root = await realpath(attachmentDirectory);
+    const parent = path.join(root, "visualizations");
+    const destination = path.join(parent, threadId);
+    for (const directory of [parent, destination]) {
+      await mkdir(directory).catch((error) => { if (error.code !== "EEXIST") throw error; });
+      const info = await lstat(directory);
+      if (!info.isDirectory() || info.isSymbolicLink() || pathKey(await realpath(directory)) !== pathKey(directory)) return "";
+    }
+    return destination;
+  } catch {
+    return "";
+  }
 }
 
 function artifactScope(value, attachmentDirectory, threadId) {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -96,11 +96,17 @@ test("chat renders a Codex visualization in place and reopens it from SQLite his
   await store.recordHistory(binding, [{ id: turnId, startedAt: start, completedAt: end, completed: true,
     messages: [{ itemId, role: "agent", phase: "final_answer", text: answer }] }]);
   const { url } = await server.start();
+  const iconBundle = process.env.HUB520_LUCIDE_FIXTURE
+    ? await readFile(process.env.HUB520_LUCIDE_FIXTURE) : null;
   await writeFile(readyFile, [
     '<button id="choice">Toggle</button> <output id="series">A</output> <output id="boundary"></output>',
     '<button type="button" id="navigate">Probe navigation</button>',
+    iconBundle ? '<span id="icon-slot"><i data-lucide="sun"></i></span>' : "",
     '<script>const series=document.getElementById("series");',
-    'document.getElementById("choice").onclick=()=>{series.textContent=series.textContent==="A"?"B":"A";};',
+    'document.getElementById("choice").onclick=()=>{series.textContent=series.textContent==="A"?"B":"A";'
+      + (iconBundle ? 'const icon=document.createElement("i");icon.dataset.lucide="moon";'
+        + 'document.getElementById("icon-slot").replaceChildren(icon);lucide.createIcons();' : "")
+      + '};',
     'let canReadParent=false;try{canReadParent=!!parent.document.body;}catch{}',
     'parent.postMessage({type:"agenthub:runtime-published"},"*");',
     'const boundary=document.getElementById("boundary");',
@@ -112,6 +118,11 @@ test("chat renders a Codex visualization in place and reopens it from SQLite his
   browser = await launchBrowser();
   for (const width of [1280, 390]) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, hasTouch: width < 600 });
+    if (iconBundle) {
+      await page.route("https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js", (route) => route.fulfill({
+        contentType: "text/javascript", headers: { "access-control-allow-origin": "*" }, body: iconBundle,
+      }));
+    }
     const errors = [];
     const consoleMessages = [];
     const unexpectedRequests = [];
@@ -135,8 +146,13 @@ test("chat renders a Codex visualization in place and reopens it from SQLite his
       const chart = body.locator("hub-message-visualization.is-wide");
       await chart.scrollIntoViewIfNeeded();
       const frame = chart.frameLocator("iframe").frameLocator("iframe");
+      if (iconBundle) await frame.locator("#icon-slot svg.lucide-sun").waitFor({ timeout: 8_000 });
       await frame.getByRole("button", { name: "Toggle" }).click({ timeout: 8_000 });
       assert.equal(await frame.locator("#series").textContent(), "B", JSON.stringify(consoleMessages));
+      if (iconBundle) {
+        await frame.locator("#icon-slot svg.lucide-moon").waitFor({ timeout: 8_000 });
+        assert.equal(await frame.locator("#icon-slot svg.lucide-sun").count(), 0);
+      }
       assert.equal(await frame.locator("#boundary").textContent(), "isolated");
       assert.equal(await chart.locator("iframe").getAttribute("sandbox"), "allow-scripts");
       assert.equal(await chart.locator("iframe").getAttribute("title"), "Interactive chart");
