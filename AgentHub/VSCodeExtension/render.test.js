@@ -560,6 +560,48 @@ test("VS Code on an IPv6 Hub serves only the packaged frame and keeps control on
   await assert.rejects(fetch(frameUrl), /fetch failed/u);
 });
 
+test("a disposed VS Code provider leaves an in-flight panel render unpublished", async () => {
+  const harness = panelHarness();
+  const vscode = webviewVscode([]);
+  loadSharedWebview(vscode);
+  const { WorkLogViewProvider } = loadExtension(vscode);
+  const context = providerContext();
+  context.extensionUri = vscodeUri(__dirname);
+  const provider = new WorkLogViewProvider(context);
+  provider.panel = harness.panel;
+  const enteringAddress = deferred();
+  const address = deferred();
+  provider.currentBridge = async () => ({
+    runtimeReleaseRoot: async () => path.resolve(__dirname, ".."),
+    attachmentDirectory: () => path.join(os.tmpdir(), "synthetic-attachment-root"),
+    localWebAddress: () => { enteringAddress.resolve(); return address.promise; },
+  });
+  const initialHtml = harness.panel.webview.html;
+  const render = provider.renderPanelShell();
+  await enteringAddress.promise;
+  provider.dispose();
+  address.resolve("http://[::1]:8787");
+  await render;
+  assert.equal(provider.panelVisualizationFrame, null);
+  assert.equal(harness.panel.webview.html, initialHtml);
+});
+
+test("cancelling panel preparation closes its real IPv4 frame listener", async () => {
+  const { serveVisualizationFrame } = loadSharedWebview(webviewVscode([]));
+  const preparation = new AbortController();
+  const frame = await serveVisualizationFrame(vscodeUri(path.resolve(__dirname, "..")), preparation.signal);
+  const url = new URL("/visualization-frame.html", frame.address);
+  try {
+    const response = await fetch(url);
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+    preparation.abort();
+    await assert.rejects(fetch(url), /fetch failed/u);
+  } finally {
+    frame.close();
+  }
+});
+
 test("VS Code forces a retained journal refresh when its panel becomes visible", async () => {
   const harness = panelHarness();
   const vscode = {

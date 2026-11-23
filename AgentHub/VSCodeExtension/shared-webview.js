@@ -39,9 +39,10 @@ function resource(webview, uri) {
   return uri ? String(webview.asWebviewUri(uri)) : "";
 }
 
-async function serveVisualizationFrame(runtimeUri) {
+async function serveVisualizationFrame(runtimeUri, signal) {
   const uri = vscode.Uri.joinPath(runtimeUri, ...ASSET_ROOT, "visualization-frame.html");
   const body = await vscode.workspace.fs.readFile(uri);
+  signal.throwIfAborted();
   const server = createServer((request, response) => {
     if (request.url !== "/visualization-frame.html" || !["GET", "HEAD"].includes(request.method)) {
       response.writeHead(404).end();
@@ -55,10 +56,18 @@ async function serveVisualizationFrame(runtimeUri) {
       "X-Content-Type-Options": "nosniff",
     }).end(request.method === "HEAD" ? undefined : body);
   });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
+  let abortListening;
+  try {
+    await new Promise((resolve, reject) => {
+      abortListening = () => reject(signal.reason);
+      signal.addEventListener("abort", abortListening, { once: true });
+      server.once("error", reject);
+      server.listen({ port: 0, host: "127.0.0.1", signal }, resolve);
+    });
+    signal.throwIfAborted();
+  } finally {
+    signal.removeEventListener("abort", abortListening);
+  }
   server.unref();
   return {
     address: `http://127.0.0.1:${server.address().port}`,
