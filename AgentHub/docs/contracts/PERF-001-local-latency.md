@@ -1,5 +1,19 @@
 # PERF-001 — Local command latency
 
+Deferred Codex admission reads the existing rollout activity evidence on a
+bounded path independent of history backfill and trace pages. A missing source
+can be rediscovered through the normal Thread read. Unavailable evidence or a
+read deadline holds the original command. The exact message ledger reserves
+dispatch before the provider call. Snapshot persistence remains available for
+unowned legacy input. For exact deferred Codex commands the same ledger also
+checkpoints the admitted run and the provider request on the reserved command.
+Restart overlays only the matching active checkpoint and retains newer run
+state already present in the full snapshot. Confirmed provider and terminal
+processing continue through their existing owners. Original-command timing
+separates rollout lookup, worker queue/read, provider
+fallback and exact ledger preparation, SQLite transaction and commit. Timing
+carries only fixed phases, outcomes and scalar measurements.
+
 Journal title writes distinguish row preparation, BEGIN acquisition and the
 actual SQL transaction from local queue wait and contention retries. Existing
 usage-worker spans retain fixed numeric first/last transaction UTC intervals,

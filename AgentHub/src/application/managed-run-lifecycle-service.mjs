@@ -213,7 +213,10 @@ export class ManagedRunLifecycleService {
       admissionOperation = "save-state";
       await tracedAdmissionStep(d.commandTrace, {
         commandId, transport, stage: "admission-state-save",
-      }, () => d.saveState());
+      }, () => {
+        if (authorize && deferredInput && d.checkpointDeferredRun?.(run, deferredInput)) return;
+        return d.saveState();
+      });
     } catch (error) {
       admissionSpan?.finish({
         outcome: "failed",

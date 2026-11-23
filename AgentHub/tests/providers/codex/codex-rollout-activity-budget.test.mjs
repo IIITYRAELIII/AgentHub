@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  readCodexAdmissionActivity,
   parseCodexRolloutActivity,
   readCodexRolloutActivity,
 } from "../../../src/providers/codex/codex-rollout-activity.mjs";
@@ -107,4 +108,41 @@ test("Codex rollout activity bounds one oversized reasoning and tool group", () 
   assert.equal(group.activities.length, 128);
   assert.equal(group.omittedActivities, 872);
   assert.ok(Buffer.byteLength(JSON.stringify(group), "utf8") <= 512 * 1024);
+});
+
+test("admission worker reads only the activity tail and retains exact active turn evidence", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-activity-admission-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const rollout = path.join(root, "large.jsonl");
+  const active = path.join(root, "active.jsonl");
+  const empty = path.join(root, "empty.jsonl");
+  const stamp = new Date().toISOString();
+  const session = JSON.stringify({ timestamp: stamp, type: "session_meta", payload: { id: "fixture" } });
+  const event = (type, extra = {}) => JSON.stringify({
+    timestamp: stamp, type: "event_msg", payload: { type, turn_id: "active-exact-turn", ...extra },
+  });
+  const tail = [event("task_started"), event("user_message", { message: "fixture" })].join("\n") + "\n";
+  const inert = JSON.stringify({ timestamp: stamp, type: "inert", payload: "x".repeat(8192) }) + "\n";
+  await Promise.all([
+    writeFile(rollout, session + "\n" + inert.repeat(2300) + tail),
+    writeFile(active, session + "\n" + tail),
+    writeFile(empty, ""),
+  ]);
+  const history = readCodexRolloutActivity(rollout);
+  const [large, independent, unavailable] = await Promise.all([
+    readCodexAdmissionActivity(rollout),
+    readCodexAdmissionActivity(active),
+    readCodexAdmissionActivity(empty),
+  ]);
+  const original = await history;
+  assert.equal(unavailable.activity.sourceUnavailable, true);
+  assert.deepEqual(large.activity.activeTurnIds, original.activeTurnIds);
+  assert.deepEqual(large.activity.activeTurnIds, ["active-exact-turn"]);
+  assert.equal(large.activity.running, true);
+  assert.deepEqual(independent.activity.activeTurnIds, ["active-exact-turn"]);
+  assert.ok(large.activity.scanBytes <= 16 * 1024 * 1024);
+  assert.ok(Number.isFinite(large.timing.queueWaitMs));
+  assert.ok(Number.isFinite(large.timing.readMs));
+  await appendFile(rollout, event("task_complete") + "\n");
+  assert.equal((await readCodexAdmissionActivity(rollout)).activity.running, false);
 });

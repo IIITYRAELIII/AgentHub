@@ -124,6 +124,7 @@ export class DeferredInputController {
     steer = async () => null,
     start,
     persist,
+    persistDispatch = persist,
     updateMessage,
     pendingKeyboard,
     notifyReturned,
@@ -157,6 +158,7 @@ export class DeferredInputController {
     this.steer = steer;
     this.start = start;
     this.persist = persist;
+    this.persistDispatch = persistDispatch;
     this.updateMessage = updateMessage;
     this.pendingKeyboard = pendingKeyboard;
     this.notifyReturned = notifyReturned;
@@ -362,7 +364,7 @@ export class DeferredInputController {
           }
           if (intentionallyPaused(item)) return;
         }
-        const occupancy = await this.occupancy(item);
+        const occupancy = await this.occupancy(item, this.admissionTrace(item));
         if (intentionallyPaused(item)) return;
         if (streamMessage(item)) {
           const run = occupancy?.run;
@@ -459,7 +461,8 @@ export class DeferredInputController {
         await this.persist();
       }
       const priorWaitReason = item.waitReason;
-      const blocked = await this.traceAdmissionStep(item, "deferred-eligibility", () => this.isBlocked(item));
+      const trace = this.admissionTrace(item);
+      const blocked = await trace("deferred-eligibility", () => this.isBlocked(item, trace));
       if (intentionallyPaused(item)) return;
       if (blocked) {
         if (priorWaitReason !== item.waitReason) {
@@ -475,13 +478,7 @@ export class DeferredInputController {
         this.schedule(item, this.retryDelay(item.blockedChecks));
         return;
       }
-      delete item.blockedChecks;
-      // Keep the input durable while launch is in progress, but expose the
-      // transition so clients no longer render it as waiting in the queue.
-      delete item.laneReleased;
-      item.dispatchingAt = new Date(this.now()).toISOString();
-      this.onStateChange(item, "dispatching");
-      await this.traceAdmissionStep(item, "deferred-dispatch-persist", () => this.persist());
+      await this.reserveDispatch(item);
       // A manual pause may arrive while eligibility or its durable save waits.
       // No provider call has happened yet, so leave the same item cancellable.
       if (intentionallyPaused(item)) {
@@ -597,7 +594,26 @@ export class DeferredInputController {
     }
   }
 
-  async traceAdmissionStep(item, stage, operation) {
+  admissionTrace(item) {
+    return (stage, operation, metadata) => this.traceAdmissionStep(item, stage, operation, metadata);
+  }
+
+  async reserveDispatch(item) {
+    const beforeDispatch = Object.getOwnPropertyDescriptors(item);
+    delete item.blockedChecks;
+    delete item.laneReleased;
+    item.dispatchingAt = new Date(this.now()).toISOString();
+    this.onStateChange(item, "dispatching");
+    try {
+      await this.traceAdmissionStep(item, "deferred-dispatch-persist", () => this.persistDispatch(item));
+    } catch (error) {
+      restoreWaitState(item, beforeDispatch);
+      this.onStateChange(item, "queued");
+      throw error;
+    }
+  }
+
+  async traceAdmissionStep(item, stage, operation, metadata) {
     let span;
     try {
       span = this.commandTrace?.startBestEffortSpan?.({
@@ -616,14 +632,17 @@ export class DeferredInputController {
       const result = await operation();
       const createdAt = Date.parse(String(item.createdAt ?? ""));
       const waitReason = stage === "deferred-steer-barrier" ? result : item.waitReason;
+      let extra = {};
+      try { extra = metadata?.(result) ?? {}; } catch { /* Telemetry is best-effort. */ }
       finish("succeeded", null, ["deferred-eligibility", "deferred-steer-barrier"].includes(stage) ? {
         blocked: Boolean(result),
         waitReason: /^[a-z][a-z0-9-]{0,63}$/u.test(String(waitReason)) ? waitReason : null,
         queueAgeMs: Number.isFinite(createdAt) ? Math.max(0, this.now() - createdAt) : null,
-      } : {});
+      } : extra);
       return result;
     } catch (error) {
-      finish("failed", error);
+      const timing = error?.timing;
+      finish("failed", error, timing ? { queueWaitMs: timing.queueWaitMs, readMs: timing.readMs } : {});
       throw error;
     }
   }
@@ -677,16 +696,7 @@ export class DeferredInputController {
       this.schedule(item, this.retryDelay(item.blockedChecks));
       return;
     }
-    delete item.blockedChecks;
-    const beforeDispatch = Object.getOwnPropertyDescriptors(item);
-    item.dispatchingAt = new Date(this.now()).toISOString();
-    this.onStateChange(item, "dispatching");
-    try { await this.traceAdmissionStep(item, "deferred-dispatch-persist", () => this.persist()); }
-    catch (error) {
-      restoreWaitState(item, beforeDispatch);
-      this.onStateChange(item, "queued");
-      throw error;
-    }
+    await this.reserveDispatch(item);
     if (intentionallyPaused(item)) {
       delete item.dispatchingAt;
       await this.persist();
