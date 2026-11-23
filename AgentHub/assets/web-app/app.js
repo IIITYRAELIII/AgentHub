@@ -1482,9 +1482,10 @@ function refreshTaskDurations() {
 }
 
 let toastTimer = 0;
-function showToast(message, action = null) {
+function showToast(message, action = null, { persistent = false } = {}) {
   if (!message) return;
-  toast.replaceChildren(el("span", { text: message }));
+  const label = el("span", { text: message });
+  toast.replaceChildren(label);
   if (action?.label && typeof action.onClick === "function") {
     const button = el("button", { type: "button", text: action.label });
     button.addEventListener("click", () => {
@@ -1498,6 +1499,13 @@ function showToast(message, action = null) {
   toast.hidden = false;
   toast.classList.add("visible");
   clearTimeout(toastTimer);
+  if (persistent) {
+    return () => {
+      if (label.parentNode !== toast) return;
+      toast.hidden = true;
+      toast.classList.remove("visible");
+    };
+  }
   toastTimer = window.setTimeout(() => {
     toast.classList.remove("visible");
     toastTimer = window.setTimeout(() => { toast.hidden = true; }, 220);
@@ -1928,7 +1936,7 @@ function removeComposerTask(taskId) {
   composerDraftReconciliation.remove(id);
   discardAttachmentPreviews(id);
   attachmentOperationSequences.delete(id);
-  annotationOperationSequences.delete(id);
+  clearPendingAnnotation(id);
 }
 
 function captureComposerTaskOperation(taskId = state.selectedId) {
@@ -1956,7 +1964,7 @@ function advanceComposerAsyncOperationFence(taskId) {
   const id = String(taskId ?? "").trim();
   if (!id) return;
   attachmentOperationSequences.set(id, (attachmentOperationSequences.get(id) ?? 0) + 1);
-  annotationOperationSequences.set(id, (annotationOperationSequences.get(id) ?? 0) + 1);
+  clearPendingAnnotation(id);
   discardAttachmentPreviews(id);
 }
 
@@ -6038,6 +6046,7 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
     streamTabs.hidden = true;
     streamTabs.replaceChildren();
     chatPane.hidden = true;
+    if (activeChatId) clearPendingAnnotation(activeChatId);
     activeChatId = null;
     activeChatHistoryBinding = "";
     renderedStreamChatDeckKey = "";
@@ -6066,6 +6075,9 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
       distance: Math.max(0, chatScroll.scrollHeight - chatScroll.clientHeight - chatScroll.scrollTop),
       pinned: scrollContainerIsNearBottom(chatScroll),
     });
+  }
+  if (activeChatId && (activeChatId !== task.id || activeChatHistoryBinding !== historyBinding)) {
+    clearPendingAnnotation(activeChatId);
   }
   if (taskChanged) chatScrollControllers.get(chatScroll)?.noteUserIntent();
 
@@ -7690,9 +7702,9 @@ function traceReasoningNode(group, identity = null) {
   return node;
 }
 
-function requestTracePage(identity, tracePage) {
+function requestTracePage(identity, tracePage, commandId) {
   const boundIdentity = { ...identity, streamId: identity.streamId || currentTask()?.streamId };
-  return new Promise((resolve, reject) => emit("history:trace-page", { identity: boundIdentity, tracePage, resolve, reject }));
+  return new Promise((resolve, reject) => emit("history:trace-page", { identity: boundIdentity, tracePage, commandId, resolve, reject }));
 }
 
 function traceArchiveNode(identity) {
@@ -9613,7 +9625,7 @@ let annotations = [];
 let pendingAnnotationSelection = null;
 let lastAnnotationSelection = null;
 let lastTouchSelectionAt = 0;
-const annotationOperationSequences = new Map();
+const pendingAnnotationOperations = new Map();
 const TOUCH_CONTEXT_MENU_WINDOW_MS = 3_000;
 
 function currentAnnotations() {
@@ -9629,25 +9641,29 @@ function setAnnotations(next) {
 function renderAnnotations() {
   annotationsBox.replaceChildren();
   annotationsBox.hidden = annotations.length === 0;
-  annotations.forEach((annotation, index) => {
-    annotationsBox.append(el("div", { class: "annotation" }, [
-      el("div", { class: "annotation-content" }, [
-        el("span", { class: "annotation-quote", tabindex: "0", text: annotation.quote }),
-        el("textarea", {
-          class: "annotation-comment",
-          "data-annotation-comment-index": index,
-          rows: 1,
-          placeholder: "Комментарий к этой цитате…",
-          "aria-label": `Комментарий к цитате ${index + 1}`,
-          text: annotation.annotation ?? "",
-        }),
-      ]),
-      el("button", {
-        type: "button", class: "annotation-remove", "data-annotation-index": index,
-        title: "Убрать аннотацию", "aria-label": "Убрать аннотацию", text: "×",
+  annotations.forEach(appendAnnotation);
+}
+
+function appendAnnotation(annotation, index) {
+  const card = el("div", { class: "annotation" }, [
+    el("div", { class: "annotation-content" }, [
+      el("span", { class: "annotation-quote", tabindex: "0", text: annotation.quote }),
+      el("textarea", {
+        class: "annotation-comment",
+        "data-annotation-comment-index": index,
+        rows: 1,
+        placeholder: "Комментарий к этой цитате…",
+        "aria-label": `Комментарий к цитате ${index + 1}`,
+        text: annotation.annotation ?? "",
       }),
-    ]));
-  });
+    ]),
+    el("button", {
+      type: "button", class: "annotation-remove", "data-annotation-index": index,
+      title: "Убрать аннотацию", "aria-label": "Убрать аннотацию", text: "×",
+    }),
+  ]);
+  annotationsBox.append(card);
+  return card;
 }
 
 annotationsBox.addEventListener("click", (event) => {
@@ -9824,70 +9840,75 @@ function sourceMessageForSelection(selection) {
   return { message: group ? { ...messages[index], ...(groupIdentity ? { itemId: groupIdentity.itemId } : {}), activityGroups: [group] } : messages[index], root: renderedRoot };
 }
 
-function responseAnnotationRefusal(decision) {
+function responseAnnotationRefusal(decision, commandId) {
   try {
-    window.AgentHubCommandTrace?.record("ui-interaction", "annotation-source", 0, undefined,
+    window.AgentHubCommandTrace?.record("ui-interaction", "annotation-source", 0, commandId,
       { decision }, Date.now(), "failed");
   } catch { /* A bounded content-free diagnostic cannot affect the refusal. */ }
   return null;
 }
 
-async function responseAnnotationFromSelection(selection) {
+async function responseAnnotationFromSelection(selection, commandId) {
+  const refuse = (decision) => responseAnnotationRefusal(decision, commandId);
   const quote = normalizedAnnotationQuote(selection?.quote);
-  const projection = sourceMessageForSelection(selection);
+  const captured = selection?.traceSource;
+  if (captured && captured.taskId !== state.selectedId) return refuse("source-replaced");
+  const projection = captured?.projection ?? sourceMessageForSelection(selection);
   const identity = responseAnnotationSourceIdentity(projection?.message);
-  const locator = responseAnnotationSurfaceLocator(selection?.message, selection?.surface);
+  const locator = captured?.locator ?? responseAnnotationSurfaceLocator(selection?.message, selection?.surface);
   const start = Number(selection?.offsets?.start);
   const end = Number(selection?.offsets?.end);
-  if (!quote) return responseAnnotationRefusal("empty-selection");
-  if (!projection) return responseAnnotationRefusal("source-unavailable");
-  if (!identity) return responseAnnotationRefusal("item-identity-unavailable");
-  if (!locator) return responseAnnotationRefusal("surface-unavailable");
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return responseAnnotationRefusal("invalid-range");
+  if (!quote) return refuse("empty-selection");
+  if (!projection) return refuse("source-unavailable");
+  if (!identity) return refuse("item-identity-unavailable");
+  if (!locator) return refuse("surface-unavailable");
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return refuse("invalid-range");
   let sourceMessage = projection.message;
   let sourceSurface = selection.surface;
   const selectedTaskId = state.selectedId;
-  const selectedSurfaceText = String(sourceSurface.textContent ?? "");
-  // Streaming may replace the trace DOM while the exact source page is read.
-  // Rebind only the same unique provider item and unchanged rendered group.
+  const selectedSurfaceText = captured?.text ?? String(sourceSurface.textContent ?? "");
+  const selectedNativeItemId = captured?.nativeItemId ?? traceDetailSources.get(sourceSurface)?.sourceItemId;
+  const selectedPrefix = selectedSurfaceText.trimEnd();
+  // An exact native group can keep growing or move into collapsed history.
+  // Verify ownership and the captured rendering even if its DOM was replaced.
   const currentTraceSelection = () => {
     if (state.selectedId !== selectedTaskId) return null;
-    const messages = selectedResponseAnnotationSourceMessages().flatMap((message, index) => (
-      responseAnnotationSourceIdentity(message, { traceGroupId: locator.traceGroupId, itemId: identity.itemId })?.messageKey === identity.messageKey
-        ? [{ message, index }] : []
-    ));
-    if (messages.length !== 1) return null;
-    const root = renderedResponseAnnotationSourceRoot(MessageView.messageKey(messages[0].message, messages[0].index));
-    if (!root?.isConnected) return null;
-    const surfaces = Array.from(root.querySelectorAll(".turn-trace-reasoning"))
-      .filter((node) => node.dataset.traceGroupId === locator.traceGroupId);
-    if (!surfaces.length || surfaces.some((node) => node.textContent !== selectedSurfaceText)) return null;
-    return messages[0].message;
+    const matches = selectedResponseAnnotationSourceMessages().flatMap((message) => {
+      if (responseAnnotationSourceIdentity(message, {
+        traceGroupId: locator.traceGroupId, itemId: identity.itemId,
+      })?.messageKey !== identity.messageKey) return [];
+      const groups = (message.activityGroups ?? []).filter((group) => group.id === locator.traceGroupId);
+      if (groups.length !== 1 || (selectedNativeItemId && groups[0].sourceItemId !== selectedNativeItemId)) return [];
+      return [{ message, group: groups[0] }];
+    });
+    if (matches.length !== 1) return null;
+    const { message, group } = matches[0];
+    const rendered = traceReasoningNode(traceGroupWithCitationContext(group, message), message);
+    return rendered.textContent.startsWith(selectedPrefix) ? message : null;
   };
   if (locator.traceGroupId && identity.provider === "codex") {
     // Durable history is a bounded preview, including legacy rows with no
     // truncation marker. Bind new exact-group quotes to the source, not that copy.
     let page;
-    try { page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId }); }
-    catch { return responseAnnotationRefusal("source-read-failed"); }
+    try { page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId }, commandId); }
+    catch { return refuse("source-read-failed"); }
     const current = currentTraceSelection();
-    if (!current) return responseAnnotationRefusal("source-replaced");
-    if (page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return responseAnnotationRefusal("source-group-mismatch");
-    const selectedNativeItemId = traceDetailSources.get(selection.surface)?.sourceItemId;
-    if (selectedNativeItemId && page.groups[0].sourceItemId !== selectedNativeItemId) return responseAnnotationRefusal("source-item-mismatch");
+    if (!current) return refuse("source-replaced");
+    if (page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return refuse("source-group-mismatch");
+    if (selectedNativeItemId && page.groups[0].sourceItemId !== selectedNativeItemId) return refuse("source-item-mismatch");
     const fullGroup = traceGroupWithCitationContext(page.groups[0], current);
     sourceMessage = { ...current, activityGroups: [fullGroup] };
     sourceSurface = traceReasoningNode(fullGroup, sourceMessage);
     // A cut Markdown construct may render differently. Do not guess a new range.
-    if (!sourceSurface.textContent.startsWith(selectedSurfaceText.trimEnd())) return responseAnnotationRefusal("rendered-prefix-mismatch");
-    if (domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return responseAnnotationRefusal("selected-range-mismatch");
+    if (!sourceSurface.textContent.startsWith(selectedPrefix)) return refuse("rendered-prefix-mismatch");
+    if (domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return refuse("selected-range-mismatch");
   }
   const [contentHash, surfaceHash, selectionHash] = await Promise.all([
     responseAnnotationSha256(responseAnnotationSourceContent(sourceMessage, { ...locator, itemId: identity.itemId })),
     responseAnnotationSha256(sourceSurface.textContent),
     responseAnnotationSha256(quote),
   ]);
-  if (locator.traceGroupId && identity.provider === "codex" && !currentTraceSelection()) return responseAnnotationRefusal("source-replaced");
+  if (locator.traceGroupId && identity.provider === "codex" && !currentTraceSelection()) return refuse("source-replaced");
   const source = normalizedResponseAnnotationSource({
     version: 1,
     ...identity,
@@ -9898,7 +9919,7 @@ async function responseAnnotationFromSelection(selection) {
     surfaceHash,
     selectionHash,
   });
-  return source ? { quote, annotation: "", source } : responseAnnotationRefusal("hash-or-locator-unavailable");
+  return source ? { quote, annotation: "", source } : refuse("hash-or-locator-unavailable");
 }
 
 function duplicateResponseAnnotation(left, right) {
@@ -9908,50 +9929,79 @@ function duplicateResponseAnnotation(left, right) {
   return !leftSource && !rightSource && left?.quote === right?.quote;
 }
 
+function clearPendingAnnotation(taskId) {
+  const operation = pendingAnnotationOperations.get(taskId);
+  pendingAnnotationOperations.delete(taskId);
+  operation?.dismiss();
+}
+
 async function addAnnotation(selection) {
-  const quote = normalizedAnnotationQuote(selection?.quote);
-  if (!quote) {
+  if (!normalizedAnnotationQuote(selection?.quote)) {
     showToast("Выделите фрагмент сообщения или рассуждения.");
     return false;
   }
   const operation = captureComposerTaskOperation();
-  if (!operation) return false;
-  const operationSequence = (annotationOperationSequences.get(operation.taskId) ?? 0) + 1;
-  annotationOperationSequences.set(operation.taskId, operationSequence);
+  if (!operation || pendingAnnotationOperations.has(operation.taskId)) return false;
+  const { taskId } = operation;
+  const trace = window.AgentHubCommandTrace;
+  const commandId = trace.currentId() || trace.newId();
+  const started = trace.now();
+  const isSelectedOperation = () => state.selectedId === taskId
+    && composerTaskOperationCurrent(operation, { allowDraftEdits: true });
+  const pendingMessage = "Проверяем источник цитаты…";
+  operation.dismiss = showToast(pendingMessage, null, { persistent: true });
+  pendingAnnotationOperations.set(taskId, operation);
+  const isPending = () => pendingAnnotationOperations.get(taskId) === operation;
+  trace.afterPaint("ui-render", "annotation-pending", started, commandId, {}, () => ({
+    outcome: !toast.hidden && toast.textContent === pendingMessage ? "succeeded" : "cancelled",
+  }), () => isPending() && isSelectedOperation());
+
   let next;
   try {
-    const validate = () => responseAnnotationFromSelection(selection);
-    next = window.AgentHubCommandTrace
-      ? await window.AgentHubCommandTrace.measure("ui-interaction", "annotation-source", validate,
-        undefined, result => ({ outcome: result ? "succeeded" : "failed" }))
-      : await validate();
+    next = await trace.measure("ui-interaction", "annotation-source",
+      () => responseAnnotationFromSelection(selection, commandId), commandId,
+      result => ({ outcome: result ? "succeeded" : "failed" }));
   } catch {
-    next = responseAnnotationRefusal("source-error");
+    next = responseAnnotationRefusal("source-error", commandId);
+  }
+  const owned = isPending();
+  if (owned) clearPendingAnnotation(taskId);
+  if (!owned || !isSelectedOperation()) {
+    trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId,
+      { decision: "superseded" }, Date.now(), "cancelled");
+    return false;
   }
   if (!next) {
     showToast("Не удалось подтвердить источник выделенного фрагмента.");
+    trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId,
+      { decision: "source-refused" }, Date.now(), "failed");
     return false;
   }
-  if (annotationOperationSequences.get(operation.taskId) !== operationSequence
-    || !composerTaskOperationCurrent(operation)) return false;
-  const current = composerDraftSnapshot(operation.taskId);
+  const current = composerDraftSnapshot(taskId);
   if (current.annotations.some((annotation) => duplicateResponseAnnotation(annotation, next))) {
     showToast("Этот фрагмент уже добавлен.");
+    trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId,
+      { decision: "already-added" }, Date.now(), "cancelled");
     return false;
   }
+  const draftUnedited = composerTaskOperationCurrent(operation);
   const nextAnnotations = [...current.annotations, next];
-  composerDraftReconciliation.save(operation.taskId, {
-    ...current,
-    annotations: nextAnnotations,
-  }, { userEdited: true });
-  if (state.selectedId === operation.taskId) {
-    restoreDraft();
+  composerDraftReconciliation.save(taskId, { ...current, annotations: nextAnnotations }, { userEdited: true });
+  trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId);
+
+  // Keep the active input and caret intact if the user edited while waiting.
+  annotations = nextAnnotations;
+  annotationsBox.hidden = false;
+  const card = appendAnnotation(next, nextAnnotations.length - 1);
+  updateSendState();
+  if (draftUnedited) {
     lastAnnotationSelection = null;
     window.getSelection()?.removeAllRanges();
-    annotationsBox.querySelector(
-      `[data-annotation-comment-index="${nextAnnotations.length - 1}"]`,
-    )?.focus();
+    card.querySelector(".annotation-comment")?.focus();
   }
+  trace.afterPaint("ui-render", "annotation-card", started, commandId, {}, () => ({
+    outcome: card.getClientRects().length && !card.closest("[hidden]") ? "succeeded" : "failed",
+  }), () => isSelectedOperation() && card.isConnected);
   return true;
 }
 
@@ -9961,9 +10011,16 @@ function closeAnnotationContextMenu() {
 }
 
 function openAnnotationContextMenu(event, selection) {
+  const group = traceDetailSources.get(selection.surface);
+  const projection = group ? sourceMessageForSelection(selection) : null;
+  const locator = projection && responseAnnotationSurfaceLocator(selection.message, selection.surface);
   pendingAnnotationSelection = {
     ...selection,
     clipboardText: selectedMessageClipboard(selection)?.text ?? selection.quote,
+    ...(locator?.traceGroupId && projection.message.provider === "codex" ? {
+      traceSource: { taskId: state.selectedId, projection, locator, nativeItemId: group.sourceItemId,
+        text: String(selection.surface.textContent ?? "") },
+    } : {}),
   };
   annotationContextMenu.hidden = false;
   const menuRect = annotationContextMenu.getBoundingClientRect();

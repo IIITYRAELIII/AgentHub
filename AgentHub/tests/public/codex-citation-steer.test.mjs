@@ -12,7 +12,7 @@ import { createDesktopSnapshotFactory } from "../../src/interfaces/desktop/deskt
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
 import { createDesktopTaskHistoryFactory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
 import { mergeActiveTaskHistory, mergeCompletedTaskHistory } from "../../src/application/task-history.mjs";
-import { codexRolloutHistory } from "../../src/interfaces/telegram/task-view-controller.mjs";
+import { codexRolloutHistory, TaskViewController } from "../../src/interfaces/telegram/task-view-controller.mjs";
 import { row, message, start, turnId, observer } from "../providers/codex/codex-rollout-answer.fixture.mjs";
 import { applyFixtureSnapshot, launchBrowser, openFixture, snapshot } from "./composer-production.fixture.mjs";
 
@@ -36,6 +36,142 @@ function liveSnapshot(run, version) {
 const historyFor = activity => ({ provider: "codex", threadId: "thread-a", streamId: "stream-a",
   start: 0, end: 1, total: 1, messageTotal: 1, version: "citation-context",
   items: codexRolloutHistory(activity) });
+
+test("real quote clicks acknowledge immediately and paint the exact card after live completion", { timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-live-quote-"));
+  const file = path.join(directory, "rollout.jsonl");
+  const browser = await launchBrowser();
+  try {
+    const quote = "A native 🦊 fragment.";
+    const native = message("quote-item", "commentary", quote);
+    const activity = parseCodexRolloutActivity(start() + native);
+    const service = observer(async () => activity);
+    const observed = await service.read(binding);
+    const run = createObservedTaskRun({ ...binding, userMessages: observed.userMessages }, observed);
+    service.applyObserved(run, observed);
+    const group = activity.activityGroups[turnId][0];
+    const full = quote + " More reasoning.";
+    await writeFile(file, row("session_meta", { id: "01a0ea85-db2c-7bd3-bfad-2634824c6069" })
+      + start() + message("quote-item", "commentary", full));
+
+    const owner = new TaskViewController({
+      findCodexRolloutPath: async () => file,
+      readCodexTracePage: readCodexTracePageInWorker,
+    });
+    const serverEvents = [];
+    const requests = [];
+    const gate = Promise.withResolvers();
+    const api = createDesktopTaskHistoryFactory({
+      selection: { activeProvider: () => binding.provider, threadId: () => binding.threadId, chatId: () => 42 },
+      catalog: { entries: () => [{ ...binding, title: "Quote source" }] },
+      historyReader: { refresh: (source, options) => owner.readHistory(source, options) },
+      commandTrace: { recordBestEffort: event => serverEvents.push(event) },
+    });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 880 } });
+    page.setDefaultTimeout(5_000);
+    const errors = await openFixture(page, {
+      fixtureSnapshot: liveSnapshot(run, "quote-live"), fixtureHistory: historyFor(activity), localWeb: true,
+      tracePageReader: async params => {
+        requests.push(params);
+        if (requests.length === 1) await gate.promise;
+        return api(params, { source: "test-fixture" });
+      },
+    });
+    await page.evaluate(() => {
+      window.AgentHub.showSelectedTask();
+      window.__quoteTraceEvents = [];
+      window.AgentHubCommandTrace.bindReporter(async ({ events }) => window.__quoteTraceEvents.push(...events));
+    });
+    const live = page.locator("[data-chat-live] .turn-trace-reasoning").first();
+    const menu = page.locator('[data-action="annotate-selection"]');
+    const pending = page.getByText("Проверяем источник цитаты…", { exact: true });
+    const card = page.locator("[data-annotations] .annotation-quote");
+    const input = page.locator("[data-composer-input]");
+    async function openMenu(surface, length) {
+      await surface.waitFor({ state: "visible" });
+      await surface.evaluate((node, end) => {
+        const range = window.AgentHubMessageDisclosure.domRangeFromOffsets(node, 0, end ?? node.textContent.length);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+      }, length);
+      await surface.click({ button: "right", position: { x: 10, y: 8 } });
+      await menu.waitFor({ state: "visible" });
+    }
+
+    await input.fill("Draft before quote");
+    await openMenu(live, quote.length);
+    await menu.click();
+    await pending.waitFor();
+    assert.equal(await card.count(), 0);
+    await openMenu(live, quote.length);
+    await menu.click();
+    assert.equal(requests.length, 1, "a repeated click while pending must share the current UI action");
+
+    const completed = { id: "final-source", role: "agent", provider: "codex", threadId: binding.threadId,
+      turnId, itemId: "native-final", text: "Final response.", activityGroups: [{ ...group, reasoning: full }] };
+    await page.evaluate(({ completed, group }) => {
+      window.AgentHub.setLive("stream-a", { ...completed, activityGroups: [{ ...group, reasoning: group.reasoning + " More reasoning." }] });
+    }, { completed, group });
+    await input.fill("Draft edited while waiting");
+    await input.press("Home");
+    const beforeCursor = await input.evaluate(node => node.selectionStart);
+    await page.evaluate(completed => {
+      window.AgentHub.setMessages("stream-a", [completed]);
+      window.AgentHub.setLive("stream-a", null);
+    }, completed);
+    gate.resolve();
+    await card.waitFor();
+    await pending.waitFor({ state: "hidden" });
+    assert.equal(await card.textContent(), quote);
+    assert.equal(await input.inputValue(), "Draft edited while waiting");
+    assert.deepEqual(await input.evaluate(node => [document.activeElement === node, node.selectionStart]), [true, beforeCursor]);
+    const saved = await page.evaluate(() => composerDraftState("stream-a").annotations[0].source);
+    assert.deepEqual([saved.provider, saved.threadId, saved.turnId, saved.itemId, saved.traceGroupId, saved.start, saved.end],
+      ["codex", binding.threadId, turnId, group.sourceItemId, group.id, 0, quote.length]);
+    for (const hash of [saved.contentHash, saved.surfaceHash, saved.selectionHash]) assert.match(hash, /^sha256:[a-f0-9]{64}$/u);
+
+    const commandId = requests[0].clientTraceId;
+    assert.match(commandId, /^[a-f0-9-]{36}$/u);
+    assert.deepEqual(serverEvents.map(event => event.stage), ["trace-history-binding", "trace-source-locate",
+      "trace-worker-wait", "trace-source-read", "trace-history-presentation"]);
+    assert.ok(serverEvents.every(event => event.commandId === commandId && event.outcome === "succeeded"
+      && Number.isFinite(event.monotonicDurationMs)));
+    const clientEvents = await page.evaluate(async id => {
+      for (let i = 0; i < 30; i += 1) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        await window.AgentHubCommandTrace.flush();
+        if (window.__quoteTraceEvents.some(event => event.commandId === id && event.metadata?.action === "annotation-card"
+          && event.outcome === "succeeded")) break;
+      }
+      return window.__quoteTraceEvents.filter(event => event.commandId === id);
+    }, commandId);
+    for (const action of ["annotation-pending", "annotation-source", "annotation-draft", "annotation-card"]) {
+      assert.ok(clientEvents.some(event => event.metadata?.action === action && event.outcome === "succeeded"), action);
+    }
+    assert.ok(clientEvents.some(event => event.stage === "client-ack"));
+    assert.doesNotMatch(JSON.stringify({ clientEvents, serverEvents }), /native 🦊 fragment|rollout\.jsonl/u);
+
+    await page.evaluate(({ completed, group }) => window.AgentHub.setLive("stream-a", {
+      ...completed, id: undefined, turnId: "missing-turn", itemId: null, text: "", activityGroups: [group],
+    }), { completed, group });
+    await openMenu(live, quote.length);
+    await menu.click();
+    await page.getByText("Не удалось подтвердить источник выделенного фрагмента.", { exact: true }).waitFor();
+    assert.equal(requests.length, 2);
+    assert.equal(await card.count(), 1);
+
+    await page.evaluate(() => window.AgentHub.setLive("stream-a", null));
+    await openMenu(page.locator('[data-message-id="final-source"] .msg-body'));
+    await menu.click();
+    await card.nth(1).waitFor();
+    assert.equal(await card.nth(1).textContent(), completed.text);
+    assert.equal(requests.length, 2);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("same-turn steer B cannot replace commentary A before or after SQLite reload", { timeout: 35_000 }, async (t) => {
   const first = start() + user("user-A", "Comment A") + message("answer-A", "commentary", `${marked("Answer A.")}\n\nUntruncated native tail.`);
@@ -62,8 +198,7 @@ test("same-turn steer B cannot replace commentary A before or after SQLite reloa
       page.setDefaultTimeout(3_000);
       try {
         const errors = await openFixture(page, { fixtureSnapshot: liveSnapshot(run, `A-${width}`), fixtureHistory: historyFor(activity),
-          tracePageReader: params => traceApi(params) });
-        await page.goto("https://agent-hub.test/", { waitUntil: "load" });
+          localWeb: true, tracePageReader: params => traceApi(params) });
         await page.evaluate(() => window.AgentHub.showSelectedTask());
         const a = page.locator('[data-chat-live] [data-trace-group-id="commentary:answer-A"] [data-response-citation-index="1"]');
         await a.waitFor(); assert.match(await a.innerText(), /Comment A/u);
@@ -130,8 +265,7 @@ test("same-turn steer B cannot replace commentary A before or after SQLite reloa
         cold.setDefaultTimeout(3_000);
         try {
           const coldErrors = await openFixture(cold, { fixtureHistory: history, fixtureSnapshot: idle,
-            tracePageReader: params => traceApi(params) });
-          await cold.goto("https://agent-hub.test/", { waitUntil: "load" });
+            localWeb: true, tracePageReader: params => traceApi(params) });
           for (const reload of [false, true]) {
             if (reload) await cold.reload({ waitUntil: "load" });
             await cold.evaluate(() => window.AgentHub.showSelectedTask());

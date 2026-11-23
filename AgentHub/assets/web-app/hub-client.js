@@ -3767,10 +3767,11 @@ agentHub.on("bug-report:submit", ({ text, attachments, reportId }) => void (asyn
   }
 })());
 
-agentHub.on("history:trace-page", ({ identity, tracePage, resolve, reject }) => {
+agentHub.on("history:trace-page", ({ identity, tracePage, commandId, resolve, reject }) => {
   void control("task-history", {
     provider: identity.provider, threadId: identity.threadId,
     ...(identity.streamId ? { streamId: identity.streamId } : {}), tracePage,
+    ...(commandId ? { clientTraceId: commandId } : {}),
   }).then((result) => {
     if (result.provider !== identity.provider || result.threadId !== identity.threadId
       || result.tracePage?.turnId !== tracePage.turnId) throw new Error("Trace identity mismatch");
