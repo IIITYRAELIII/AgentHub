@@ -1449,6 +1449,7 @@ function chronologicalMessages(messages) {
     }));
   const turnTimes = new Map();
   const providerStarts = new Map();
+  const rootSubmissions = new Map();
   const providerCompletions = new Map();
   const historyTurnOrders = new Map();
   for (const item of decorated) {
@@ -1461,6 +1462,12 @@ function chronologicalMessages(messages) {
         if (Number.isFinite(startedAt)) {
           const prior = providerStarts.get(turnIdentity);
           providerStarts.set(turnIdentity, prior === undefined || prior === startedAt ? startedAt : null);
+          const submittedAt = Date.parse(message.submittedAt ?? message.time ?? "");
+          if (Number.isFinite(submittedAt)) {
+            const previousSubmission = rootSubmissions.get(turnIdentity);
+            rootSubmissions.set(turnIdentity,
+              previousSubmission === undefined || previousSubmission === submittedAt ? submittedAt : null);
+          }
         }
       }
       if (message.role === "agent" && message.kind !== "subagent") {
@@ -1514,10 +1521,10 @@ function chronologicalMessages(messages) {
     item.orderTime = Number.isFinite(startedAt) ? Math.max(item.time, startedAt) : item.time;
     const startsHere = startedAt === item.orderTime;
     const completesHere = providerCompletions.get(identity) === item.orderTime;
-    // At one clock tick, keep the durable position of a completed turn
-    // ahead of an equally instantaneous turn whose history position is still unknown.
-    item.boundaryOrder = startsHere && completesHere && !historyTurnOrders.has(identity)
-      ? 1 : 2 * (Number(startsHere) - Number(completesHere));
+    item.boundaryOrder = Number(startsHere) - Number(completesHere);
+    item.boundarySubmission = startsHere && completesHere
+      ? rootSubmissions.get(identity) ?? Number.POSITIVE_INFINITY
+      : Number.POSITIVE_INFINITY;
   }
   const ordered = decorated
     .sort((left, right) => {
@@ -1548,6 +1555,11 @@ function chronologicalMessages(messages) {
         && left.message.threadId === right.message.threadId) {
         const boundaryDifference = left.boundaryOrder - right.boundaryOrder;
         if (boundaryDifference) return boundaryDifference;
+        // When both turns start and complete in one tick, one page position
+        // cannot order the pair. Use the same exact root intake evidence on either carrier.
+        if (left.boundarySubmission !== right.boundarySubmission) {
+          return left.boundarySubmission - right.boundarySubmission;
+        }
       }
       const identityOrder = compareChronologyIdentity(
         chronologyEntityIdentity(left.message),

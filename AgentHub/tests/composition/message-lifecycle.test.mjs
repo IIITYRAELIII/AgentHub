@@ -3272,7 +3272,7 @@ test("unaccepted and foreign start evidence cannot move an original message", ()
   assert.equal(ordered.find((item) => item.id === foreign.id).time, null);
 });
 
-test("a next-turn terminal overlay at its start cannot jump an earlier durable final", () => {
+test("equal start and completion keep the same order when either history page arrives first", () => {
   const identity = { provider: "codex", threadId: "same-thread", operationKind: "user-turn" };
   const boundary = "2026-11-23T19:01:05.613Z";
   const previousStart = "2026-11-23T19:00:00.000Z";
@@ -3292,12 +3292,18 @@ test("a next-turn terminal overlay at its start cannot jump an earlier durable f
     turnCompletedAt: boundary, time: boundary };
   const expected = ["old-root", "old-final", "new-root", "new-final"];
   const instantaneousPrevious = [{ ...previous[0], startedAt: boundary }, previous[1]];
+  const previousOverlay = instantaneousPrevious.map(({ historyOrder, ...message }) => message);
+  const nextHistory = [{ ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }];
   for (const input of [
     [...previous, nextRoot, nextFinal],
     [nextFinal, nextRoot, ...previous.toReversed()],
     [...instantaneousPrevious, nextRoot, nextFinal],
     [nextFinal, nextRoot, ...instantaneousPrevious.toReversed()],
-    [...instantaneousPrevious, { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],
+    [...previousOverlay, nextRoot, nextFinal],
+    [...previousOverlay, ...nextHistory],
+    [...nextHistory.toReversed(), ...previousOverlay.toReversed()],
+    [...instantaneousPrevious, ...nextHistory],
+    [{ ...instantaneousPrevious[0], time: boundary }, instantaneousPrevious[1], ...nextHistory],
     [...previous.map(({ historyOrder, ...message }) => message),
       { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],
     [...previous, { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],

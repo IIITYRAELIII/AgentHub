@@ -198,3 +198,53 @@ for (const priorStart of [previousTurnHistory.startedAt, completedAt]) {
     } finally { await browser.close(); }
   });
 }
+
+test("a page for the later equal-time turn preserves the preceding snapshot final", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  const priorTurn = "01a209c2-ea7c-7000-8000-000000000001";
+  const priorReceipt = { ...identity, clientUserMessageId: previousRoot.clientUserMessageId,
+    id: "previous-outgoing", runId: "previous-run", turnId: priorTurn,
+    accepted: true, providerAccepted: true, submittedAt: previousRoot.submittedAt,
+    startedAt: completedAt, completed: true, completedAt, displayText: previousRoot.text };
+  const nextReceipt = { ...priorReceipt, clientUserMessageId: "next-outgoing", id: "next-intake",
+    runId: "next-run", turnId: previousTurn, submittedAt, displayText: sentText };
+  const nextFinal = "Next terminal overlay";
+  try {
+    const page = await browser.newPage({ viewport: { width: 1366, height: 900 }, timezoneId: "UTC" });
+    const initial = snapshot();
+    initial.version = "previous-terminal-only";
+    initial.messageReceipts = [priorReceipt];
+    initial.tasks[0] = { ...initial.tasks[0], lastAnswer: finalText, lastAnswerAt: completedAt,
+      lastAnswerTurnId: priorTurn, lastAnswerRevision: 1 };
+    const errors = await openClientEventFixture(page, { surface: "web", fixtureSnapshot: initial,
+      fixtureHistory: history("empty", []) });
+    await page.getByText(finalText, { exact: true }).waitFor({ state: "visible", timeout: 5_000 });
+    const next = structuredClone(initial);
+    next.version = "both-terminals-before-history";
+    next.messageReceipts.push(nextReceipt);
+    next.tasks[0] = { ...next.tasks[0], lastAnswer: nextFinal, lastAnswerTurnId: previousTurn };
+    await page.evaluate((value) => {
+      window.__agentHubFixture.snapshot = value;
+      return window.__dispatchClientFixture("connection:retry");
+    }, next);
+    await page.getByText(nextFinal, { exact: true }).waitFor({ state: "visible", timeout: 5_000 });
+    const expected = [[priorTurn, "user"], [priorTurn, "agent"], [previousTurn, "user"], [previousTurn, "agent"]];
+    const visibleTurns = () => page.locator('[data-chat-pane] [data-turn-id][data-role]').evaluateAll(
+      (nodes) => nodes.map((node) => [node.dataset.turnId, node.dataset.role]));
+    assert.deepEqual(await visibleTurns(), expected);
+
+    const nextHistory = { id: previousTurn, status: "completed", completed: true, terminalRevision: 1,
+      startedAt: completedAt, completedAt, messages: [
+        { role: "user", itemId: "next-root", clientUserMessageId: nextReceipt.clientUserMessageId,
+          turnUserSlot: "root", text: sentText, submittedAt },
+        { role: "agent", itemId: "next-final", phase: "final", text: nextFinal, time: completedAt },
+      ] };
+    await readHistory(page, { ...history("next-history-only", [nextHistory]),
+      start: 1, end: 2, total: 2, nextBefore: 1 });
+    assert.deepEqual(await visibleTurns(), expected);
+    assert.deepEqual(await page.evaluate(() => window.__clientProjectionFixture.messages["stream-a"]
+      .filter((message) => message.role === "user").map((message) => message.submittedAt)),
+    [previousRoot.submittedAt, submittedAt]);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
