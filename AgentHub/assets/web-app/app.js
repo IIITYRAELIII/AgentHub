@@ -213,6 +213,10 @@ const composer = document.querySelector("[data-composer]");
 const composerGrow = document.querySelector("[data-composer-grow]");
 const composerInput = document.querySelector("[data-composer-input]");
 const composerSend = document.querySelector("[data-composer-send]");
+const composerEmojiPicker = window.AgentHubComposerEmojiPicker?.create(composer, {
+  onOpen: closeSlashMenu,
+  onSelect: (emoji) => insertTextAtCaret(composerInput, emoji),
+});
 const composerQuickMessages = document.querySelector("[data-composer-quick-messages]");
 const connectionQualityIndicator = document.querySelector("[data-connection-quality]");
 const annotationsBox = document.querySelector("[data-annotations]");
@@ -10168,6 +10172,7 @@ function prepareForRuntimeReload() {
 }
 
 function restoreDraft() {
+  composerEmojiPicker?.close();
   const draft = drafts.get(state.selectedId) ?? {
     text: "", attachments: [], taskReferences: [], annotations: [],
   };
@@ -18519,7 +18524,7 @@ mobileDialogs = window.AgentHubMobileDialogs.create({
   isMobile: () => surface === "mobile" && !vscodeMode,
   openSettings: openPanel,
   transientLayers: [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
-    annotationContextMenu, resourceContextMenu, dialog, settingsPanel, workspaceMessageSearch],
+    annotationContextMenu, resourceContextMenu, composerEmojiPicker?.layer, dialog, settingsPanel, workspaceMessageSearch],
   openWorkspaceCard, workspaceDialog: workspaceCardModal, renameWorkspaceFolder,
   textDialog: dialog, cancelTextDialog: () => closeDialog(null),
   createStream: (workspaceId) => emit("stream:new", { workspaceId }),
@@ -18530,6 +18535,7 @@ mobileDialogs = window.AgentHubMobileDialogs.create({
     return false;
   },
   closeTransient: () => {
+    if (composerEmojiPicker?.dismiss()) return true;
     const menus = [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
       annotationContextMenu, resourceContextMenu];
     const shown = menus.find((menu) => menu && !menu.hidden);
