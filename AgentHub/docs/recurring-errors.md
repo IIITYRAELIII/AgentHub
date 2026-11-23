@@ -210,10 +210,13 @@ original cleanup receipt and actual storage. Keep ambiguous and foreign copies.
 
 ### R16. Git composition loses accepted content
 Bind selection and parent order to exact bases and tree entries, including mode,
-type and binary content. Carry mandatory selection and review proof from the
-adapter through the durable result to its consumer, including duplicate and reuse
-paths. Check that propagation and the native resolution on a real graph with
-divergent bases, later additions and dropped accepted bytes.
+type and binary content. Prove any allowed omission and check the whole accepted
+result. The originating protocol determines required selection and review proof
+even when a projection makes the field optional. Carry proof from the adapter
+through the durable result to its consumer. Match its identity before accepting
+a duplicate or reusing a result. Test matching, missing and mismatched proof
+for the same tree, and native resolution on a real graph with divergent bases,
+later additions and dropped accepted bytes.
 
 ### R44. A Task operation uses the wrong Git project
 Resolve the active executor's project through the existing Task Git owner, and
