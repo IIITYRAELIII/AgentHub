@@ -1448,10 +1448,26 @@ function chronologicalMessages(messages) {
         : Number(message.historyOrder),
     }));
   const turnTimes = new Map();
+  const providerStarts = new Map();
+  const providerCompletions = new Map();
   const historyTurnOrders = new Map();
   for (const item of decorated) {
     const turnIdentity = chronologyTurnIdentity(item.message);
     if (!turnIdentity) continue;
+    const message = item.message;
+    if (message?.provider && message.threadId) {
+      if (message.role === "user" && message.turnUserSlot === "root" && message.providerAccepted !== false) {
+        const startedAt = Date.parse(message.startedAt ?? "");
+        if (Number.isFinite(startedAt)) {
+          const prior = providerStarts.get(turnIdentity);
+          providerStarts.set(turnIdentity, prior === undefined || prior === startedAt ? startedAt : null);
+        }
+      }
+      if (message.role === "agent" && message.kind !== "subagent") {
+        const completedAt = Date.parse(message.turnCompletedAt ?? "");
+        if (Number.isFinite(completedAt)) providerCompletions.set(turnIdentity, completedAt);
+      }
+    }
     if (Number.isFinite(item.time)) {
       const previous = turnTimes.get(turnIdentity);
       turnTimes.set(turnIdentity, previous == null ? item.time : Math.min(previous, item.time));
@@ -1488,8 +1504,14 @@ function chronologicalMessages(messages) {
     turnTimes.set(turn.identity, turn.time);
   }
   for (const item of decorated) {
-    if (Number.isFinite(item.time)) continue;
-    item.time = turnTimes.get(chronologyTurnIdentity(item.message)) ?? Number.POSITIVE_INFINITY;
+    const identity = chronologyTurnIdentity(item.message);
+    if (!Number.isFinite(item.time)) {
+      item.time = turnTimes.get(identity) ?? Number.POSITIVE_INFINITY;
+    }
+    // Intake time is immutable. For ordering across turns, a queued message
+    // belongs no earlier than the observed start of its exact provider turn.
+    item.startedAt = providerStarts.get(identity);
+    item.orderTime = Number.isFinite(item.startedAt) ? Math.max(item.time, item.startedAt) : item.time;
   }
   const ordered = decorated
     .sort((left, right) => {
@@ -1512,7 +1534,17 @@ function chronologicalMessages(messages) {
         const placementDifference = placement(left.message) - placement(right.message);
         if (placementDifference) return placementDifference;
       }
-      if (left.time !== right.time) return left.time - right.time;
+      const leftTime = sameTurn ? left.time : left.orderTime;
+      const rightTime = sameTurn ? right.time : right.orderTime;
+      if (leftTime !== rightTime) return leftTime - rightTime;
+      if (!sameTurn && left.message?.provider && left.message.threadId
+        && left.message.provider === right.message?.provider
+        && left.message.threadId === right.message.threadId) {
+        const leftCompleted = providerCompletions.get(leftTurnIdentity) === leftTime;
+        const rightCompleted = providerCompletions.get(rightTurnIdentity) === rightTime;
+        if (leftCompleted && !rightCompleted && right.startedAt === rightTime) return -1;
+        if (rightCompleted && !leftCompleted && left.startedAt === leftTime) return 1;
+      }
       const identityOrder = compareChronologyIdentity(
         chronologyEntityIdentity(left.message),
         chronologyEntityIdentity(right.message),

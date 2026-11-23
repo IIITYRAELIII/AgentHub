@@ -3243,3 +3243,31 @@ test("outgoing receipt lookup survives a task thread rebind", () => {
     "codex:thread-before",
   );
 });
+
+test("equal provider start and completion keep the previous final above the next root", () => {
+  const exact = { provider: "codex", threadId: "thread" };
+  const boundary = "2026-11-23T19:01:05.613Z";
+  const previous = { ...exact, id: "z-final", turnId: "z-old", role: "agent",
+    turnCompletedAt: boundary, time: boundary };
+  const root = { ...exact, id: "a-root", turnId: "a-new", role: "user", turnUserSlot: "root",
+    startedAt: boundary, time: "2026-11-23T19:00:16.313Z", providerAccepted: true };
+  const previousRoot = { ...previous, id: "z-root", role: "user", turnUserSlot: "root",
+    turnCompletedAt: null, startedAt: boundary };
+  for (const input of [[previous, root, previousRoot], [root, previousRoot, previous], [previousRoot, previous, root]]) {
+    const ordered = lifecycle.chronologicalMessages(input);
+    assert.deepEqual(ordered.map((message) => message.id), ["z-root", "z-final", "a-root"]);
+    assert.equal(ordered[2].time, root.time);
+  }
+});
+
+test("unaccepted and foreign start evidence cannot move an original message", () => {
+  const exact = { provider: "codex", threadId: "thread" };
+  const previous = { ...exact, id: "final", turnId: "old", role: "agent",
+    time: "2026-11-23T19:01:05.613Z" };
+  const unknown = { ...exact, id: "original", turnId: "new", role: "user", turnUserSlot: "root",
+    time: "2026-11-23T19:00:16.313Z", providerAccepted: false, startedAt: "2026-11-23T19:01:13.299Z" };
+  const foreign = { ...unknown, id: "foreign", threadId: "elsewhere", providerAccepted: true, time: null };
+  const ordered = lifecycle.chronologicalMessages([foreign, previous, unknown]);
+  assert.ok(ordered.indexOf(unknown) < ordered.indexOf(previous));
+  assert.equal(ordered.find((item) => item.id === foreign.id).time, null);
+});
