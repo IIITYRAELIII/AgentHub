@@ -10133,7 +10133,6 @@ button.attachment-preparing-label {
 
 .composer-emoji {
   flex: none;
-  font-size: 1.15rem;
   grid-column: 4;
   grid-row: 2;
   justify-self: start;
