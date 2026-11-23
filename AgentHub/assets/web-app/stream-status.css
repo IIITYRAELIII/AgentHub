@@ -42,12 +42,13 @@
   display: inline;
 }
 
-.activity-stream-item[data-running] > .stream-effect-layer > .activity-run-frame {
+.activity-stream-item:is([data-running], [data-current]) > .stream-effect-layer > .activity-run-frame {
   display: inline;
   stroke-width: 1px;
   stroke-opacity: .72;
 }
 .activity-stream-item[data-interstream-run] .activity-run-frame { stroke-opacity: .28; }
+.activity-stream-item:not([data-current]) .activity-run-frame-inner,
 .activity-stream-item[data-maintenance] .activity-run-frame-inner { display: none; }
 
 .stream-maintenance-track { stroke-dasharray: 3 2; }

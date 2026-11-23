@@ -4298,6 +4298,8 @@ function renderActivityRail() {
       || `Поток ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
     const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
     const activityTitle = `${workspaceName} — ${streamName}`;
+    const isCurrentStream = selectedTask !== null && workspaceKey(task) === workspaceKey(selectedTask)
+      && streamKey(task) === streamKey(selectedTask);
     const provider = String(task?.provider ?? "none");
     const providerModelTitle = streamProviderModelTitle({
       provider,
@@ -4313,14 +4315,14 @@ function renderActivityRail() {
       "data-stream-provider-label": presentation.agentLabel,
       "data-stream-model": task?.modelLabel ?? "",
       "data-stream-title": title,
-      "data-current": task.id === state.selectedId ? "" : null,
+      "data-current": isCurrentStream ? "" : null,
       "data-running": presentation.running ? "" : null,
       ...streamEffectAttributes([task]),
       "data-answer-ready": presentation.answerReady ? "" : null,
       "data-answer-arrived": transientAnswerArrivalTaskIds.has(task.id) ? "" : null,
       "data-recent": streamAttentionKind(task) === "recent" ? "" : null,
       "data-maintenance": streamMaintenanceKind(task) || null,
-      "aria-pressed": String(task.id === state.selectedId),
+      "aria-pressed": String(isCurrentStream),
       "aria-label": [workspaceName, streamName, presentation.agentLabel, presentation.statusLabel]
         .filter(Boolean).join(". "),
       title,
@@ -5769,8 +5771,10 @@ function selectTaskFromUi(id, {
   }
   ensureTaskStreamVisible(currentTask());
   persistOpenStreams();
-  if (preserveTaskList) syncTaskListSelection();
-  else renderTasks();
+  if (preserveTaskList) {
+    syncTaskListSelection();
+    renderActivityRail();
+  } else renderTasks();
   renderChat({ preserveStreamTabs });
   if (!preservePane) setPane("chat");
   emit("task:select", { id });
