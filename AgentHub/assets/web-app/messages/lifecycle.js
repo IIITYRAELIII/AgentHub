@@ -1437,7 +1437,10 @@ function mergeDeferredQueueEntries(serverEntries, clientEntries) {
   return values;
 }
 
-function chronologicalMessages(messages) {
+function chronologicalMessages(messages, completionBoundaries = []) {
+  const observedCompletions = new Map(completionBoundaries.flatMap((boundary) => (
+    boundary.turnIds.map((turnId, index) => [chronologyTurnIdentity({ ...boundary, turnId }), { time: boundary.time, index }])
+  )));
   const decorated = (Array.isArray(messages) ? messages : [])
     .map((message, index) => ({
       message,
@@ -1449,7 +1452,6 @@ function chronologicalMessages(messages) {
     }));
   const turnTimes = new Map();
   const providerStarts = new Map();
-  const rootSubmissions = new Map();
   const providerCompletions = new Map();
   const historyTurnOrders = new Map();
   for (const item of decorated) {
@@ -1462,12 +1464,6 @@ function chronologicalMessages(messages) {
         if (Number.isFinite(startedAt)) {
           const prior = providerStarts.get(turnIdentity);
           providerStarts.set(turnIdentity, prior === undefined || prior === startedAt ? startedAt : null);
-          const submittedAt = Date.parse(message.submittedAt ?? message.time ?? "");
-          if (Number.isFinite(submittedAt)) {
-            const previousSubmission = rootSubmissions.get(turnIdentity);
-            rootSubmissions.set(turnIdentity,
-              previousSubmission === undefined || previousSubmission === submittedAt ? submittedAt : null);
-          }
         }
       }
       if (message.role === "agent" && message.kind !== "subagent") {
@@ -1518,13 +1514,13 @@ function chronologicalMessages(messages) {
     // Intake time is immutable. For ordering across turns, a queued message
     // belongs no earlier than the observed start of its exact provider turn.
     const startedAt = providerStarts.get(identity);
-    item.orderTime = Number.isFinite(startedAt) ? Math.max(item.time, startedAt) : item.time;
-    const startsHere = startedAt === item.orderTime;
-    const completesHere = providerCompletions.get(identity) === item.orderTime;
-    item.boundaryOrder = Number(startsHere) - Number(completesHere);
-    item.boundarySubmission = startsHere && completesHere
-      ? rootSubmissions.get(identity) ?? Number.POSITIVE_INFINITY
-      : Number.POSITIVE_INFINITY;
+    const completedAt = providerCompletions.get(identity);
+    const observed = observedCompletions.get(identity);
+    const hasCompletionEvidence = observed && observed.time === completedAt;
+    const predecessorBoundary = hasCompletionEvidence && observed.index > 0 ? observed.time : Number.NEGATIVE_INFINITY;
+    item.orderTime = Math.max(item.time, startedAt ?? Number.NEGATIVE_INFINITY, predecessorBoundary);
+    item.boundaryOrder = Number(startedAt === item.orderTime) - Number(completedAt === item.orderTime);
+    if (hasCompletionEvidence && completedAt === item.orderTime) item.observedCompletionOrder = observed.index;
   }
   const ordered = decorated
     .sort((left, right) => {
@@ -1553,13 +1549,12 @@ function chronologicalMessages(messages) {
       if (!sameTurn && left.message?.provider && left.message.threadId
         && left.message.provider === right.message?.provider
         && left.message.threadId === right.message.threadId) {
+        // Keep the exact observed terminal order while either page position is missing.
+        if (Number.isFinite(left.observedCompletionOrder) && Number.isFinite(right.observedCompletionOrder)) {
+          return left.observedCompletionOrder - right.observedCompletionOrder;
+        }
         const boundaryDifference = left.boundaryOrder - right.boundaryOrder;
         if (boundaryDifference) return boundaryDifference;
-        // When both turns start and complete in one tick, one page position
-        // cannot order the pair. Use the same exact root intake evidence on either carrier.
-        if (left.boundarySubmission !== right.boundarySubmission) {
-          return left.boundarySubmission - right.boundarySubmission;
-        }
       }
       const identityOrder = compareChronologyIdentity(
         chronologyEntityIdentity(left.message),

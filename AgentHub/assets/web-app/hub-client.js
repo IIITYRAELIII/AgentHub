@@ -186,6 +186,7 @@ const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
 const liveCardsByTask = new Map();
 const completionOverlaysByTask = new Map();
+const completionBoundariesByTask = new Map();
 const queueActionsInFlight = new Set();
 const acknowledgedQueueCancels = new Set();
 const optimisticQueueSteerIds = new Set();
@@ -876,7 +877,7 @@ function reconciledMessages(taskIdValue) {
   });
   // Live snapshots, durable history and the optimistic receipt can arrive in
   // either order. Re-run idempotent deduplication after all three were merged.
-  return chronologicalMessages(projectCanonicalMessages(visible));
+  return chronologicalMessages(projectCanonicalMessages(visible), completionBoundariesByTask.get(taskIdValue));
 }
 
 function deferredEntriesForTask(snapshot, taskIdValue) {
@@ -1179,24 +1180,55 @@ function applyMessageReceipts(snapshot, onAcceptedQueue = null) {
   }
 }
 
+function observeCompletionBoundary(taskIdValue, completion, durableMessages) {
+  const { provider, threadId, turnId } = completion;
+  const time = Date.parse(completion.time ?? "");
+  if (!Number.isFinite(time)) return false;
+  let boundaries = completionBoundariesByTask.get(taskIdValue) ?? [];
+  const previous = boundaries.at(-1);
+  if (previous?.provider !== provider || previous.threadId !== threadId) boundaries = [];
+  if (boundaries.length) {
+    if (previous.time > time) return false;
+    if (previous.time === time) {
+      if (previous.turnIds.includes(turnId)) return false;
+      previous.turnIds = [...previous.turnIds, turnId].slice(-20);
+      return true;
+    }
+  }
+  // An exact latest final can follow already confirmed history at the same tick.
+  // Keep just the identities, so page absorption cannot reverse the observed pair.
+  const durableAtBoundary = durableMessages.filter((message) => (
+    message.provider === provider && message.threadId === threadId && message.turnId
+    && message.role === "agent" && message.kind !== "subagent"
+    && Number.isFinite(message.historyOrder) && Date.parse(message.turnCompletedAt ?? "") === time
+  )).sort((left, right) => left.historyOrder - right.historyOrder);
+  const rank = durableAtBoundary.find((message) => message.turnId === turnId)?.historyOrder ?? Infinity;
+  const priorTurnIds = durableAtBoundary.filter((message) => message.historyOrder < rank).map((message) => message.turnId);
+  const turnIds = [...new Set([...priorTurnIds, turnId])].slice(-20);
+  const tiedBoundaries = boundaries.filter((boundary) => boundary.turnIds.length > 1);
+  completionBoundariesByTask.set(taskIdValue, [...tiedBoundaries, { provider, threadId, time, turnIds }].slice(-20));
+  return turnIds.length > 1;
+}
+
 function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") {
   const completion = snapshotCompletionCandidate(selected, incomingTurnId);
   if (!completion) return false;
   const durableMessages = historyByTask.get(taskIdValue) ?? [];
+  const boundaryChanged = observeCompletionBoundary(taskIdValue, completion, durableMessages);
   if (completedConversationTurnVisible(durableMessages, {
     turnId: completion.turnId,
     answer: completion.answer,
     requireAgent: true,
   })) {
     const overlays = completionOverlaysByTask.get(taskIdValue);
-    if (!overlays?.delete(completion.turnId)) return false;
+    if (!overlays?.delete(completion.turnId)) return boundaryChanged;
     if (!overlays.size) completionOverlaysByTask.delete(taskIdValue);
     return true;
   }
   const overlays = completionOverlaysByTask.get(taskIdValue) ?? new Map();
   const existing = overlays.get(completion.turnId);
   const replacement = snapshotCompletionReplacement(existing, completion);
-  if (!replacement) return false;
+  if (!replacement) return boundaryChanged;
   const existingAgent = (Array.isArray(existing?.messages) ? existing.messages : [])
     .findLast((message) => message?.role === "agent" && message?.kind !== "subagent");
   overlays.set(replacement.turnId, {
@@ -1240,6 +1272,7 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
     liveProbeByTask.delete(taskIdValue);
     liveUserMessagesByTask.delete(taskIdValue);
     completionOverlaysByTask.delete(taskIdValue);
+    completionBoundariesByTask.delete(taskIdValue);
     return true;
   }
   const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};

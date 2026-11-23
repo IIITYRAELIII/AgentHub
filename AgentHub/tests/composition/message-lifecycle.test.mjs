@@ -3302,13 +3302,18 @@ test("equal start and completion keep the same order when either history page ar
     [...previousOverlay, nextRoot, nextFinal],
     [...previousOverlay, ...nextHistory],
     [...nextHistory.toReversed(), ...previousOverlay.toReversed()],
+    [...previousOverlay, { ...nextHistory[0], startedAt: null }, nextHistory[1]],
+    [{ ...previousOverlay[0], time: "2026-11-23T19:00:30.000Z" }, previousOverlay[1], ...nextHistory],
+    [{ ...instantaneousPrevious[0], time: "2026-11-23T19:00:30.000Z" }, instantaneousPrevious[1], nextRoot, nextFinal],
     [...instantaneousPrevious, ...nextHistory],
     [{ ...instantaneousPrevious[0], time: boundary }, instantaneousPrevious[1], ...nextHistory],
     [...previous.map(({ historyOrder, ...message }) => message),
       { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],
     [...previous, { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],
   ]) {
-    const result = lifecycle.chronologicalMessages(projection.projectCanonicalMessages(input));
+    const result = lifecycle.chronologicalMessages(projection.projectCanonicalMessages(input), [{
+      provider: identity.provider, threadId: identity.threadId, time: Date.parse(boundary), turnIds: ["z-old", "a-new"],
+    }]);
     assert.deepEqual(Array.from(result, (message) => message.id), expected);
     assert.equal(result[2].submittedAt, submission);
     assert.equal(result[2].time, submission);

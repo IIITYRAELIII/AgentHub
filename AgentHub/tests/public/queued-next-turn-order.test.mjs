@@ -161,8 +161,12 @@ for (const first of ["snapshot", "history"]) {
   });
 }
 
-for (const priorStart of [previousTurnHistory.startedAt, completedAt]) {
-  test(`a completed successor stays below the durable turn with start ${priorStart}`, { timeout: 30_000 }, async () => {
+for (const [priorStart, priorSubmittedAt] of [
+  [previousTurnHistory.startedAt, previousRoot.submittedAt],
+  [completedAt, previousRoot.submittedAt],
+  [completedAt, "2026-11-23T19:00:30.000Z"],
+]) {
+  test(`a completed successor stays below the durable turn with start ${priorStart} and intake ${priorSubmittedAt}`, { timeout: 30_000 }, async () => {
     const browser = await launchBrowser();
     const page = await browser.newPage({ viewport: { width: 1366, height: 900 }, timezoneId: "UTC" });
     const successor = "01a209c2-ea7c-7000-8000-000000000001";
@@ -171,7 +175,8 @@ for (const priorStart of [previousTurnHistory.startedAt, completedAt]) {
     try {
       await page.clock.setFixedTime(completedAt);
       const initial = snapshot();
-      const prior = history("prior-durable", [{ ...previousTurnHistory, startedAt: priorStart }]);
+      const prior = history("prior-durable", [{ ...previousTurnHistory, startedAt: priorStart,
+        messages: [{ ...previousRoot, submittedAt: priorSubmittedAt }, ...previousTurnHistory.messages.slice(1)] }]);
       const errors = await openClientEventFixture(page, { surface: "web", fixtureSnapshot: initial, fixtureHistory: prior });
       await readHistory(page, prior);
       const next = structuredClone(initial);
@@ -202,9 +207,10 @@ for (const priorStart of [previousTurnHistory.startedAt, completedAt]) {
 test("a page for the later equal-time turn preserves the preceding snapshot final", { timeout: 30_000 }, async () => {
   const browser = await launchBrowser();
   const priorTurn = "01a209c2-ea7c-7000-8000-000000000001";
+  const priorSubmittedAt = "2026-11-23T19:00:30.000Z";
   const priorReceipt = { ...identity, clientUserMessageId: previousRoot.clientUserMessageId,
     id: "previous-outgoing", runId: "previous-run", turnId: priorTurn,
-    accepted: true, providerAccepted: true, submittedAt: previousRoot.submittedAt,
+    accepted: true, providerAccepted: true, submittedAt: priorSubmittedAt,
     startedAt: completedAt, completed: true, completedAt, displayText: previousRoot.text };
   const nextReceipt = { ...priorReceipt, clientUserMessageId: "next-outgoing", id: "next-intake",
     runId: "next-run", turnId: previousTurn, submittedAt, displayText: sentText };
@@ -244,7 +250,18 @@ test("a page for the later equal-time turn preserves the preceding snapshot fina
     assert.deepEqual(await visibleTurns(), expected);
     assert.deepEqual(await page.evaluate(() => window.__clientProjectionFixture.messages["stream-a"]
       .filter((message) => message.role === "user").map((message) => message.submittedAt)),
-    [previousRoot.submittedAt, submittedAt]);
+    [priorSubmittedAt, submittedAt]);
+
+    const later = structuredClone(next);
+    later.version = "other-completion-after-equal-time-pair";
+    later.tasks[0] = { ...later.tasks[0], lastAnswer: "Later final", lastAnswerTurnId: nextTurn,
+      lastAnswerAt: startedAt };
+    await page.evaluate((value) => {
+      window.__agentHubFixture.snapshot = value;
+      return window.__dispatchClientFixture("connection:retry");
+    }, later);
+    await page.getByText("Later final", { exact: true }).waitFor({ state: "visible", timeout: 5_000 });
+    assert.deepEqual((await visibleTurns()).filter(([id]) => id !== nextTurn), expected);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });

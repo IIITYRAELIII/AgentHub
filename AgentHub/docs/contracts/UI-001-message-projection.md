@@ -766,8 +766,9 @@ dispatch owns the separate `startedAt`. While live and paged projections are
 mixed, ordering across turns uses the exact root's provider start as a lower
 bound. A prior terminal answer precedes the new turn at an equal boundary on
 the same provider Thread. If both turns start and end in one clock tick,
-the exact roots' original intake times break the tie while either history
-position is missing. The ordered history wins when both positions are known.
+retain the observed same-Thread terminal sequence as history replaces either
+overlay. Two confirmed history positions take precedence. Intake times never
+establish provider execution order.
 Intra-turn placement and displayed timestamps keep
 their original evidence. Legacy rows without `submittedAt` fall
 back to the existing user-message time. Only the root user message may then
