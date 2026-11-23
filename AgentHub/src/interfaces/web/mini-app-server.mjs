@@ -975,7 +975,7 @@ export class MiniAppServer {
 
   async #handle(request, response, transportReceivedAtMs = Date.now()) {
     const method = String(request.method ?? "GET").toUpperCase();
-    const url = new URL(request.url ?? "/", `http://${this.#host}`);
+    const url = new URL(request.url ?? "/", "http://localhost");
     if (this.#startupOnly) {
       const read = ["GET", "HEAD"].includes(method);
       const localSession = url.pathname === "/api/local-session";

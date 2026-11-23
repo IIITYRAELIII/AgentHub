@@ -12,7 +12,7 @@ const {
 } = require("./agent-hub-bridge.js");
 const { openEditorFromActivityBar } = require("./activity-bar-launch.js");
 const { loadExtensionProfile } = require("./extension-profile.js");
-const { sharedWebviewHtml } = require("./shared-webview.js");
+const { serveVisualizationFrame, sharedWebviewHtml } = require("./shared-webview.js");
 
 const EXTENSION_PROFILE = loadExtensionProfile(__dirname);
 const VIEW_ID = EXTENSION_PROFILE.viewId;
@@ -138,6 +138,7 @@ class WorkLogViewProvider {
     this.sharedPanel = false;
     this.panelRuntimeRoot = null;
     this.panelRuntimePreparationRoot = null;
+    this.panelVisualizationFrame = null;
     this.themes = new Set(["orbit"]);
     this.theme = String(context.globalState.get(THEME_KEY) ?? "orbit");
   }
@@ -192,6 +193,8 @@ class WorkLogViewProvider {
     panel.title = EXTENSION_PROFILE.title;
     panel.onDidDispose(() => {
       if (this.panel !== panel) return;
+      this.panelVisualizationFrame?.close();
+      this.panelVisualizationFrame = null;
       this.panel = null;
       this.sharedPanel = false;
       this.panelRuntimeRoot = null;
@@ -257,12 +260,29 @@ class WorkLogViewProvider {
         vscode.Uri.file(bridge.attachmentDirectory()),
       ],
     };
-    const shell = await sharedWebviewHtml(panel.webview, {
-      runtimeUri,
-      extensionUri: this.context.extensionUri,
-      testContour: EXTENSION_PROFILE.name === "test-contour",
-      localWebAddress: await bridge.localWebAddress().catch(() => null),
-    });
+    const runtimeAddress = await bridge.localWebAddress().catch(() => null);
+    const ipv6 = runtimeAddress && new URL(runtimeAddress).hostname === "[::1]";
+    // Chromium CSP cannot match an IPv6 literal. Keep the native bridge on ::1
+    // and expose just the immutable frame shell on a separate local address.
+    const frame = ipv6 ? await serveVisualizationFrame(runtimeUri).catch(() => null) : null;
+    let shell;
+    try {
+      shell = await sharedWebviewHtml(panel.webview, {
+        runtimeUri,
+        extensionUri: this.context.extensionUri,
+        testContour: EXTENSION_PROFILE.name === "test-contour",
+        localWebAddress: ipv6 ? frame?.address : runtimeAddress,
+      });
+    } catch (error) {
+      frame?.close();
+      throw error;
+    }
+    if (this.panel !== panel) {
+      frame?.close();
+      return;
+    }
+    this.panelVisualizationFrame?.close();
+    this.panelVisualizationFrame = frame;
     this.themes = new Set(shell.themeIds);
     if (!this.themes.has(this.theme)) this.theme = "orbit";
     panel.webview.html = shell.html;
@@ -454,7 +474,12 @@ class WorkLogViewProvider {
     try {
       const result = await (await this.currentBridge()).webviewSession();
       if (this.panel !== panel) return;
-      await panel.webview.postMessage({ type: "agenthub:session-result", id, ok: true, result });
+      // Keep requests on the existing native bridge when Chromium cannot use
+      // this endpoint under the WebView's connect-src.
+      await panel.webview.postMessage({
+        type: "agenthub:session-result", id, ok: true,
+        result: new URL(result.baseUrl).hostname === "[::1]" ? null : result,
+      });
     } catch (error) {
       if (this.panel !== panel) return;
       await panel.webview.postMessage({
@@ -521,6 +546,8 @@ class WorkLogViewProvider {
     if (this.timer) clearTimeout(this.timer);
     this.unsubscribeJournal?.();
     this.unsubscribeRuntime?.();
+    this.panelVisualizationFrame?.close();
+    this.panelVisualizationFrame = null;
     this.bridge?.close();
   }
 }

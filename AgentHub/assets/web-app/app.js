@@ -18541,7 +18541,9 @@ if (journalPolling) {
 }
 if (vscodeMode) {
   window.addEventListener("message", (event) => {
-    if (event.source && event.source !== window && event.source !== window.parent) return;
+    const nativeHost = event.origin?.startsWith("vscode-webview://") && event.origin === window.location.origin;
+    if (event.origin === "null"
+      || (event.source && event.source !== window && event.source !== window.parent && !nativeHost)) return;
     if (event.data?.type === "agenthub:journal-changed") {
       if (journalRequested) void loadJournal({ force: event.data.force === true });
     }

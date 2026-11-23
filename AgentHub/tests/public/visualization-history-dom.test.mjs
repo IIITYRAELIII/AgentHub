@@ -198,3 +198,22 @@ test("chat renders a Codex visualization in place and reopens it from SQLite his
     visualization: { turnId, itemId, markerHash: requested[0].markerHash } });
   assert.equal(foreign.html, null);
 });
+
+test("the Mini App responds on an explicitly configured IPv6 loopback address", async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-ipv6-http-"));
+  const health = createRuntimeHealth();
+  health.begin();
+  health.complete();
+  const server = new MiniAppServer({
+    host: "::1", port: 0, telegramRuntime: false, health,
+    journalDatabaseFile: path.join(directory, "mini-app-journal.sqlite"),
+  });
+  t.after(async () => {
+    await server.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const { url } = await server.start();
+  assert.equal(new URL(url).hostname, "[::1]");
+  assert.equal((await fetch(new URL("/health", url))).status, 200);
+  assert.equal((await fetch(new URL("/visualization-frame.html", url))).status, 200);
+});

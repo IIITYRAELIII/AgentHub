@@ -1629,7 +1629,10 @@ async function hubFetchWithin(input, init, timeoutMs, traceId) {
 }
 
 window.addEventListener("message", (event) => {
-  if (event.source && event.source !== window && event.source !== window.parent) return;
+  const nativeHost = vscode && event.origin?.startsWith("vscode-webview://")
+    && event.origin === window.location.origin;
+  if (event.origin === "null"
+    || (event.source && event.source !== window && event.source !== window.parent && !nativeHost)) return;
   const message = event.data;
   if (message?.type === "agenthub:runtime-published") {
     reloadForPublishedRuntime();

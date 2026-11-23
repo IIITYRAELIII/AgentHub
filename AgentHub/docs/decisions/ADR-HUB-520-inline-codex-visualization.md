@@ -32,6 +32,11 @@ VS Code uses the existing loopback server for the frame document and permits
 only its configured frame URL. The packaged VS Code resource transport still
 serves the main panel's scripts and styles. Only direct loopback requests to
 the frame allow the native VS Code ancestor schemes.
+With an IPv6-only Hub, the extension serves just the packaged frame shell
+from an ephemeral IPv4 loopback address for the panel lifetime. Protected
+control uses the existing native bridge in that configuration. Its forwarded
+events use the exact native WebView origin. The opaque artifact origin is
+excluded from the bridge.
 The fragment's policy restricts network, frame, form, and object access, and
 permits the skill's static resources and interactive script. The optional mode
 and title are presentation hints only.

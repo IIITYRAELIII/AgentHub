@@ -518,6 +518,48 @@ test("VS Code shell permits only extension, selected runtime and attachment root
   assert.ok(!harness.panel.webview.html.includes("browser-device-auth.js"));
 });
 
+test("VS Code on an IPv6 Hub serves only the packaged frame and keeps control on IPC", async () => {
+  const harness = panelHarness();
+  const vscode = webviewVscode([]);
+  loadSharedWebview(vscode);
+  const { WorkLogViewProvider } = loadExtension(vscode);
+  const context = providerContext();
+  context.extensionUri = vscodeUri(__dirname);
+  const provider = new WorkLogViewProvider(context);
+  provider.panel = harness.panel;
+  harness.panel.webview.cspSource = "vscode-webview://test";
+  harness.panel.webview.asWebviewUri = (uri) => `vscode-webview-resource:${uri.fsPath}`;
+  const runtime = path.resolve(__dirname, "..");
+  provider.currentBridge = async () => ({
+    runtimeReleaseRoot: async () => runtime,
+    attachmentDirectory: () => path.join(os.tmpdir(), "synthetic-attachment-root"),
+    localWebAddress: async () => "http://[::1]:8787",
+    webviewSession: async () => ({ baseUrl: "http://[::1]:8787", token: "native-only-fixture" }),
+  });
+  let frameUrl;
+  try {
+    await provider.renderPanelShell();
+    frameUrl = /rel="agent-hub-visualization-frame" href="([^"]+)"/u.exec(harness.panel.webview.html)?.[1];
+    assert.match(frameUrl, /^http:\/\/127\.0\.0\.1:\d+\/visualization-frame\.html$/u);
+    assert.ok(harness.panel.webview.html.includes(`frame-src ${frameUrl};`));
+    assert.doesNotMatch(harness.panel.webview.html, /\[::1\]/u);
+    const response = await fetch(frameUrl);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-security-policy"), "frame-ancestors vscode-webview: vscode-file:");
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()),
+      fs.readFileSync(path.join(runtime, "assets/web-app/visualization-frame.html")));
+    assert.equal((await fetch(new URL("/api/control", frameUrl))).status, 404);
+    assert.equal((await fetch(frameUrl, { method: "POST" })).status, 404);
+    await provider.handleSessionMessage({ id: "ipv6-session" });
+    assert.deepEqual(harness.messages.at(-1), {
+      type: "agenthub:session-result", id: "ipv6-session", ok: true, result: null,
+    });
+  } finally {
+    provider.dispose();
+  }
+  await assert.rejects(fetch(frameUrl), /fetch failed/u);
+});
+
 test("VS Code forces a retained journal refresh when its panel becomes visible", async () => {
   const harness = panelHarness();
   const vscode = {

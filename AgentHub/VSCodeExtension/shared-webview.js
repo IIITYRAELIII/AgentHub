@@ -1,6 +1,7 @@
 "use strict";
 
 const { randomBytes } = require("node:crypto");
+const { createServer } = require("node:http");
 const path = require("node:path");
 const vscode = require("vscode");
 
@@ -36,6 +37,36 @@ async function resolveSharedAssets({ runtimeUri, extensionUri }) {
 
 function resource(webview, uri) {
   return uri ? String(webview.asWebviewUri(uri)) : "";
+}
+
+async function serveVisualizationFrame(runtimeUri) {
+  const uri = vscode.Uri.joinPath(runtimeUri, ...ASSET_ROOT, "visualization-frame.html");
+  const body = await vscode.workspace.fs.readFile(uri);
+  const server = createServer((request, response) => {
+    if (request.url !== "/visualization-frame.html" || !["GET", "HEAD"].includes(request.method)) {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, {
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": "frame-ancestors vscode-webview: vscode-file:",
+      "Content-Type": "text/html; charset=utf-8",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+    }).end(request.method === "HEAD" ? undefined : body);
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  server.unref();
+  return {
+    address: `http://127.0.0.1:${server.address().port}`,
+    close() {
+      server.close();
+      server.closeAllConnections();
+    },
+  };
 }
 
 function rewriteThemeCssUrls(css, stylesheetPathname, themeRegistry, webview) {
@@ -134,7 +165,7 @@ async function sharedWebviewHtml(webview, locations) {
     `img-src ${webview.cspSource} data: blob:`,
     `style-src ${webview.cspSource} 'nonce-${nonce}'`,
     `script-src ${webview.cspSource} 'nonce-${nonce}'`,
-    "connect-src http://127.0.0.1:* http://localhost:* http://[::1]:*",
+    "connect-src http://127.0.0.1:* http://localhost:*",
     "frame-src " + (visualizationFrame || "'none'"),
     "font-src 'none'",
   ].join("; ");
@@ -154,4 +185,4 @@ async function sharedWebviewHtml(webview, locations) {
   };
 }
 
-module.exports = { markTestContourDocument, sharedWebviewHtml };
+module.exports = { markTestContourDocument, serveVisualizationFrame, sharedWebviewHtml };

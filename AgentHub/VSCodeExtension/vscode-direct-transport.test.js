@@ -57,7 +57,7 @@ test("VS Code HTTP and IPC hedges share clientUserMessageId while keeping correl
           : { ok: true, receiptId: request.commandId, result: { accepted: true } },
       ), { status: 200, headers: { "Content-Type": "application/json" } });
     },
-    location: { href: "vscode-webview://agent-hub/index.html" },
+    location: { href: "vscode-webview://agent-hub/index.html", origin: "vscode-webview://agent-hub" },
     requestAnimationFrame: () => 1,
     setTimeout,
   };
@@ -84,18 +84,20 @@ test("VS Code HTTP and IPC hedges share clientUserMessageId while keeping correl
     window,
   });
   const sessionRequest = posted.find((message) => message.type === "agenthub:session");
-  listeners.get("message")({
-    data: {
-      type: "agenthub:session-result",
-      id: sessionRequest.id,
-      ok: true,
-      result: {
-        baseUrl: "http://127.0.0.1:8787",
-        token: "session-token",
-        expiresAt: Date.now() + 60_000,
-      },
+  const sessionReply = {
+    type: "agenthub:session-result",
+    id: sessionRequest.id,
+    ok: true,
+    result: {
+      baseUrl: "http://127.0.0.1:8787",
+      token: "session-token",
+      expiresAt: Date.now() + 60_000,
     },
-  });
+  };
+  listeners.get("message")({ data: sessionReply, origin: "null", source: null });
+  await Promise.resolve();
+  assert.equal(window.__agentHubDirectTransport.ready(), false);
+  listeners.get("message")({ data: sessionReply, origin: window.location.origin, source: {} });
   await Promise.resolve();
   await Promise.resolve();
 
