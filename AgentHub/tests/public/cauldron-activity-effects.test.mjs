@@ -121,12 +121,25 @@ test("The inner rail frame follows the selected stream when both streams are run
       await frames(page);
       for (const [index, card] of cards.entries()) {
         assert.equal(await card.locator(".activity-run-frame-inner").isVisible(), index === selected);
+        assert.equal(await card.getAttribute("aria-pressed"), String(index === selected));
         assert.ok(await card.locator(".stream-run-track").isVisible());
       }
     }
     await publish(page, { running: false, otherRunning: true });
     assert.ok(await cards[0].locator(".activity-run-frame-inner").isVisible());
     assert.equal(await cards[0].locator(".stream-run-track").isVisible(), false);
+    await page.evaluate(() => {
+      const stream = { workspaceId: "workspace-0", streamId: "stream-0", provider: "codex" };
+      window.AgentHub.setTasks([
+        { ...stream, id: "live", threadId: "current-thread", status: "running", running: true, selected: true },
+        { ...stream, id: "history", threadId: "older-thread", status: "ready" },
+      ]);
+      window.AgentHub.selectTask("history");
+    });
+    await frames(page);
+    const representative = page.locator('.activity-stream-item[data-activity-task-id="live"]');
+    assert.ok(await representative.locator(".activity-run-frame-inner").isVisible());
+    assert.equal(await representative.getAttribute("aria-pressed"), "true");
   } finally { await browser.close(); }
 });
 
