@@ -989,6 +989,8 @@ test("active quote binds native reasoning before response item and survives draf
       assert.equal(await page.evaluate(()=>typeof window.__nativeQuoteResolve),'function');
       await page.evaluate(()=>{
         window.AgentHub.setLive('task-1',{...window.__quoteLive,itemId:'later-answer-item',text:'Later answer',activityGroups:[...window.__quoteLive.activityGroups,{id:'reasoning:next',sourceItemId:'next',reasoning:'Next stage',activities:[]}]});
+        window.AgentHub.setMessages('task-1',[{...window.__quoteLive,id:'completed-overlap',role:'agent',
+          itemId:'final-answer-item',text:'Completed'}]);
         window.__nativeQuoteResolve({groups:window.__quoteLive.activityGroups});
       });
       assert.equal(await page.evaluate(()=>window.__nativeQuotePending),true);
@@ -1060,6 +1062,39 @@ test("active quote refuses missing foreign changed and mismatched sources with b
     assert.ok(spans.every(x=>x.outcome==='failed'));
     assert.doesNotMatch(JSON.stringify(results.events),/Private selected|Changed private|dependency details/u);
   } finally {await page.close();}
+});
+
+test("clicking a retained live trace quote shows refusal when the native group is gone", { timeout: 15_000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-missing-native-quote-"));
+  const file = path.join(directory, "rollout.jsonl");
+  const page = await browser.newPage({ viewport: { width: 1366, height: 850 } });
+  try {
+    await writeFile(file, JSON.stringify({ type: "session_meta", payload: { id: "01a0ea85-db2c-7bd3-bfad-2634824c6069" } }) + "\n");
+    await openWebApp(page);
+    await seedMessages(page, [], { running: true, status: "running" });
+    await page.exposeFunction("readMissingNativeGroup", request => readCodexTracePageInWorker(file, request));
+    await page.evaluate(() => {
+      window.AgentHub.on("history:trace-page", ({ tracePage, resolve, reject }) =>
+        window.readMissingNativeGroup(tracePage).then(resolve, reject));
+      window.AgentHub.setLive("task-1", { provider: "codex", threadId: "thread-1", turnId: "old-turn",
+        itemId: null, activityGroups: [{ id: "reasoning:native-item", sourceItemId: "native-item",
+          reasoning: "Previously visible native fragment.", activities: [] }] });
+    });
+    const surface = page.locator("[data-live-trace] .turn-trace-reasoning");
+    await surface.scrollIntoViewIfNeeded();
+    await surface.evaluate(node => {
+      const range = window.AgentHubMessageDisclosure.domRangeFromOffsets(node, 0, node.textContent.length);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+    });
+    await surface.click({ button: "right", position: { x: 10, y: 8 } });
+    await page.locator('[data-action="annotate-selection"]').click();
+    await page.getByText("Не удалось подтвердить источник выделенного фрагмента.", { exact: true }).waitFor();
+    assert.equal(await page.locator("[data-annotations] .annotation-quote").count(), 0);
+  } finally {
+    await page.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("managed quote survives persistence, receipt absence, API, UI reload and history reopen", { timeout: 40_000 }, async () => {

@@ -9881,10 +9881,16 @@ async function responseAnnotationFromSelection(selection, commandId) {
       if (groups.length !== 1 || (selectedNativeItemId && groups[0].sourceItemId !== selectedNativeItemId)) return [];
       return [{ message, group: groups[0] }];
     });
-    if (matches.length !== 1) return null;
-    const { message, group } = matches[0];
-    const rendered = traceReasoningNode(traceGroupWithCitationContext(group, message), message);
-    return rendered.textContent.startsWith(selectedPrefix) ? message : null;
+    if (!matches.length || (matches.length !== 1 && !selectedNativeItemId)) return null;
+    const renderedCopies = matches.map(({ message, group }) => ({
+      message,
+      text: traceReasoningNode(traceGroupWithCitationContext(group, message), message).textContent.trimEnd(),
+    }));
+    const longest = renderedCopies.reduce((left, right) => left.text.length >= right.text.length ? left : right);
+    // Live and terminal projections can coexist while their parent items differ.
+    // They can share the native group only while their rendered content agrees.
+    if (!renderedCopies.every(({ text }) => text.startsWith(selectedPrefix) && longest.text.startsWith(text))) return null;
+    return longest.message;
   };
   if (locator.traceGroupId && identity.provider === "codex") {
     // Durable history is a bounded preview, including legacy rows with no

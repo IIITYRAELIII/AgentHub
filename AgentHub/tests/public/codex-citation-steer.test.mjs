@@ -37,7 +37,7 @@ const historyFor = activity => ({ provider: "codex", threadId: "thread-a", strea
   start: 0, end: 1, total: 1, messageTotal: 1, version: "citation-context",
   items: codexRolloutHistory(activity) });
 
-test("real quote clicks acknowledge immediately and paint the exact card after live completion", { timeout: 30_000 }, async () => {
+test("real quote clicks acknowledge immediately and paint the exact card after live completion", { timeout: 30_000 }, async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub-live-quote-"));
   const file = path.join(directory, "rollout.jsonl");
   const browser = await launchBrowser();
@@ -88,7 +88,7 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
     const card = page.locator("[data-annotations] .annotation-quote");
     const input = page.locator("[data-composer-input]");
     async function openMenu(surface, length) {
-      await surface.waitFor({ state: "visible" });
+      await surface.scrollIntoViewIfNeeded();
       await surface.evaluate((node, end) => {
         const range = window.AgentHubMessageDisclosure.domRangeFromOffsets(node, 0, end ?? node.textContent.length);
         getSelection().removeAllRanges();
@@ -115,10 +115,19 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
     await input.fill("Draft edited while waiting");
     await input.press("Home");
     const beforeCursor = await input.evaluate(node => node.selectionStart);
-    await page.evaluate(completed => {
+    const terminalHistory = historyFor(parseCodexRolloutActivity(start()
+      + message("quote-item", "commentary", full)
+      + message(completed.itemId, "final_answer", completed.text)
+      + row("event_msg", { type: "task_complete", turn_id: turnId, last_agent_message: completed.text })));
+    await page.evaluate(({ completed, terminalHistory }) => {
+      const fixture = window.__agentHubFixture;
+      fixture.history = terminalHistory;
+      fixture.snapshot.version = "quote-completed";
+      fixture.snapshot.tasks[0].running = false;
+      delete fixture.snapshot.tasks[0].run;
       window.AgentHub.setMessages("stream-a", [completed]);
       window.AgentHub.setLive("stream-a", null);
-    }, completed);
+    }, { completed, terminalHistory });
     gate.resolve();
     await card.waitFor();
     await pending.waitFor({ state: "hidden" });
@@ -150,22 +159,13 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
     }
     assert.ok(clientEvents.some(event => event.stage === "client-ack"));
     assert.doesNotMatch(JSON.stringify({ clientEvents, serverEvents }), /native 🦊 fragment|rollout\.jsonl/u);
+    t.diagnostic(JSON.stringify({ commandId,
+      client: clientEvents.filter(event => event.outcome === "succeeded" && event.metadata?.action?.startsWith("annotation-"))
+        .map(event => ({ action: event.metadata.action, ms: event.monotonicDurationMs })),
+      server: serverEvents.map(event => ({ stage: event.stage, ms: event.monotonicDurationMs })),
+    }));
 
-    await page.evaluate(({ completed, group }) => window.AgentHub.setLive("stream-a", {
-      ...completed, id: undefined, turnId: "missing-turn", itemId: null, text: "", activityGroups: [group],
-    }), { completed, group });
-    await openMenu(live, quote.length);
-    await menu.click();
-    await page.getByText("Не удалось подтвердить источник выделенного фрагмента.", { exact: true }).waitFor();
-    assert.equal(requests.length, 2);
     assert.equal(await card.count(), 1);
-
-    await page.evaluate(() => window.AgentHub.setLive("stream-a", null));
-    await openMenu(page.locator('[data-message-id="final-source"] .msg-body'));
-    await menu.click();
-    await card.nth(1).waitFor();
-    assert.equal(await card.nth(1).textContent(), completed.text);
-    assert.equal(requests.length, 2);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
