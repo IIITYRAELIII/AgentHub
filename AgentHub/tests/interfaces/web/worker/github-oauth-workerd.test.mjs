@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Miniflare } from "miniflare";
+import { GitHubOAuthAttempt } from "../../../../cloudflare-github-oauth/worker.mjs";
 import { GitHubBrowserAuthorization } from "../../../../src/infrastructure/network/github-browser-authorization.mjs";
 import { GITHUB_OAUTH_ORIGIN } from "../../../../src/infrastructure/network/github-oauth-protocol.mjs";
 
@@ -73,4 +74,93 @@ test("native Worker joins GitHub callback to its exact local Hub and exchanges t
   const rejected = await (await post("/github/poll", { state: redirected.state, verifier: redirected.verifier })).json();
   assert.deepEqual(rejected, { status: "failed" });
   assert.deepEqual(exchanges.map(item => item.url), Array(2).fill("https://github.com/login/oauth/access_token"));
+});
+
+test("native Worker gives a rotated pair back once admitted, including a lost Hub response", { timeout: 30_000 }, async t => {
+  const refreshToken = "ghr_REFRESH_FIXTURE_INITIAL_123456789";
+  const nextRefreshToken = "ghr_REFRESH_FIXTURE_ROTATED_123456789";
+  const nextToken = "gho_REFRESH_FIXTURE_ROTATED_123456789";
+  const brokenToken = "ghr_REFRESH_FIXTURE_UNKNOWN_123456789";
+  const revokedToken = "ghr_REFRESH_FIXTURE_REVOKED_123456789";
+  const exchangeStarted = Promise.withResolvers(), releaseExchange = Promise.withResolvers();
+  const exchanges = [];
+  const pair = { token_type: "bearer", access_token: nextToken, expires_in: 28_800,
+    refresh_token: nextRefreshToken, refresh_token_expires_in: 15_897_600 };
+  const runtime = new Miniflare({
+    modules: true,
+    scriptPath: fileURLToPath(new URL("../../../../cloudflare-github-oauth/worker.mjs", import.meta.url)),
+    modulesRoot: fileURLToPath(new URL("../../../..", import.meta.url)),
+    compatibilityDate: "2026-07-28",
+    durableObjects: { ATTEMPTS: { className: "GitHubOAuthAttempt", useSQLite: true } },
+    bindings: { GITHUB_OAUTH_CLIENT_SECRET: "synthetic-client-secret" },
+    outboundService: async request => {
+      assert.equal(request.url, "https://github.com/login/oauth/access_token");
+      const values = new URLSearchParams(await request.text());
+      exchanges.push(values);
+      if (values.has("code")) return Response.json(pair);
+      switch (values.get("refresh_token")) {
+        case refreshToken: exchangeStarted.resolve(); await releaseExchange.promise; return Response.json(pair);
+        case revokedToken: return Response.json({ error: "bad_refresh_token" });
+        case brokenToken: return Response.json({ error: "indeterminate" }, { status: 502 });
+        default: throw new Error("Unexpected synthetic refresh");
+      }
+    },
+    cf: false,
+  });
+  t.after(() => runtime.dispose());
+  const post = (endpoint, body) => runtime.dispatchFetch(GITHUB_OAUTH_ORIGIN + endpoint, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  let clock = Date.now();
+  const authorization = new GitHubBrowserAuthorization({ fetchImpl: (url, options) => runtime.dispatchFetch(url, options),
+    now: () => clock });
+  for (const modern of [false, true]) {
+    const login = await authorization.start();
+    const callback = await runtime.dispatchFetch(GITHUB_OAUTH_ORIGIN + "/github/callback?" +
+      new URLSearchParams({ state: login.state, code: "fixture_oauth_code" }), { redirect: "manual" });
+    assert.equal(callback.status, 303);
+    clock += login.intervalMs;
+    const credentials = modern ? await authorization.poll(login)
+      : await (await post("/github/poll", { state: login.state, verifier: login.verifier })).json();
+    assert.equal(credentials.token, nextToken);
+    assert.equal(credentials.refreshToken, modern ? nextRefreshToken : undefined);
+  }
+  const proof = { refreshToken, verifier: "v".repeat(43), deadline: Date.now() + 60_000 };
+  const first = post("/github/refresh", proof);
+  try {
+    await exchangeStarted.promise;
+    assert.deepEqual(await (await post("/github/refresh", proof)).json(), { status: "pending" });
+    assert.deepEqual(await (await post("/github/refresh", { ...proof, verifier: "x".repeat(43) })).json(),
+      { status: "unknown" });
+  } finally { releaseExchange.resolve(); }
+  const raw = await (await first).text();
+  assert.equal(JSON.parse(raw).status, "refreshed");
+  assert.ok([nextToken, nextRefreshToken, proof.verifier].every(secret => !raw.includes(secret)));
+  // Discard the first response. A fresh caller reads back the same durable result.
+  assert.equal(await (await post("/github/refresh", proof)).text(), raw);
+  const current = await authorization.refresh(proof);
+  assert.equal(current.token, nextToken);
+  assert.equal(current.refreshToken, nextRefreshToken);
+  assert.equal(exchanges.filter(form => form.get("refresh_token") === refreshToken).length, 1);
+  const form = exchanges.at(-1);
+  assert.equal(form.get("grant_type"), "refresh_token");
+  assert.equal(form.get("client_secret"), "synthetic-client-secret");
+  assert.equal(form.has("scope"), false);
+  for (const [refreshToken, status] of [[revokedToken, "reconnect"], [brokenToken, "unknown"]]) {
+    const same = { ...proof, refreshToken };
+    for (let i = 0; i < 2; i++) assert.deepEqual(await authorization.refresh(same), { status });
+    assert.equal(exchanges.filter(form => form.get("refresh_token") === refreshToken).length, 1);
+  }
+});
+
+test("refresh result retention removes the sealed pair without reopening provider admission", async () => {
+  const deadline = Date.now() + 60_000, challenge = "fixture-proof-digest";
+  const state = new Map([["refresh", { deadline, challenge, status: "refreshed",
+    result: { iv: "sealed-fixture", ciphertext: "sealed-fixture" }, resultUntil: Date.now() - 1 }]]);
+  let alarm;
+  const storage = { kv: { get: key => state.get(key), put: (key, value) => state.set(key, value) },
+    setAlarm: async at => { alarm = at; }, deleteAll: async () => state.clear() };
+  await new GitHubOAuthAttempt({ storage }, {}).alarm();
+  assert.deepEqual(state.get("refresh"), { deadline, challenge, status: "unknown" });
+  assert.equal(alarm, deadline);
 });
