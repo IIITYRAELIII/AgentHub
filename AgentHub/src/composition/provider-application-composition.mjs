@@ -453,6 +453,7 @@ export async function createProviderApplicationComposition({
     hubMcpService,
     mcpAdmissionCoordinator,
     saveState: api.saveState,
+    runtimeStateStore,
     taskProgress: late.taskProgress,
     taskObserver: late.taskObserver,
     managedRunLifecycle: completion.managedRunLifecycle,
