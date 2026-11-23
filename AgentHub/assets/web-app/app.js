@@ -4313,7 +4313,8 @@ function renderActivityRail() {
       "data-stream-provider-label": presentation.agentLabel,
       "data-stream-model": task?.modelLabel ?? "",
       "data-stream-title": title,
-      "data-current": task.id === state.selectedId ? "" : null,
+      "data-current": selectedTask && workspaceKey(task) === workspaceKey(selectedTask)
+        && streamKey(task) === streamKey(selectedTask) ? "" : null,
       "data-running": presentation.running ? "" : null,
       ...streamEffectAttributes([task]),
       "data-answer-ready": presentation.answerReady ? "" : null,
@@ -5769,8 +5770,10 @@ function selectTaskFromUi(id, {
   }
   ensureTaskStreamVisible(currentTask());
   persistOpenStreams();
-  if (preserveTaskList) syncTaskListSelection();
-  else renderTasks();
+  if (preserveTaskList) {
+    syncTaskListSelection();
+    renderActivityRail();
+  } else renderTasks();
   renderChat({ preserveStreamTabs });
   if (!preservePane) setPane("chat");
   emit("task:select", { id });
