@@ -8237,8 +8237,31 @@ function selectedResponseAnnotationSourceMessages() {
   );
 }
 
+function compatibleCodexTraceProjections(messages, source, nativeItemId, selectedPrefix = "") {
+  const matches = messages.flatMap((message, index) => (
+    responseAnnotationSourceIdentity(message, source)?.messageKey === source.messageKey ? [{ message, index }] : []
+  ));
+  if (!matches.length || (matches.length > 1 && !nativeItemId)) return [];
+  const textCopies = [];
+  for (const { message } of matches) {
+    const groups = (message.activityGroups ?? []).filter(group => group.id === source.traceGroupId);
+    if (groups.length !== 1 || (nativeItemId && groups[0].sourceItemId !== nativeItemId)) return [];
+    const group = traceGroupWithCitationContext(groups[0], message);
+    textCopies.push(traceReasoningNode(group, message).textContent.trimEnd());
+  }
+  // Different live and final parent items may contain the same native group.
+  // Only compatible rendered copies can share the verified exact source.
+  const longest = textCopies.reduce((left, right) => left.length >= right.length ? left : right);
+  return textCopies.every(text => text.startsWith(selectedPrefix) && longest.startsWith(text)) ? matches : [];
+}
+
 function sourceMessageProjection(source) {
-  return responseAnnotationSourceProjection(selectedResponseAnnotationSourceMessages(), source);
+  const messages = selectedResponseAnnotationSourceMessages();
+  const unique = responseAnnotationSourceProjection(messages, source);
+  if (unique || source.provider !== "codex" || !source.traceGroupId) return unique;
+  return compatibleCodexTraceProjections(messages, source, source.itemId)
+    .find(({ message, index }) => renderedResponseAnnotationSourceRoot(MessageView.messageKey(message, index))?.isConnected)
+    ?? null;
 }
 
 function renderedResponseAnnotationSourceRoot(renderedKey) {
@@ -8313,7 +8336,7 @@ async function focusResponseCitationSource(button) {
     responseAnnotationSha256(surface.textContent),
     responseAnnotationSha256(range.toString().trim()),
   ]);
-  if (!responseAnnotationSourceHashesMatch(source, { contentHash, surfaceHash, selectionHash })) return false;
+  if (!article.isConnected || !responseAnnotationSourceHashesMatch(source, { contentHash, surfaceHash, selectionHash })) return false;
   activeSourceCitationCleanup?.();
   const highlight = highlightResponseAnnotationRange(surface, source.start, source.end);
   if (!highlight) return false;
@@ -9873,24 +9896,8 @@ async function responseAnnotationFromSelection(selection, commandId) {
   // Verify ownership and the captured rendering even if its DOM was replaced.
   const currentTraceSelection = () => {
     if (state.selectedId !== selectedTaskId) return null;
-    const matches = selectedResponseAnnotationSourceMessages().flatMap((message) => {
-      if (responseAnnotationSourceIdentity(message, {
-        traceGroupId: locator.traceGroupId, itemId: identity.itemId,
-      })?.messageKey !== identity.messageKey) return [];
-      const groups = (message.activityGroups ?? []).filter((group) => group.id === locator.traceGroupId);
-      if (groups.length !== 1 || (selectedNativeItemId && groups[0].sourceItemId !== selectedNativeItemId)) return [];
-      return [{ message, group: groups[0] }];
-    });
-    if (!matches.length || (matches.length !== 1 && !selectedNativeItemId)) return null;
-    const renderedCopies = matches.map(({ message, group }) => ({
-      message,
-      text: traceReasoningNode(traceGroupWithCitationContext(group, message), message).textContent.trimEnd(),
-    }));
-    const longest = renderedCopies.reduce((left, right) => left.text.length >= right.text.length ? left : right);
-    // Live and terminal projections can coexist while their parent items differ.
-    // They can share the native group only while their rendered content agrees.
-    if (!renderedCopies.every(({ text }) => text.startsWith(selectedPrefix) && longest.text.startsWith(text))) return null;
-    return longest.message;
+    return compatibleCodexTraceProjections(selectedResponseAnnotationSourceMessages(),
+      { ...identity, traceGroupId: locator.traceGroupId }, selectedNativeItemId, selectedPrefix)[0]?.message ?? null;
   };
   if (locator.traceGroupId && identity.provider === "codex") {
     // Durable history is a bounded preview, including legacy rows with no

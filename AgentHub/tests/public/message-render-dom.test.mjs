@@ -976,7 +976,9 @@ test("active quote binds native reasoning before response item and survives draf
       await page.evaluate(live=>{
         window.__quoteLive=live;window.__quoteSends=[];
         window.AgentHub.on('message:send',detail=>window.__quoteSends.push(detail));
-        window.AgentHub.on('history:trace-page',({identity,tracePage,resolve})=>{window.__nativeQuoteRequest={identity,tracePage};window.__nativeQuoteResolve=resolve;});
+        window.__removeNativeQuoteListener=window.AgentHub.on('history:trace-page',({identity,tracePage,resolve})=>{
+          window.__nativeQuoteRequest={identity,tracePage};window.__nativeQuoteResolve=resolve;
+        });
         window.AgentHub.setLive('task-1',live);
       },live);
       await page.locator('[data-live-trace] .turn-trace-reasoning').waitFor();
@@ -1010,6 +1012,29 @@ test("active quote binds native reasoning before response item and survives draf
       const user={id:'quoted-user',role:'user',provider:'codex',threadId:'thread-1',turnId:'next-turn',itemId:'user-item',text:'Check',responseAnnotations:[{text:annotation.quote,annotation:annotation.annotation,source:annotation.source}]};
       const projection=codexAssistantResponseProjection(':codex-annotation{index="1"} Verified');
       const answer={id:'linked-answer',role:'agent',provider:'codex',threadId:'thread-1',turnId:'next-turn',itemId:'answer-item',...projection};
+      await page.evaluate(({source,user,answer,group})=>{
+        const preview={...group,reasoning:'Current **exact**'};
+        window.AgentHub.setLive('task-1',{...window.__quoteLive,itemId:'later-answer-item',activityGroups:[preview]});
+        window.AgentHub.setMessages('task-1',[{...source,itemId:'final-answer-item',activityGroups:[preview]},user,answer]);
+        window.__removeNativeQuoteListener();
+        window.__navigationReads=[];
+        window.AgentHub.on('history:trace-page',({tracePage,resolve})=>{
+          window.__navigationReads.push(tracePage);resolve({groups:[group]});
+        });
+      },{source,user,answer,group});
+      const sourceLink=page.locator('[data-message-id="quoted-user"] [data-response-annotation-source]');
+      await sourceLink.click();
+      const overlapHighlight=page.locator('[data-message-id="completed-source"] .msg-source-citation-highlight');
+      await overlapHighlight.first().waitFor();
+      assert.equal((await overlapHighlight.allTextContents()).join(''),annotation.quote);
+      assert.deepEqual(await page.evaluate(()=>window.__navigationReads),[{turnId:'quote-turn',groupId:group.id}]);
+      const ambiguous=await page.evaluate(({source,user,answer,group})=>{
+        window.AgentHub.setMessages('task-1',[{...source,itemId:'final-answer-item',
+          activityGroups:[{...group,reasoning:'Different rendered group'}]},user,answer]);
+        return focusResponseCitationSource(document.querySelector('[data-message-id="quoted-user"] [data-response-annotation-source]'));
+      },{source,user,answer,group});
+      assert.equal(ambiguous,false);
+      assert.equal(await page.evaluate(()=>window.__navigationReads.length),1);
       await page.reload();await page.waitForFunction(()=>window.AgentHub);
       await seedMessages(page,[source,user,answer]);if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
       await page.evaluate(group=>window.AgentHub.on('history:trace-page',({resolve})=>resolve({groups:[group]})),group);
