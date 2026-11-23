@@ -5166,7 +5166,7 @@ async function loadAttachmentImage(attachment, index, generation) {
           : null;
     if (!ownsAttachmentViewerResource(viewerResource)) return false;
     const resourceUrl = directDataUrl || String(access?.url ?? directResourceUrl).trim();
-    const authenticatedFetch = Boolean(telegramInitData)
+    const authenticatedFetch = Boolean(telegramInitData || (vscode && attachment?.workspaceImagePreview))
       && (!resourceUrl || sameOriginResource(resourceUrl));
     if (!resourceUrl && !String(access?.id ?? "").trim()) {
       throw new Error("Файл изображения недоступен");
@@ -5213,7 +5213,9 @@ async function loadAttachmentImage(attachment, index, generation) {
     if (!ownsAttachmentViewerResource(viewerResource)) return false;
     const message = viewerResource?.timedOut
       ? "Изображение не загрузилось вовремя"
-      : hubErrorMessage(error);
+      : attachment?.workspaceImagePreview
+        ? "Не удалось открыть изображение: файл недоступен или формат не поддерживается"
+        : hubErrorMessage(error);
     agentHub.failAttachmentViewer({
       message,
       index,
@@ -5223,6 +5225,28 @@ async function loadAttachmentImage(attachment, index, generation) {
     throw error;
   }
 }
+
+agentHub.on("resource:image-preview", ({ localPath, name, generation }) => void (async () => {
+  const index = 0;
+  try {
+    await localSessionReady;
+    if (!attachmentViewerAuthority(generation, index)) return;
+    const url = `/api/workspace-file?path=${encodeURIComponent(localPath)}&preview=image`;
+    if (vscode && await window.__agentHubDirectTransport?.available()) {
+      await loadAttachmentImage({ url, name, workspaceImagePreview: true }, index, generation);
+      return;
+    }
+    if (!vscode && localWorkspaceFilesAvailable) {
+      agentHub.showAttachmentViewer({ dataUrl: url, name, generation, index });
+      return;
+    }
+    agentHub.failAttachmentViewer({
+      generation, index, message: "Для предпросмотра файла нужно локальное подключение к Hub",
+    });
+  } catch {
+    agentHub.failAttachmentViewer({ generation, index, message: "Файл изображения недоступен" });
+  }
+})());
 
 agentHub.on("attachment:open", ({ attachment, gallery = [], index = 0 }) => runAction(async () => {
   const image = String(attachment?.type ?? "").toLowerCase().startsWith("image/") || attachment?.isImage;

@@ -317,6 +317,13 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   decode share its remaining budget and never restart it. Every unresolved or
   failed image therefore leaves the loading state within that deadline with a
   visible error, and late work cannot replace or dispose a newer generation.
+- In chat, an ordinary click on a recognized local or direct web image link
+  opens the same image viewer. Use the file target or matching projected
+  attachment metadata, never the link caption. File actions remain available
+  from the explicit control or context menu. The browser loads web images
+  as images from their origin. Native decoding limitations, missing files,
+  authorization failures and invalid image responses leave a visible error
+  in the viewer. See [ADR-HUB-519](../decisions/ADR-HUB-519-image-links.md).
 - Current Codex limits expose every available provider window separately. A
   healthy short window cannot hide an exhausted longer window for the same model.
 - Agent response-annotation locators cross either provider boundary as unique

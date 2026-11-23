@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, rename, stat, unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rmdir, stat, unlink } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
@@ -16,7 +17,9 @@ const execFileAsync = promisify(execFile);
 const THUMBNAIL_FORMAT_VERSION = 1;
 const DEFAULT_MAX_EDGE = 480;
 
-async function generateWithPillow({ pythonExe, script, source, target, maxEdge }) {
+const THUMBNAIL_SCRIPT = path.resolve(import.meta.dirname, "../../..", "attachment_thumbnail.py");
+
+async function generateWithPillow({ pythonExe, script, source, target, maxEdge, format }) {
   const candidates = [...new Set([
     String(pythonExe ?? "").trim(),
     String(process.env.PYTHON ?? "").trim(),
@@ -26,7 +29,9 @@ async function generateWithPillow({ pythonExe, script, source, target, maxEdge }
   let lastError = null;
   for (const candidate of candidates) {
     try {
-      await execFileAsync(candidate, [script, source, target, String(maxEdge)], {
+      const args = [script, source, target, String(maxEdge)];
+      if (format) args.push(format);
+      await execFileAsync(candidate, args, {
         encoding: "utf8",
         env: { ...process.env, PYTHONUTF8: "1" },
         maxBuffer: 64 * 1024,
@@ -41,6 +46,19 @@ async function generateWithPillow({ pythonExe, script, source, target, maxEdge }
     }
   }
   throw lastError ?? new Error("Python с Pillow не найден");
+}
+
+export async function createWorkspaceImagePreview(file, format) {
+  if (file.bytes > MAX_ATTACHMENT_BYTES) throw new Error("Изображение слишком велико для преобразования");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-image-"));
+  const target = path.join(directory, "preview.webp");
+  try {
+    await generateWithPillow({ script: THUMBNAIL_SCRIPT, source: file.target, target, maxEdge: 1024, format });
+    return await readFile(target);
+  } finally {
+    try { await unlink(target); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+    await rmdir(directory);
+  }
 }
 
 function previewName(name) {
@@ -59,7 +77,7 @@ export class AttachmentThumbnailService {
   constructor({
     attachmentRoot,
     pythonExe = "",
-    script = path.resolve(import.meta.dirname, "../../..", "attachment_thumbnail.py"),
+    script = THUMBNAIL_SCRIPT,
     maxEdge = DEFAULT_MAX_EDGE,
     generateThumbnail = null,
   } = {}) {

@@ -1,4 +1,5 @@
 import sys
+import warnings
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -8,12 +9,15 @@ Image.MAX_IMAGE_PIXELS = 40_000_000
 
 
 def main() -> int:
-    if len(sys.argv) != 4:
-        raise SystemExit("usage: attachment_thumbnail.py SOURCE TARGET MAX_EDGE")
+    if len(sys.argv) not in (4, 5):
+        raise SystemExit("usage: attachment_thumbnail.py SOURCE TARGET MAX_EDGE [FORMAT]")
     source = Path(sys.argv[1])
     target = Path(sys.argv[2])
     max_edge = max(64, min(1024, int(sys.argv[3])))
-    with Image.open(source) as opened:
+    formats = [sys.argv[4]] if len(sys.argv) == 5 else None
+    if formats:
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+    with Image.open(source, formats=formats) as opened:
         opened.seek(0)
         image = ImageOps.exif_transpose(opened)
         image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)

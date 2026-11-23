@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 const source = await readFile(new URL("../../assets/web-app/attachments/interactions.js", import.meta.url), "utf8");
 const window = {};
-vm.runInNewContext(source, { window });
+vm.runInNewContext(source, { window, URL });
 const interactions = window.AgentHubResourceInteractions;
 
 test("image galleries retain image order and clamp navigation", () => {
@@ -176,6 +176,18 @@ test("local link clicks and context menus share one resource contract", () => {
     "open-editor", "reveal", "copy-path", "copy-object", "save", "external-share",
   ]);
   assert.equal(interactions.workspaceFilePath(resource.localPath), "D:/work/file.txt");
+});
+
+test("image links use their file type or projected MIME, independent of URL decorations", () => {
+  assert.equal(interactions.imageLinkPreview({ href: "https://images.example/a%2EAVIF?download#.txt" }).name, "a.AVIF");
+  assert.equal(interactions.imageLinkPreview({ href: "https://images.example/render", type: "image/png" }).url,
+    "https://images.example/render");
+  assert.equal(interactions.imageLinkPreview({ href: "https://images.example/page?file=a.png" }), null);
+  assert.equal(interactions.imageLinkPreview({ href: "https://images.example/page.png/" }), null);
+  assert.equal(interactions.imageLinkPreview({ href: "file:///C:/picture.png" }), null);
+  assert.equal(interactions.imageLinkPreview({ localPath: "C:/work/very#real.TIFF" }).localPath, "C:/work/very#real.TIFF");
+  assert.equal(interactions.resolveFileReference("file:///C:/work/picture%23one.GIF?a=1#frame").localPath,
+    "C:/work/picture#one.GIF");
 });
 
 test("workspace file actions are available only in VS Code and local web", () => {

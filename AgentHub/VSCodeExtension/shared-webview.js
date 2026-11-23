@@ -123,7 +123,7 @@ async function sharedWebviewHtml(webview, locations) {
   html = rewritten.html;
   const csp = [
     "default-src 'none'",
-    `img-src ${webview.cspSource} data: blob:`,
+    `img-src ${webview.cspSource} data: blob: https:`,
     `style-src ${webview.cspSource} 'nonce-${nonce}'`,
     `script-src ${webview.cspSource} 'nonce-${nonce}'`,
     "connect-src http://127.0.0.1:* http://localhost:* http://[::1]:*",

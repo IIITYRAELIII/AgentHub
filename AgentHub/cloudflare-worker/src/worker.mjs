@@ -4850,7 +4850,7 @@ async function secureStaticResponse(response, request) {
     "connect-src 'self'",
     "form-action 'none'",
     "frame-ancestors 'none'",
-    "img-src 'self' data: blob: https://*.darksanctuary.ru",
+    "img-src 'self' data: blob: https:",
     "object-src 'none'",
     `script-src 'self'${directAssetOrigin ? ` ${directAssetOrigin}` : ""} https://telegram.org`,
     `style-src 'self'${directAssetOrigin ? ` ${directAssetOrigin}` : ""}`,
