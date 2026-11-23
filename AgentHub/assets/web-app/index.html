@@ -30,6 +30,7 @@
   <script src="/chat-surface-preference.js" defer></script>
   <script src="/theme-preference.js" defer></script>
   <script src="/composer-shortcuts.js" defer></script>
+  <script src="/composer-emoji-picker.js" defer></script>
   <script src="/background-motion-preference.js" defer></script>
   <script src="/activity-rail-preference.js" defer></script>
   <script src="/background-image-resolver.js" defer></script>
@@ -676,6 +677,9 @@
               data-bars="0" title="Связь: подключение" aria-label="Связь: подключение">
               <i></i><i></i><i></i><i></i>
             </span>
+            <button type="button" class="icon-button composer-emoji" data-composer-emoji-toggle
+              title="Вставить смайлик" aria-label="Вставить смайлик"
+              aria-controls="composer-emoji-picker" aria-expanded="false">😊</button>
             <label class="composer-input" data-composer-grow>
               <textarea data-composer-input rows="1"
                 placeholder="Сообщение агенту…"
@@ -711,6 +715,15 @@
               </svg>
             </button>
           </div>
+          <section id="composer-emoji-picker" class="composer-emoji-picker" data-composer-emoji-picker
+            aria-labelledby="composer-emoji-title" hidden>
+            <header>
+              <strong id="composer-emoji-title">Смайлики</strong>
+              <button type="button" data-composer-emoji-close>Закрыть</button>
+            </header>
+            <div class="composer-emoji-categories" data-composer-emoji-categories role="group" aria-label="Категории"></div>
+            <div class="composer-emoji-grid" data-composer-emoji-grid role="group" aria-label="Смайлики"></div>
+          </section>
           <input type="file" multiple data-file-input hidden aria-hidden="true">
         </form>
 
