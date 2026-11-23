@@ -113,3 +113,7 @@ export function recoverCodexRolloutSubagents(rolloutPath, candidates) {
 export function readCodexTracePageInWorker(rolloutPath, options) {
   return requestWorker("trace-page", { rolloutPath, options });
 }
+
+export function readCodexVisualizationInWorker(rolloutPath, options) {
+  return requestWorker("visualization", { rolloutPath, options });
+}

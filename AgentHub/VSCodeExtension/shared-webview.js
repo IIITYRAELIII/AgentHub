@@ -127,6 +127,7 @@ async function sharedWebviewHtml(webview, locations) {
     `style-src ${webview.cspSource} 'nonce-${nonce}'`,
     `script-src ${webview.cspSource} 'nonce-${nonce}'`,
     "connect-src http://127.0.0.1:* http://localhost:* http://[::1]:*",
+    "frame-src " + webview.cspSource,
     "font-src 'none'",
   ].join("; ");
   html = html.replace(

@@ -35,6 +35,7 @@ import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 import { isLegacyCodexContextProbeTurn } from "../../domain/legacy-codex-context-probe.mjs";
 import { withDurableMessageMetadata } from "../../domain/stream-message-pin.mjs";
+import { codexVisualizationIdentity } from "../../domain/codex-visualization-reference.mjs";
 
 const MAX_CACHED_HISTORIES = 12;
 const MAX_CACHED_TURNS_PER_HISTORY = 40;
@@ -525,7 +526,7 @@ export function createDesktopTaskHistoryFactory({
     const entries = typeof catalog.entries === "function"
       ? catalog.entries()
       : await catalog.refresh();
-    scheduleCatalogRefresh();
+    if (!params.visualization) scheduleCatalogRefresh();
     const hasStreamLineage = selectedStreamId && typeof catalog.threadsForStream === "function";
     const selectedStreamThreads = hasStreamLineage
       ? catalog.threadsForStream(selectedStreamId)
@@ -561,6 +562,19 @@ export function createDesktopTaskHistoryFactory({
       taskTitle: binding.taskTitle,
       chatId: binding.chatId,
     })) : [binding];
+    if (params.visualization) {
+      const identity = codexVisualizationIdentity({ ...params.visualization, threadId: selectedThreadId });
+      const source = threadBindings.find((thread) => thread.provider === provider && thread.threadId === selectedThreadId);
+      if (!identity) return { html: null };
+      const response = { ...identity, provider, streamId: binding.streamId };
+      if (provider !== "codex" || !selectedStreamId || !source
+        || typeof historyReader.readVisualization !== "function") return { ...response, html: null };
+      const turn = await historyReader.readTurn?.({ provider, threadId: selectedThreadId, turnId: identity.turnId });
+      const html = await historyReader.readVisualization(identity, turn?.startedAt);
+      const result = { ...response, html };
+      return Buffer.byteLength(JSON.stringify(result)) <= (params.maxResponseBytes ?? 3_500_000)
+        ? result : { ...response, html: null };
+    }
     const historySources = new Map();
     if (params.tracePage) {
       const source = threadBindings.find((thread) => thread.provider === provider

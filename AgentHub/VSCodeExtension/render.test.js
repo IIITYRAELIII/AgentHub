@@ -347,7 +347,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "web-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "web-app");
-  const required = ["messages/disclosure.js", "message-view-controller.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "attachments/interactions.js", "future-runtime-module.js", "rate-limit-series.js", "task-board.js", "app.js", "messages/lifecycle.js", "messages/send-transaction.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
+  const required = ["messages/disclosure.js", "message-view-controller.js", "visualization-frame.html", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "attachments/interactions.js", "future-runtime-module.js", "rate-limit-series.js", "task-board.js", "app.js", "messages/lifecycle.js", "messages/send-transaction.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
@@ -355,6 +355,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     fs.writeFileSync(path.join(runtimeAssets, "index.html"), `<meta charset="utf-8">runtime
       <link rel="icon" href="/agent-hub-mark.png"><link rel="stylesheet" href="/work-log.css"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/backgrounds.css">
       <img data-app-mark src="/agent-hub-mark.png" alt="">
+       <link rel="agent-hub-visualization-frame" href="/visualization-frame.html">
       <!-- agent-hub-theme-styles --><select data-theme-select></select>
       <!-- agent-hub-theme-markup --><!-- agent-hub-theme-catalog -->
       <script src="/browser-device-auth.js" defer></script><script src="/messages/disclosure.js" defer></script><script src="/message-view-controller.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/statistics-controls.js" defer></script><script src="/attachments/interactions.js" defer></script><script src="/future-runtime-module.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
@@ -401,6 +402,9 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     assert.match(result.html, /url\("vscode-webview-resource:.*themes[\\/]pulsar[\\/]pulsar-aurora\.png"\)/u);
     assert.doesNotMatch(result.html, /url\(["']?\.\/pulsar-aurora\.png/u);
     assert.match(result.html, /style-src vscode-webview:\/\/test 'nonce-[^']+'/u);
+    assert.match(result.html, /frame-src vscode-webview:\/\/test/u);
+    assert.match(result.html, /rel="agent-hub-visualization-frame" href="vscode-webview-resource:[^"]+visualization-frame\.html"/u);
+    assert.ok(result.roots.some(uri => uri.fsPath === path.join(runtimeAssets, "visualization-frame.html")));
     assert.doesNotMatch(result.html, /browser-device-auth\.js/u);
     assert.ok(result.roots.every((uri) => (
       uri.fsPath.startsWith(runtimeRoot) || uri.fsPath.startsWith(extensionRoot)

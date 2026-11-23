@@ -4849,12 +4849,16 @@ async function secureStaticResponse(response, request) {
     "base-uri 'none'",
     "connect-src 'self'",
     "form-action 'none'",
+    "frame-src 'self'",
     "frame-ancestors 'none'",
     "img-src 'self' data: blob: https://*.darksanctuary.ru",
     "object-src 'none'",
     `script-src 'self'${directAssetOrigin ? ` ${directAssetOrigin}` : ""} https://telegram.org`,
     `style-src 'self'${directAssetOrigin ? ` ${directAssetOrigin}` : ""}`,
   ].join("; "));
+  if (url.pathname === "/visualization-frame.html") {
+    headers.set("Content-Security-Policy", "frame-ancestors 'self'");
+  }
   headers.set("Referrer-Policy", "no-referrer");
   headers.set("X-Content-Type-Options", "nosniff");
   let body = response.body;

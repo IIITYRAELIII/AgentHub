@@ -90,6 +90,7 @@ document.addEventListener("visibilitychange", resumeWebviewMotion);
 window.addEventListener("pagehide", () => motionObserver.disconnect(), { once: true });
 
 window.addEventListener("message", (event) => {
+  if (event.source && event.source !== window && event.source !== window.parent) return;
   const message = event.data;
   if (message?.type === "agenthub:session-result") {
     const request = pendingSessions.get(String(message.id ?? ""));

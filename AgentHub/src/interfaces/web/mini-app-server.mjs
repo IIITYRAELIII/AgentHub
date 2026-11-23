@@ -46,6 +46,7 @@ const STATIC_CONTENT_TYPES = new Map([
   [".jpeg", "image/jpeg"],
   [".jpg", "image/jpeg"],
   [".js", "text/javascript; charset=utf-8"],
+  [".html", "text/html; charset=utf-8"],
   [".mjs", "text/javascript; charset=utf-8"],
   [".png", "image/png"],
   [".svg", "image/svg+xml; charset=utf-8"],
@@ -370,6 +371,7 @@ function responseHeaders(contentType, {
       "base-uri 'none'",
       "connect-src 'self'",
       "form-action 'none'",
+      "frame-src 'self'",
       "frame-ancestors 'none'",
       "img-src 'self' data: blob:",
       "object-src 'none'",
@@ -1950,6 +1952,9 @@ export class MiniAppServer {
           immutable: descriptor.immutable || url.searchParams.has("v"),
           telegramRuntime,
           styleNonce,
+          ...(url.pathname === "/visualization-frame.html"
+            ? { headers: { "Content-Security-Policy": "frame-ancestors 'self'" } }
+            : {}),
         },
       );
     } catch (error) {

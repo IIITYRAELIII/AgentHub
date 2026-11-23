@@ -114,6 +114,11 @@
       "title": "Canonical message projection",
       "document": "UI-001-message-projection.md",
       "paths": [
+        "docs/decisions/ADR-HUB-520-inline-codex-visualization.md",
+        "src/domain/codex-visualization-reference.mjs",
+        "src/providers/codex/codex-visualization.mjs",
+        "tests/providers/codex-visualization.test.mjs",
+        "tests/public/visualization-history-dom.test.mjs",
         "docs/decisions/ADR-HUB-422-addressed-queue-receipts.md",
         "tests/public/queue-canonical-cancellation.test.mjs",
         "docs/decisions/ADR-0274-upload-attempt-storage.md",

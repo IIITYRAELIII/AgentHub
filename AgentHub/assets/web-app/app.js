@@ -7456,10 +7456,15 @@ function renderMarkdownCodeBlock(lines, language = "") {
   ]);
 }
 
+const visualizationResponseOwners = new WeakMap();
+
 function renderMarkdown(target, source, fileContext = currentFileLinkContext(), messageRole = "agent", detailsDepth = 0) {
   const disclosureState = MessageView.captureMarkdownDetailsState(target);
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
+  const visualization = window.AgentHubVisualization;
+  const visualizationOwner = visualizationResponseOwners.get(target);
+  const isVisualizationLine = (line) => visualizationOwner && visualization?.markerLine(line);
   const headingPattern = /^\s*(#{1,6})\s+(.+)$/u;
   const listItemPattern = /^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u;
   let index = 0;
@@ -7478,11 +7483,23 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       target.append(renderMarkdownCodeBlock(code, fence.language));
       continue;
     }
+    if (isVisualizationLine(line)) {
+      const { provider, threadId, streamId, turnId, itemId } = visualizationOwner;
+      const load = provider === "codex" && threadId && streamId && turnId && itemId
+        ? (markerHash) => new Promise((resolve, reject) => emit("history:visualization", {
+            provider, threadId, streamId, turnId, itemId, markerHash, resolve, reject,
+          }))
+        : null;
+      target.append(visualization.card(line, load));
+      index += 1;
+      continue;
+    }
     const disclosure = detailsDepth < 32 ? MessageView.markdownDetailsAt(lines, index) : null;
     if (disclosure) {
       const summary = el("summary");
       appendInlineMarkdown(summary, disclosure.summary || "Подробнее", fileContext);
       const body = el("div", { class: "markdown-details-body" });
+      if (visualizationOwner) visualizationResponseOwners.set(body, visualizationOwner);
       renderMarkdown(body, disclosure.body, fileContext, messageRole, detailsDepth + 1);
       const details = el("details", { class: "markdown-details" }, [summary, body]);
       details.agentHubMarkdownDetailsSource = JSON.stringify([disclosure.summary, disclosure.body]);
@@ -7560,6 +7577,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
     const paragraph = [lines[index++]];
     while (index < lines.length
       && lines[index].trim()
+      && !isVisualizationLine(lines[index])
       && !MessageView.markdownFenceStart(lines[index])
       && !headingPattern.test(lines[index])
       && !listItemPattern.test(lines[index])
@@ -7987,6 +8005,12 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     target.replaceChildren();
     // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
     if (renderResponseAnnotations(target, message)) return;
+    if (role === "agent" && (message.provider || task?.provider) === "codex"
+      && (!message.phase || message.phase === "final_answer")) {
+      visualizationResponseOwners.set(target, {
+        ...message, provider: message.provider || task?.provider, streamId: message.streamId || task?.streamId,
+      });
+    }
     const text = role === "system"
       ? MessageView.normalizeSystemEventText(message.text ?? "")
       : message.text ?? "";
@@ -8172,11 +8196,14 @@ function renderAgentResponseBody(body, message, text, fileContext) {
   const legacyReferences = references.filter((reference) => !reference.position);
   const { segments, unpositioned } = MessageView.responseCitationSegments(text, message.responseCitationPresentations);
   const content = el("div", { class: "msg-response-content" });
+  const visualizationOwner = visualizationResponseOwners.get(body);
+  if (visualizationOwner) visualizationResponseOwners.set(content, visualizationOwner);
   if (segments.some((segment) => segment.citation)) {
     for (const segment of segments) {
       if (segment.citation) content.append(renderResponseCitations({ responseCitationPresentations: [segment.citation] }));
       else if (segment.text.trim()) {
         const part = el("div", { class: "msg-response-part" });
+        if (visualizationOwner) visualizationResponseOwners.set(part, visualizationOwner);
         renderMarkdown(part, MessageView.withoutResponseCitationFallbacks(segment.text, legacyReferences), fileContext, "agent");
         content.append(...part.childNodes);
       }
@@ -8394,6 +8421,9 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
       historyMessages.length,
     ),
   };
+  const visualizationOwner = liveMessage.provider === "codex" && liveMessage.responsePhase === "final_answer"
+    ? { ...liveMessage, streamId: liveMessage.streamId || task?.streamId }
+    : null;
   node.dataset.messageKey = MessageView.messageKey(liveMessage, historyMessages.length);
   const renderParts = window.AgentHubLiveCardRender.liveCardRenderParts({
     visibleText,
@@ -8402,7 +8432,11 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     activities,
     stageDetail: liveStage.detail,
     fileContext,
-    bodyState: liveMessage.responseCitationPresentations,
+    bodyState: visualizationOwner ? {
+      citations: liveMessage.responseCitationPresentations,
+      threadId: visualizationOwner.threadId, turnId: visualizationOwner.turnId,
+      itemId: visualizationOwner.itemId, streamId: visualizationOwner.streamId,
+    } : liveMessage.responseCitationPresentations,
   });
   liveCardRenderController.reconcile(node, "reasoning", renderParts.reasoning, () => {
     renderMarkdown(reasoning, standaloneReasoning, fileContext);
@@ -8432,6 +8466,8 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
   liveTrace.hidden = groups.length === 0;
   const body = node.querySelector("[data-live-body]");
   liveCardRenderController.reconcile(node, "body", renderParts.body, () => {
+    if (visualizationOwner) visualizationResponseOwners.set(body, visualizationOwner);
+    else visualizationResponseOwners.delete(body);
     if (liveMessage.responseCitationPresentations.length) {
       renderAgentResponseBody(body, liveMessage, visibleText, fileContext);
     } else renderMarkdown(body, visibleText, fileContext);
@@ -18505,6 +18541,7 @@ if (journalPolling) {
 }
 if (vscodeMode) {
   window.addEventListener("message", (event) => {
+    if (event.source && event.source !== window && event.source !== window.parent) return;
     if (event.data?.type === "agenthub:journal-changed") {
       if (journalRequested) void loadJournal({ force: event.data.force === true });
     }

@@ -1629,6 +1629,7 @@ async function hubFetchWithin(input, init, timeoutMs, traceId) {
 }
 
 window.addEventListener("message", (event) => {
+  if (event.source && event.source !== window && event.source !== window.parent) return;
   const message = event.data;
   if (message?.type === "agenthub:runtime-published") {
     reloadForPublishedRuntime();
@@ -3776,6 +3777,17 @@ agentHub.on("history:trace-page", ({ identity, tracePage, resolve, reject }) => 
       || result.tracePage?.turnId !== tracePage.turnId) throw new Error("Trace identity mismatch");
     resolve(result.tracePage);
   }).catch(reject);
+});
+
+agentHub.on("history:visualization", ({ provider, threadId, streamId, turnId, itemId, markerHash, resolve, reject }) => {
+  void control("task-history", { provider, threadId, streamId, visualization: { turnId, itemId, markerHash } })
+    .then((result) => {
+      if (result?.provider !== provider || result.threadId !== threadId || result.streamId !== streamId
+        || result.turnId !== turnId || result.itemId !== itemId || result.markerHash !== markerHash) {
+        throw new Error("Visualization identity mismatch");
+      }
+      resolve(result.html);
+    }).catch(reject);
 });
 
 agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
