@@ -1210,11 +1210,27 @@ function observeCompletionBoundary(taskIdValue, completion, durableMessages) {
   return turnIds.length > 1;
 }
 
+function exactSnapshotFinal(selected, incomingTurnId) {
+  const final = selected?.latestFinal;
+  if (!readMarker.finalIdentity(final)) return null;
+  const provider = String(selected.provider ?? "").trim().toLowerCase();
+  const threadId = String(selected.threadId ?? "").trim();
+  const turnId = String(final.turnId).trim();
+  const answerTurnId = String(selected.lastAnswerTurnId ?? "").trim();
+  if (String(final.provider).trim().toLowerCase() !== provider || String(final.threadId).trim() !== threadId
+    || turnId === String(incomingTurnId ?? "").trim() || (answerTurnId && answerTurnId !== turnId)) return null;
+  return { provider, threadId, turnId, time: final.completedAt };
+}
+
 function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") {
   const completion = snapshotCompletionCandidate(selected, incomingTurnId);
-  if (!completion) return false;
+  // Compact snapshots still carry exact final identity. The body is needed only
+  // when creating or refreshing an overlay, which remains a separate decision.
+  const terminal = selected?.latestFinal == null ? completion : exactSnapshotFinal(selected, incomingTurnId);
+  if (!completion && !terminal) return false;
   const durableMessages = historyByTask.get(taskIdValue) ?? [];
-  const boundaryChanged = observeCompletionBoundary(taskIdValue, completion, durableMessages);
+  const boundaryChanged = terminal ? observeCompletionBoundary(taskIdValue, terminal, durableMessages) : false;
+  if (!completion) return boundaryChanged;
   if (completedConversationTurnVisible(durableMessages, {
     turnId: completion.turnId,
     answer: completion.answer,

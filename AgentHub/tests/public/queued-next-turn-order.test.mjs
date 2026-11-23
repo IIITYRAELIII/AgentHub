@@ -161,12 +161,13 @@ for (const first of ["snapshot", "history"]) {
   });
 }
 
-for (const [priorStart, priorSubmittedAt] of [
+for (const [priorStart, priorSubmittedAt, compact] of [
   [previousTurnHistory.startedAt, previousRoot.submittedAt],
   [completedAt, previousRoot.submittedAt],
   [completedAt, "2026-11-23T19:00:30.000Z"],
+  [completedAt, "2026-11-23T19:00:30.000Z", true],
 ]) {
-  test(`a completed successor stays below the durable turn with start ${priorStart} and intake ${priorSubmittedAt}`, { timeout: 30_000 }, async () => {
+  test(`a completed successor stays below the durable turn with start ${priorStart} and intake ${priorSubmittedAt} (${compact ? "compact" : "full"})`, { timeout: 30_000 }, async () => {
     const browser = await launchBrowser();
     const page = await browser.newPage({ viewport: { width: 1366, height: 900 }, timezoneId: "UTC" });
     const successor = "01a209c2-ea7c-7000-8000-000000000001";
@@ -179,10 +180,25 @@ for (const [priorStart, priorSubmittedAt] of [
         messages: [{ ...previousRoot, submittedAt: priorSubmittedAt }, ...previousTurnHistory.messages.slice(1)] }]);
       const errors = await openClientEventFixture(page, { surface: "web", fixtureSnapshot: initial, fixtureHistory: prior });
       await readHistory(page, prior);
+      if (compact) {
+        const live = structuredClone(initial);
+        live.version = "successor-live-final";
+        live.tasks[0] = { ...live.tasks[0], running: true, lastAnswer: "", lastAnswerAt: completedAt,
+          lastAnswerTurnId: previousTurn, lastAnswerRevision: 1,
+          latestFinal: { ...identity, turnId: previousTurn, revision: 1, completedAt },
+          run: { id: "successor-run", turnId: successor, operationKind: "user-turn", projectionState: "active",
+            clientUserMessageId: originalId, prompt: sentText, response: "Next terminal overlay", responsePhase: "final",
+            submittedAt, startedAt: completedAt, providerStart: { state: "observed", turnId: successor, acceptedAt: completedAt } } };
+        await page.evaluate((value) => {
+          window.__agentHubFixture.snapshot = value;
+          return window.__dispatchClientFixture("connection:retry");
+        }, live);
+        await page.waitForFunction((id) => window.__clientProjectionFixture.live["stream-a"]?.turnId === id, successor);
+      }
       const next = structuredClone(initial);
       next.version = "equal-boundary-terminal-overlay";
-      next.tasks[0] = { ...next.tasks[0], lastAnswer: "Next terminal overlay", lastAnswerAt: completedAt,
-        lastAnswerTurnId: successor, lastAnswerRevision: 1 };
+      next.tasks[0] = { ...next.tasks[0], lastAnswer: compact ? "" : "Next terminal overlay", lastAnswerAt: completedAt,
+        lastAnswerTurnId: successor, lastAnswerRevision: 1, latestFinal: { ...identity, turnId: successor, revision: 1, completedAt } };
       next.messageReceipts = [{ ...identity, clientUserMessageId: originalId, id: "retained-outgoing",
         turnId: successor, runId: "successor-run", accepted: true, providerAccepted: true,
         submittedAt, startedAt: completedAt, completed: true, completedAt, displayText: sentText }];
@@ -190,7 +206,11 @@ for (const [priorStart, priorSubmittedAt] of [
         window.__agentHubFixture.snapshot = value;
         return window.__dispatchClientFixture("connection:retry");
       }, next);
-      await page.getByText("Next terminal overlay", { exact: true }).waitFor({ state: "visible", timeout: 5_000 });
+      await page.waitForFunction((id) => !window.__clientProjectionFixture.live["stream-a"]
+        && window.__clientProjectionFixture.messages["stream-a"]?.some(
+          (message) => message.turnId === id && message.role === "agent" && message.turnCompletedAt), successor);
+      await page.locator(`[data-chat-pane] [data-turn-id="${successor}"][data-role="agent"]`)
+        .getByText("Next terminal overlay", { exact: true }).waitFor({ state: "visible", timeout: 5_000 });
       const rows = await page.locator('[data-chat-pane] [data-turn-id][data-role]').evaluateAll((nodes) => nodes.map(
         (node) => [node.dataset.turnId, node.dataset.role]));
       assert.deepEqual(rows, [[previousTurn, "user"], [previousTurn, "user"], [previousTurn, "agent"],
