@@ -3291,9 +3291,13 @@ test("a next-turn terminal overlay at its start cannot jump an earlier durable f
     projectionAuthority: "terminal", projectionState: "completed", terminalRevision: 1,
     turnCompletedAt: boundary, time: boundary };
   const expected = ["old-root", "old-final", "new-root", "new-final"];
+  const instantaneousPrevious = [{ ...previous[0], startedAt: boundary }, previous[1]];
   for (const input of [
     [...previous, nextRoot, nextFinal],
     [nextFinal, nextRoot, ...previous.toReversed()],
+    [...instantaneousPrevious, nextRoot, nextFinal],
+    [nextFinal, nextRoot, ...instantaneousPrevious.toReversed()],
+    [...instantaneousPrevious, { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],
     [...previous.map(({ historyOrder, ...message }) => message),
       { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],
     [...previous, { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],

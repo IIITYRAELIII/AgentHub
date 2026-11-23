@@ -1510,13 +1510,14 @@ function chronologicalMessages(messages) {
     }
     // Intake time is immutable. For ordering across turns, a queued message
     // belongs no earlier than the observed start of its exact provider turn.
-    item.startedAt = providerStarts.get(identity);
-    item.orderTime = Number.isFinite(item.startedAt) ? Math.max(item.time, item.startedAt) : item.time;
-    const startsHere = item.startedAt === item.orderTime;
+    const startedAt = providerStarts.get(identity);
+    item.orderTime = Number.isFinite(startedAt) ? Math.max(item.time, startedAt) : item.time;
+    const startsHere = startedAt === item.orderTime;
     const completesHere = providerCompletions.get(identity) === item.orderTime;
-    // Equal wall-clock readings still distinguish an ending turn from a turn
-    // beginning at that boundary, including one already completed in the same tick.
-    item.boundaryOrder = Number(startsHere) - Number(completesHere);
+    // At one clock tick, keep the durable position of a completed turn
+    // ahead of an equally instantaneous turn whose history position is still unknown.
+    item.boundaryOrder = startsHere && completesHere && !historyTurnOrders.has(identity)
+      ? 1 : 2 * (Number(startsHere) - Number(completesHere));
   }
   const ordered = decorated
     .sort((left, right) => {

@@ -765,7 +765,9 @@ displayed `time` through queued, active and completed projections. Provider
 dispatch owns the separate `startedAt`. While live and paged projections are
 mixed, ordering across turns uses the exact root's provider start as a lower
 bound. A prior terminal answer precedes the new turn at an equal boundary on
-the same provider Thread. Intra-turn placement and displayed timestamps keep
+the same provider Thread. When both start and end in the same clock tick, the
+turn with a durable position stays ahead until both positions are known.
+Intra-turn placement and displayed timestamps keep
 their original evidence. Legacy rows without `submittedAt` fall
 back to the existing user-message time. Only the root user message may then
 fall back to provider start. A steer never inherits the parent turn's start or
