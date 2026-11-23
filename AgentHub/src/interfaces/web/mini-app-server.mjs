@@ -422,9 +422,10 @@ export function createJsonResponder({ compress = gzip, maxConcurrentCompressions
     const { acceptEncoding = "", headers = {}, timing = null, coldHistory = false, ...sendOptions } = options;
     const encode = () => Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
     const body = timing ? timing.sync("http-json-encode", encode) : encode();
-    const wantsGzip = body.length >= JSON_GZIP_MIN_BYTES
-      && acceptedEncodingQuality(acceptEncoding, "gzip") > 0;
-    const deliver = (responseBody, compressed) => {
+    const identityAllowed = !coldHistory || acceptedEncodingQuality(acceptEncoding, "identity", 1) > 0;
+    const wantsGzip = acceptedEncodingQuality(acceptEncoding, "gzip") > 0
+      && (body.length >= JSON_GZIP_MIN_BYTES || !identityAllowed);
+    const deliver = (responseBody, compressed, status = statusCode) => {
       if (response.destroyed || response.writableEnded) return;
       timing?.responseBody?.({
         jsonBytes: body.length,
@@ -432,12 +433,12 @@ export function createJsonResponder({ compress = gzip, maxConcurrentCompressions
         compression: compressed ? "gzip" : "identity",
         socketPendingBytes: response.socket?.writableLength ?? 0,
       });
-      send(response, statusCode, "application/json; charset=utf-8", responseBody, method, {
+      send(response, status, "application/json; charset=utf-8", responseBody, method, {
         ...sendOptions,
         headers: {
           ...headers,
           "Content-Length": String(responseBody.length),
-          ...(wantsGzip ? {
+          ...(wantsGzip || coldHistory ? {
             Vary: varyHeader(response.getHeader("Vary"), headers.Vary, "Accept-Encoding"),
           } : {}),
           ...(compressed ? {
@@ -448,9 +449,14 @@ export function createJsonResponder({ compress = gzip, maxConcurrentCompressions
     };
     // A small first page can reach the browser while background native work
     // occupies the gzip pool. Preserve compression for larger responses.
-    const sendColdHistoryDirectly = coldHistory && body.length <= COLD_HISTORY_IDENTITY_MAX_BYTES
-      && acceptedEncodingQuality(acceptEncoding, "identity", 1) > 0;
-    if (!wantsGzip || sendColdHistoryDirectly || activeCompressions >= maxConcurrentCompressions) {
+    const sendColdHistoryDirectly = coldHistory && identityAllowed && body.length <= COLD_HISTORY_IDENTITY_MAX_BYTES;
+    const compressionAtCapacity = activeCompressions >= maxConcurrentCompressions;
+    if (!identityAllowed && (!wantsGzip || compressionAtCapacity)) {
+      // No accepted body is available. Do not send identity or grow the gzip queue.
+      deliver(Buffer.alloc(0), false, wantsGzip ? 503 : 406);
+      return;
+    }
+    if (!wantsGzip || sendColdHistoryDirectly || compressionAtCapacity) {
       // HTTP permits an uncompressed representation even when gzip is accepted.
       // Do not queue more whole snapshot buffers behind the compression workers.
       deliver(body, false);
@@ -465,7 +471,8 @@ export function createJsonResponder({ compress = gzip, maxConcurrentCompressions
       activeCompressions -= 1;
       compressionFinished?.(error ? "failed" : "succeeded");
       try {
-        deliver(error ? body : compressedBody, !error);
+        if (error && !identityAllowed) deliver(Buffer.alloc(0), false, 503);
+        else deliver(error ? body : compressedBody, !error);
       } catch {
         // The compression callback runs outside the route's synchronous catch.
         // A broken/disconnected socket must not take down the Hub process.
