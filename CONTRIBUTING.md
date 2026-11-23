@@ -4,6 +4,8 @@ Keep changes small and identify the owner of the behavior you change. Before
 editing, read `AgentHub/AGENTS.md`, `AgentHub/docs/contracts/README.md` and the
 contracts selected by `npm run contracts:affected -- <changed-paths>` from the
 `AgentHub` directory. Describe an intentional contract change and its ADR.
+Use the [recurring error registry](AgentHub/docs/recurring-errors.md) to find
+checks for the behavior you are changing.
 
 Use the package-lock with `npm ci --ignore-scripts`. Run `npm run check` and the
 affected behavioral tests; give exact commands, counts and limitations. Use

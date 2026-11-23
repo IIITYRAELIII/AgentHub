@@ -1,5 +1,8 @@
 # Agent Hub repository guidance
 
+Before editing Agent Hub, skim the relevant entries in the [recurring error
+registry](docs/recurring-errors.md) and use their checks where they apply.
+
 ## Architecture and reliability
 
 - Before changing Agent Hub behavior, read `docs/contracts/README.md` and every
