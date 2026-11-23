@@ -8,7 +8,9 @@ dispatch before the provider call. Snapshot persistence remains available for
 unowned legacy input. For exact deferred Codex commands the same ledger also
 checkpoints the admitted run and the provider request on the reserved command.
 Restart overlays only the matching active checkpoint and retains newer run
-state already present in the full snapshot. Confirmed provider and terminal
+state already present in the full snapshot. A rollback withdraws its exact
+checkpoint before the completion snapshot if no provider request was recorded.
+Confirmed provider and terminal
 processing continue through their existing owners. Original-command timing
 separates rollout lookup, worker queue/read, provider
 fallback and exact ledger preparation, SQLite transaction and commit. Timing

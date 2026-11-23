@@ -84,6 +84,7 @@ export function createRunCompletionComposition({
     invalidateCatalog: invalidateTaskCatalog,
     saveState,
     checkpointDeferredRun: (run, item) => runtimeStateStore?.checkpointDeferredRun?.(run, item),
+    revokeUnrequestedDeferredRun: (run) => runtimeStateStore?.revokeUnrequestedDeferredRun?.(run),
     scheduleProgressStart,
     clearSelectedDiff,
     clearApprovals,

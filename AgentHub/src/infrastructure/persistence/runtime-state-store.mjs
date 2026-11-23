@@ -425,6 +425,10 @@ export class RuntimeStateStore {
     return saved;
   }
 
+  revokeUnrequestedDeferredRun(run) {
+    return this.#messageCommands.revokeUnrequestedDispatchRun(run);
+  }
+
   transitionMessageCommand(transition) {
     const outcome = this.#messageCommands.transition(transition);
     return Promise.resolve(outcome);

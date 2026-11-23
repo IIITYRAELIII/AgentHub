@@ -13,6 +13,8 @@ import { restorePersistedTaskRun } from "../../src/composition/runtime-state-res
 import { RunCoordinator } from "../../src/application/run-coordinator.mjs";
 import { createHubRuntimeSnapshot, restoreHubRuntimeSnapshot } from "../../src/application/hub-runtime-state-coordinator.mjs";
 import { TaskSelectionStore } from "../../src/application/task-selection-store.mjs";
+import { RuntimeStateStore } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
+import { messageCommandFixture } from "../fixtures/message-command-ledger.mjs";
 
 function harness({
   provider = "codex",
@@ -25,6 +27,8 @@ function harness({
   prepareAdmission = null,
   revokeAdmission = null,
   saveState = null,
+  checkpointDeferredRun = null,
+  revokeUnrequestedDeferredRun = null,
   commandTrace = null,
   recordProviderTerminal = null,
   persistTaskDiff = null,
@@ -55,6 +59,8 @@ function harness({
     syncRun: (_run, options) => events.push(options?.active === false ? "sync-complete" : "sync-start"),
     invalidateCatalog: () => events.push("catalog"),
     saveState: saveState ?? (async () => events.push("save")),
+    checkpointDeferredRun,
+    revokeUnrequestedDeferredRun,
     scheduleProgressStart: () => events.push("progress"),
     clearSelectedDiff: () => events.push("clear-diff"),
     clearApprovals: () => events.push("approvals"),
@@ -902,4 +908,63 @@ test("managed run lifecycle keeps interstream identity on the active user messag
     startedAt: run.startedAt,
     time: run.startedAt,
   });
+});
+
+test("rollback withdraws only its exact unrequested checkpoint before a snapshot or restart", async (context) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "hub-run-withdraw-"));
+  const store = new RuntimeStateStore({ dataDir: dir });
+  let reopened;
+  context.after(async () => {
+    await store.close();
+    await reopened?.close();
+    assert.equal(path.dirname(path.resolve(dir)), path.resolve(tmpdir()));
+    await rm(dir, { recursive: true, force: true });
+  });
+  let checkBeforeSave = null;
+  const queuedInputs = [];
+  const { service, taskRuns } = harness({
+    saveState: async () => {
+      const check = checkBeforeSave;
+      checkBeforeSave = null;
+      check?.();
+      await store.save({ activeRuns: taskRuns.values().map(serializableTaskRun), queuedInputs });
+    },
+    checkpointDeferredRun: (run, item) => store.checkpointDeferredRun(run, item),
+    revokeUnrequestedDeferredRun: (run) => store.revokeUnrequestedDeferredRun(run),
+  });
+  for (const requested of [false, true]) {
+    const threadId = requested ? "thread-requesting" : "thread-withdrawn";
+    const row = messageCommandFixture({
+      clientUserMessageId: threadId, itemId: "item:" + threadId,
+      item: { streamId: "stream-1", threadId },
+    });
+    await store.saveDeferredIntake({ ...row, destination: "queued" });
+    row.item.dispatchingAt = new Date().toISOString();
+    assert.equal(store.reserveDeferredDispatch(row.item, row.receipt), true);
+    const run = await service.begin("fixture", { ...row.item, deferredInput: row.item });
+    queuedInputs.push(row.item);
+    // A concurrent legacy writer may already have captured the admitted run.
+    await store.save({ activeRuns: [serializableTaskRun(run)] });
+    assert.equal(store.read().activeRuns[0].id, run.id);
+    assert.equal(store.revokeUnrequestedDeferredRun({ ...run, id: "foreign" }), false);
+    if (requested) {
+      markProviderTurnRequested(run);
+      assert.equal(store.checkpointDeferredRun(run), true);
+      assert.equal(store.revokeUnrequestedDeferredRun({ ...run, providerStart: null }), false);
+    } else checkBeforeSave = () => assert.deepEqual(store.read().activeRuns, []);
+    await service.releaseAdmission(run);
+    assert.equal(taskRuns.size, 0);
+    assert.equal(run.admissionReleased, true);
+    const canonical = store.messageCommand(row.item.clientUserMessageId);
+    assert.equal(canonical.state, "dispatching");
+    assert.equal(canonical.dispatchRun?.id ?? null, requested ? run.id : null);
+    assert.equal(canonical.item.dispatchingRunId ?? null, requested ? run.id : null);
+  }
+  await store.close();
+  reopened = new RuntimeStateStore({ dataDir: dir });
+  const restored = (await reopened.load()).value;
+  assert.deepEqual(restored.activeRuns.map(run => [run.threadId, run.providerStart?.state]),
+    [["thread-requesting", "requesting"]]);
+  assert.deepEqual(restored.queuedInputs.map(item => item.clientUserMessageId).sort(),
+    ["thread-requesting", "thread-withdrawn"]);
 });

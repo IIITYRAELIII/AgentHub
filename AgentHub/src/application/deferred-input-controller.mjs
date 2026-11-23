@@ -624,7 +624,7 @@ export class DeferredInputController {
     } catch { /* Diagnostics cannot affect eligibility. */ }
     const finish = (outcome, error, extra = {}) => {
       try { span?.finish({ outcome, metadata: error
-        ? { errorCode: /^[A-Z][A-Z0-9_]{0,63}$/u.test(String(error.code))
+        ? { ...extra, errorCode: /^[A-Z][A-Z0-9_]{0,63}$/u.test(String(error.code))
           ? error.code : "ERR_DEFERRED_ADMISSION" } : extra }); }
       catch { /* Preserve the owning operation's outcome. */ }
     };
@@ -641,8 +641,12 @@ export class DeferredInputController {
       } : extra);
       return result;
     } catch (error) {
-      const timing = error?.timing;
-      finish("failed", error, timing ? { queueWaitMs: timing.queueWaitMs, readMs: timing.readMs } : {});
+      const timing = {};
+      for (const key of ["queueWaitMs", "readMs"]) {
+        const value = error?.timing?.[key];
+        if (Number.isFinite(value) && value >= 0) timing[key] = value;
+      }
+      finish("failed", error, timing);
       throw error;
     }
   }

@@ -376,6 +376,7 @@ export class ManagedRunLifecycleService {
         } else await d.beforeCompletion(run);
         const terminal = providerRunTerminalIdentity(run);
         if (terminal) await d.recordProviderTerminal?.(terminal);
+        d.revokeUnrequestedDeferredRun?.(run);
         d.clearApprovals(run);
         d.pauseObservation(run);
         d.pauseClaude(run);
