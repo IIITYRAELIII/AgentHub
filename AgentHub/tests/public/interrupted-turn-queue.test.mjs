@@ -62,7 +62,10 @@ for (const width of [1366, 390]) test(`interrupted original releases the same qu
     assert.ok((await page.locator("body").innerText()).length > 100);
     const row = page.locator(".queue-item[data-queue-id='queued-original']");
     await row.waitFor({ state: "visible" });
-    assert.match(await row.innerText(), /Автоматическое продолжение отключено/);
+    assert.equal(await row.locator(".queue-status").count(), 0);
+    assert.equal(await row.locator(".queue-text").innerText(), "continue with new input");
+    assert.equal(await row.locator("[data-action='queue-edit']").isEnabled(), true);
+    assert.equal(await row.locator("[data-action='queue-remove']").isEnabled(), true);
     const accepted = await stoppedOriginalAndNewInput(directory);
     const after = snapshot([accepted]);
     after.version = "interrupted-after";
