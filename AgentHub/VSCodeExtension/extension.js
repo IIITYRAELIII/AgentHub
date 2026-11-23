@@ -261,6 +261,7 @@ class WorkLogViewProvider {
       runtimeUri,
       extensionUri: this.context.extensionUri,
       testContour: EXTENSION_PROFILE.name === "test-contour",
+      localWebAddress: await bridge.localWebAddress().catch(() => null),
     });
     this.themes = new Set(shell.themeIds);
     if (!this.themes.has(this.theme)) this.theme = "orbit";

@@ -28,6 +28,10 @@ the added grant.
 
 The chat loads a fixed sandboxed frame from its packaged assets. That shell
 admits only the parent-provided data document in a separate opaque-origin frame.
+VS Code uses the existing loopback server for the frame document and permits
+only its configured frame URL. The packaged VS Code resource transport still
+serves the main panel's scripts and styles. Only direct loopback requests to
+the frame allow the native VS Code ancestor schemes.
 The fragment's policy restricts network, frame, form, and object access, and
 permits the skill's static resources and interactive script. The optional mode
 and title are presentation hints only.

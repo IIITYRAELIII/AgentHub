@@ -96,6 +96,12 @@ test("chat renders a Codex visualization in place and reopens it from SQLite his
   await store.recordHistory(binding, [{ id: turnId, startedAt: start, completedAt: end, completed: true,
     messages: [{ itemId, role: "agent", phase: "final_answer", text: answer }] }]);
   const { url } = await server.start();
+  const frameUrl = new URL("/visualization-frame.html", url);
+  const localFrame = await fetch(frameUrl, { method: "HEAD" });
+  assert.equal(localFrame.headers.get("Content-Security-Policy"),
+    "frame-ancestors 'self' vscode-webview: vscode-file:");
+  const forwardedFrame = await fetch(frameUrl, { method: "HEAD", headers: { "X-Forwarded-For": "192.0.2.1" } });
+  assert.equal(forwardedFrame.headers.get("Content-Security-Policy"), "frame-ancestors 'self'");
   const iconBundle = process.env.HUB520_LUCIDE_FIXTURE
     ? await readFile(process.env.HUB520_LUCIDE_FIXTURE) : null;
   await writeFile(readyFile, [

@@ -383,6 +383,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     const result = await sharedWebviewHtml(webview, {
       runtimeUri: vscodeUri(runtimeRoot),
       extensionUri: vscodeUri(extensionRoot),
+      localWebAddress: "http://127.0.0.1:8787",
     });
     assert.match(result.html, /runtime/u);
     assert.equal(result.html.includes(shadowRoot), false);
@@ -402,9 +403,15 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     assert.match(result.html, /url\("vscode-webview-resource:.*themes[\\/]pulsar[\\/]pulsar-aurora\.png"\)/u);
     assert.doesNotMatch(result.html, /url\(["']?\.\/pulsar-aurora\.png/u);
     assert.match(result.html, /style-src vscode-webview:\/\/test 'nonce-[^']+'/u);
-    assert.match(result.html, /frame-src vscode-webview:\/\/test/u);
-    assert.match(result.html, /rel="agent-hub-visualization-frame" href="vscode-webview-resource:[^"]+visualization-frame\.html"/u);
+    assert.match(result.html, /frame-src http:\/\/127\.0\.0\.1:8787\/visualization-frame\.html;/u);
+    assert.match(result.html, /rel="agent-hub-visualization-frame" href="http:\/\/127\.0\.0\.1:8787\/visualization-frame\.html"/u);
     assert.ok(result.roots.some(uri => uri.fsPath === path.join(runtimeAssets, "visualization-frame.html")));
+    const offline = await sharedWebviewHtml(webview, {
+      runtimeUri: vscodeUri(runtimeRoot),
+      extensionUri: vscodeUri(extensionRoot),
+    });
+    assert.match(offline.html, /frame-src 'none';/u);
+    assert.doesNotMatch(offline.html, /agent-hub-visualization-frame/u);
     assert.doesNotMatch(result.html, /browser-device-auth\.js/u);
     assert.ok(result.roots.every((uri) => (
       uri.fsPath.startsWith(runtimeRoot) || uri.fsPath.startsWith(extensionRoot)
@@ -497,12 +504,17 @@ test("VS Code shell permits only extension, selected runtime and attachment root
   harness.panel.webview.asWebviewUri = value => ({ toString: () => `vscode-webview-resource:${value.fsPath}` });
   const runtime = path.resolve(__dirname, "..");
   const attachments = path.join(os.tmpdir(), "synthetic-attachment-root");
-  provider.currentBridge = async () => ({ runtimeReleaseRoot: async () => runtime, attachmentDirectory: () => attachments });
+  provider.currentBridge = async () => ({
+    runtimeReleaseRoot: async () => runtime,
+    attachmentDirectory: () => attachments,
+    localWebAddress: async () => "http://localhost:8787",
+  });
   await provider.renderPanelShell();
   assert.deepEqual(harness.panel.webview.options.localResourceRoots.map(value => value.fsPath), [context.extensionUri.fsPath, runtime, attachments]);
   assert.deepEqual([...provider.themes], THEMES);
   assert.equal(provider.panelRuntimeRoot, runtime);
   assert.ok(harness.panel.webview.html.includes("vscode-webview-resource:"));
+  assert.match(harness.panel.webview.html, /href="http:\/\/localhost:8787\/visualization-frame\.html"/u);
   assert.ok(!harness.panel.webview.html.includes("browser-device-auth.js"));
 });
 

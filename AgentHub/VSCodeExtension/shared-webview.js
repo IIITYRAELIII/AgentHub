@@ -66,7 +66,7 @@ async function themeStyleContent(themeRegistry, webview) {
   return new Map(entries);
 }
 
-async function rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets) {
+async function rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets, visualizationFrame) {
   const references = clientAssets.localAssetReferences(html);
   const entries = await Promise.all(references.map(async (reference) => {
     const uri = runtimeAssetUri(runtimeUri, reference, clientAssets);
@@ -74,7 +74,8 @@ async function rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAs
     return [reference, uri];
   }));
   for (const [reference, uri] of entries) {
-    html = clientAssets.replaceLocalAssetReference(html, reference, resource(webview, uri));
+    html = clientAssets.replaceLocalAssetReference(html, reference,
+      reference === "/visualization-frame.html" ? visualizationFrame : resource(webview, uri));
   }
   return { html, uris: entries.map(([, uri]) => uri) };
 }
@@ -100,6 +101,13 @@ async function sharedWebviewHtml(webview, locations) {
   const { clientAssets, index, bootstrap, themeRegistry, renderThemeHtml } = await resolveSharedAssets(locations);
   const nonce = randomBytes(16).toString("base64");
   let html = Buffer.from(await vscode.workspace.fs.readFile(index)).toString("utf8");
+  // VS Code resource URIs load scripts and styles, but nested document navigation uses the local server.
+  const visualizationFrame = locations.localWebAddress
+    ? new URL("/visualization-frame.html", locations.localWebAddress).href
+    : "";
+  if (!visualizationFrame) {
+    html = html.replace(/<link rel="agent-hub-visualization-frame" href="\/visualization-frame\.html">/u, "");
+  }
   if (locations.testContour === true) html = markTestContourDocument(html);
   const themeResourceUrls = new Map([...themeRegistry.resources].map(([pathname, item]) => (
     [pathname, resource(webview, vscode.Uri.file(item.file))]
@@ -119,7 +127,7 @@ async function sharedWebviewHtml(webview, locations) {
     firstRuntimeScript,
     `<script src="${resource(webview, bootstrap)}" defer></script>$&`,
   );
-  const rewritten = await rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets);
+  const rewritten = await rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets, visualizationFrame);
   html = rewritten.html;
   const csp = [
     "default-src 'none'",
@@ -127,7 +135,7 @@ async function sharedWebviewHtml(webview, locations) {
     `style-src ${webview.cspSource} 'nonce-${nonce}'`,
     `script-src ${webview.cspSource} 'nonce-${nonce}'`,
     "connect-src http://127.0.0.1:* http://localhost:* http://[::1]:*",
-    "frame-src " + webview.cspSource,
+    "frame-src " + (visualizationFrame || "'none'"),
     "font-src 'none'",
   ].join("; ");
   html = html.replace(

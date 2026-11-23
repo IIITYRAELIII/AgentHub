@@ -1941,6 +1941,11 @@ export class MiniAppServer {
       const styleNonce = url.pathname === "/" ? randomBytes(18).toString("base64") : "";
       const read = () => this.#staticBody(url.pathname, assetBundle, { nonce: styleNonce });
       const body = timing ? await timing.measure("http-asset-read", read) : await read();
+      const frameHeaders = url.pathname === "/visualization-frame.html" ? {
+        "Content-Security-Policy": loopbackRequest(request)
+          ? "frame-ancestors 'self' vscode-webview: vscode-file:"
+          : "frame-ancestors 'self'",
+      } : undefined;
       send(
         response,
         200,
@@ -1952,9 +1957,7 @@ export class MiniAppServer {
           immutable: descriptor.immutable || url.searchParams.has("v"),
           telegramRuntime,
           styleNonce,
-          ...(url.pathname === "/visualization-frame.html"
-            ? { headers: { "Content-Security-Policy": "frame-ancestors 'self'" } }
-            : {}),
+          headers: frameHeaders,
         },
       );
     } catch (error) {
