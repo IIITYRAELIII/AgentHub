@@ -16,7 +16,9 @@ test("complete native selected history is checked beyond 512 commits", async () 
   await assertNativeTaskHistories({ git: port, baseCommit: base, tasks: [{ taskId: "selected", baseCommit: base, resultCommit: result }] });
 });
 async function git(cwd, args, options = {}) {
-  const { stdout } = await exec("git", args, { cwd, encoding: "buffer", windowsHide: true });
+  const child = exec("git", args, { cwd, encoding: "buffer", windowsHide: true });
+  child.child.stdin.end(options.input ?? "");
+  const { stdout } = await child;
   return options.rawOutput ? stdout : stdout.toString("utf8").trim();
 }
 async function save(root, name, text) {
@@ -66,7 +68,7 @@ test("literal NUL metadata paths refuse invented quoted notes/version and preser
   for (const malformed of [bytes => Buffer.concat([bytes, bytes]), bytes => bytes.subarray(0, bytes.length - 1)]) {
     await assert.rejects(assertNativeTaskHistories({ ...request, git: async (args, options) => {
       const output = await port(args, options);
-      return args.includes("ls-tree") && args.includes(resultCommit) && String(args.at(-1)).includes("nonascii-")
+      return args.includes("ls-tree") && args.includes(resultCommit) && args.some(arg => arg.includes("nonascii-"))
         ? malformed(Buffer.from(output)) : output;
     } }), /malformed or ambiguous/);
   }
