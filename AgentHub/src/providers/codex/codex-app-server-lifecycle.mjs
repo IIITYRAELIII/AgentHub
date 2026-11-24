@@ -13,12 +13,22 @@ export class CodexAppServerLifecycle {
   #startupTimings = {};
   #updateFlight = null;
   #updateCompletion = null;
+  #toolSessionRecycleFlight = null;
+  #toolSessionDiagnostics = {
+    requested: 0,
+    completed: 0,
+    deferredForActiveRuns: 0,
+    deferredForLifecycle: 0,
+    failed: 0,
+    last: null,
+  };
 
   constructor(dependencies) {
     this.#d = dependencies;
     this.transport = new CodexAppServerTransport({
       spawnProcess: (args) => this.#spawn(args),
       stopProcessTree: dependencies.stopProcessTree,
+      createProcessTreeCustody: dependencies.createProcessTreeCustody,
       onMessage: dependencies.onMessage,
       onExit: (event) => this.#handleExit(event),
       onTimeout: (event) => this.#handleTimeout(event),
@@ -30,6 +40,21 @@ export class CodexAppServerLifecycle {
   get pid() { return this.transport.pid; }
 
   startupTimings() { return { ...this.#startupTimings }; }
+  toolSessionDiagnostics() { return structuredClone(this.#toolSessionDiagnostics); }
+
+  #recordToolSession(event) {
+    this.#toolSessionDiagnostics.last = {
+      atMs: Date.now(),
+      generation: this.transport.generation,
+      pid: this.transport.pid,
+      ...event,
+    };
+  }
+
+  #activeCodexRuns() {
+    return this.#d.activeRuns().filter((run) => run.provider === "codex"
+      && !["completed", "failed", "cancelled", "aborted"].includes(run.status));
+  }
 
   async #spawn(args) {
     const d = this.#d;
@@ -171,7 +196,71 @@ export class CodexAppServerLifecycle {
   }
   async stop() {
     await this.#updateCompletion?.catch(() => {});
+    await this.#toolSessionRecycleFlight?.catch(() => {});
     await this.transport.stop();
+  }
+
+  recycleToolSessionAfterTurn({ reason = "turn-terminal" } = {}) {
+    const d = this.#d;
+    this.#toolSessionDiagnostics.requested += 1;
+    if (this.#toolSessionRecycleFlight) return this.#toolSessionRecycleFlight;
+    if (d.isStopping() || this.#restarting || this.#timeoutRestarting || this.#updateFlight) {
+      this.#toolSessionDiagnostics.deferredForLifecycle += 1;
+      this.#recordToolSession({ outcome: "deferred-lifecycle", reason });
+      return Promise.resolve(false);
+    }
+
+    // Fence provider RPC synchronously. A concurrently admitted run can be
+    // registered while this Promise is pending; the inner active-run check then
+    // preserves the current generation and releases the original RPC unchanged.
+    this.#restarting = true;
+    this.#toolSessionRecycleFlight = Promise.resolve().then(async () => {
+      const runs = this.#activeCodexRuns();
+      if (d.isStopping() || runs.length > 0 || !this.transport.running) {
+        if (runs.length > 0) this.#toolSessionDiagnostics.deferredForActiveRuns += 1;
+        else this.#toolSessionDiagnostics.deferredForLifecycle += 1;
+        this.#recordToolSession({
+          outcome: runs.length > 0 ? "deferred-active-runs" : "deferred-lifecycle",
+          reason,
+          activeRunCount: runs.length,
+        });
+        return false;
+      }
+      const generation = this.transport.generation;
+      const pid = this.transport.pid;
+      try {
+        await this.transport.stop();
+        await this.#start();
+        await this.#initialize({
+          attachSelectedThread: d.providerSelected(),
+          request: (method, params, options) => this.transport.request(method, params, options),
+        });
+        this.#toolSessionDiagnostics.completed += 1;
+        this.#recordToolSession({ outcome: "recycled", reason, retiredGeneration: generation, retiredPid: pid });
+        return true;
+      } catch (error) {
+        this.#toolSessionDiagnostics.failed += 1;
+        this.#recordToolSession({
+          outcome: "failed",
+          reason,
+          retiredGeneration: generation,
+          retiredPid: pid,
+          errorCode: String(error?.code ?? "").slice(0, 96) || null,
+        });
+        d.logger.error(`Cannot recycle Codex tool session after ${reason}:`, error.message);
+        if (!this.transport.running && !d.isStopping()) {
+          d.scheduleRetry(() => this.restartAfterCrash({ required: true }), 5_000);
+        }
+        return false;
+      } finally {
+        this.#restarting = false;
+      }
+    }).finally(() => {
+      this.#updateFlight = null;
+      this.#toolSessionRecycleFlight = null;
+    });
+    this.#updateFlight = this.#toolSessionRecycleFlight;
+    return this.#toolSessionRecycleFlight;
   }
   request(method, params = {}, options = {}) {
     return this.#updateFlight ? this.#updateFlight.then(() => this.transport.request(method, params, options))
@@ -236,6 +325,7 @@ export class CodexAppServerLifecycle {
   applyPreparedUpdate() {
     const d = this.#d;
     if (this.#updateCompletion) return this.#updateCompletion;
+    if (this.#updateFlight) return Promise.resolve(false);
     const lostTransport = !this.transport.running;
     if (d.isStopping() || this.#restarting || this.#timeoutRestarting
       || (!lostTransport && d.activeRuns().some(run => run.provider === "codex" && !["completed", "failed", "cancelled", "aborted"].includes(run.status)))
@@ -265,7 +355,8 @@ export class CodexAppServerLifecycle {
   async restartAfterCrash({ required = false } = {}) {
     const d = this.#d;
     const runs = d.activeRuns().filter((run) => run.provider === "codex");
-    if (d.isStopping() || (!required && !d.providerSelected() && runs.length === 0) || this.#restarting) return;
+    if (d.isStopping() || (!required && !d.providerSelected() && runs.length === 0)
+      || this.#restarting || this.#updateFlight) return;
     this.#restarting = true;
     try {
       await this.start();

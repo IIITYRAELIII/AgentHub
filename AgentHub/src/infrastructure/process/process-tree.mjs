@@ -8,6 +8,7 @@ export async function stopProcessTree(pid, {
   spawnImpl = spawn,
   killImpl = process.kill,
   processGroup = true,
+  requireTreeConfirmation = false,
   timeoutMs = 5_000,
 } = {}) {
   const value = Number(pid);
@@ -35,6 +36,10 @@ export async function stopProcessTree(pid, {
     }, Math.max(1, Number(timeoutMs) || 5_000));
     timer.unref?.();
     const fallback = () => {
+      if (requireTreeConfirmation) {
+        finish(false);
+        return;
+      }
       try {
         killImpl(value, "SIGTERM");
         finish(true);

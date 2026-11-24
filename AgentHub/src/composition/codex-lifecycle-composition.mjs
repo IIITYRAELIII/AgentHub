@@ -1,5 +1,6 @@
 import path from "node:path";
 
+import { createCodexAppServerJobCustody } from "../infrastructure/process/codex-app-server-job-custody.mjs";
 import { CodexExecutableUpdateService } from "../infrastructure/process/codex-executable-update-service.mjs";
 import { unavailableLocalMcpOverrides } from "../infrastructure/process/local-mcp-preflight.mjs";
 import { CodexAppServerLifecycle } from "../providers/codex/codex-app-server-lifecycle.mjs";
@@ -8,6 +9,17 @@ import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { runCodexAppServerCompatibilityCanary } from "./codex-app-server-canary.mjs";
 import { observeAgentHubProviderInitialized, observeAgentHubProviderInitializing,
   observeAgentHubProviderInitializationFailure } from "../application/agent-hub-startup-coordinator.mjs";
+
+export const AGENT_HUB_DISABLED_COMPUTER_USE_ARGS = Object.freeze([
+  "-c", "mcp_servers.cua_repl.enabled=false",
+  "-c", 'plugins."computer-use".enabled=false',
+  "-c", 'plugins."computer-use@openai-bundled".enabled=false',
+  "-c", 'plugins."unified-computer-use".enabled=false',
+]);
+
+export function agentHubCodexMcpArgs(existing = [], hub = []) {
+  return [...existing, ...hub, ...AGENT_HUB_DISABLED_COMPUTER_USE_ARGS];
+}
 
 export function createCodexLifecycleComposition({
   config,
@@ -45,11 +57,16 @@ export function createCodexLifecycleComposition({
     onInitializationFailure: observeAgentHubProviderInitializationFailure,
     unavailableMcpOverrides: async () => {
       const existing = await unavailableLocalMcpOverrides();
-      return { ...existing, args: [...existing.args, ...hubMcpServer.codexArgs()] };
+      return {
+        ...existing,
+        args: agentHubCodexMcpArgs(existing.args, hubMcpServer.codexArgs()),
+      };
     },
     executableArgs: config.codexExecutableArgs,
     projectRoot: runtimeDependencies.getActiveProjectRoot,
     stopProcessTree: runtimeDependencies.stopProcessTree,
+    createProcessTreeCustody: runtimeDependencies.createCodexProcessTreeCustody
+      ?? ((pid) => createCodexAppServerJobCustody(pid)),
     onMessage: runtimeDependencies.handleMessage,
     rpcTimeoutMs,
     isStopping: runtimeDependencies.isStopping,
@@ -65,6 +82,7 @@ export function createCodexLifecycleComposition({
   agentHubRuntimeHealth.setDiagnosticSource("codexAppServer", () => ({
     ...transport.diagnostics(),
     startupTimings: runtime.startupTimings(),
+    toolSessionLifecycle: runtime.toolSessionDiagnostics(),
     hubOwnedProcessTrees: transport.running ? 1 : 0,
   }));
   agentHubRuntimeHealth.setDiagnosticSource("codexExecutableUpdate", () => executableUpdates.diagnostics());
@@ -87,6 +105,10 @@ export function createCodexLifecycleComposition({
 
   async function restartAfterCrash() {
     return runtime.restartAfterCrash();
+  }
+
+  async function recycleToolSessionAfterTurn(options = {}) {
+    return runtime.recycleToolSessionAfterTurn(options);
   }
 
   function sendRpc(method, params = {}, options = {}) {
@@ -140,6 +162,7 @@ export function createCodexLifecycleComposition({
     start,
     stop,
     restartAfterCrash,
+    recycleToolSessionAfterTurn,
     sendRpc,
     invalidateThreadRead,
     readThread,

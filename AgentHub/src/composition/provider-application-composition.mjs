@@ -34,11 +34,18 @@ export function resumePostTurnWork({
   restartPending,
   wakeDeferredInputs,
   scheduleDeferredRestartIfReady,
+  recycleCodexToolSessionAfterTurn = () => {},
+  provider = "codex",
+  terminalStatus = "completed",
 }) {
   wakeDeferredInputs();
-  if (restartPending) {
-    void Promise.resolve(maintenance).finally(scheduleDeferredRestartIfReady);
-  }
+  const settled = () => {
+    if (restartPending) scheduleDeferredRestartIfReady();
+    else if (provider === "codex") recycleCodexToolSessionAfterTurn({
+      reason: `turn-${String(terminalStatus || "completed")}`,
+    });
+  };
+  void Promise.resolve(maintenance).then(settled, settled);
   return "deferred-inputs";
 }
 import { createRunAccountingComposition } from "./run-accounting-composition.mjs";
@@ -268,6 +275,9 @@ export async function createProviderApplicationComposition({
         restartPending: Boolean(hostState.restartRequest && !hostState.stopping),
         wakeDeferredInputs: api.wakeDeferredInputs,
         scheduleDeferredRestartIfReady: api.scheduleDeferredRestartIfReady,
+        recycleCodexToolSessionAfterTurn: api.recycleCodexToolSessionAfterTurn,
+        provider: run.provider,
+        terminalStatus: run.providerTerminalStatus ?? run.status,
       });
     },
     prepareRunAdmission: (target) => claudeRunAdmission.prepare(target),

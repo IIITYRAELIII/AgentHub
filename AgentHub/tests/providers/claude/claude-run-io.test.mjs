@@ -394,6 +394,26 @@ test("Windows process-tree stop falls back to the root when taskkill fails", asy
   assert.deepEqual(signals, [[4322, 0], [4322, "SIGTERM"]]);
 });
 
+test("Windows process-tree stop never kills only the root when tree confirmation is required", async () => {
+  const killer = new EventEmitter();
+  const signals = [];
+  const stopped = stopProcessTree(4323, {
+    platform: "win32",
+    requireTreeConfirmation: true,
+    spawnImpl: () => {
+      queueMicrotask(() => killer.emit("exit", 1));
+      return killer;
+    },
+    killImpl: (pid, signal) => {
+      signals.push([pid, signal]);
+      return true;
+    },
+  });
+
+  assert.equal(await stopped, false);
+  assert.deepEqual(signals, [[4323, 0]]);
+});
+
 test("Windows process-tree stop bounds a taskkill helper which never settles", async () => {
   const killer = new EventEmitter();
   let killed = 0;

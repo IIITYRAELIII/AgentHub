@@ -134,6 +134,7 @@ export class CodexAppServerTransport {
   constructor({
     spawnProcess,
     stopProcessTree,
+    createProcessTreeCustody = null,
     onMessage,
     onExit,
     onStderr = (text) => console.error(`[codex] ${text}`),
@@ -153,6 +154,7 @@ export class CodexAppServerTransport {
     if (typeof spawnProcess !== "function") throw new TypeError("spawnProcess is required");
     this.spawnProcess = spawnProcess;
     this.stopProcessTree = stopProcessTree;
+    this.createProcessTreeCustody = createProcessTreeCustody;
     this.onMessage = onMessage;
     this.onExit = onExit;
     this.onStderr = onStderr;
@@ -175,6 +177,7 @@ export class CodexAppServerTransport {
     );
     this.createInterfaceImpl = createInterfaceImpl;
     this.child = null;
+    this.processTreeCustody = null;
     this.startPromise = null;
     this.lines = null;
     this.requestSequence = 1;
@@ -206,6 +209,7 @@ export class CodexAppServerTransport {
       running: this.running,
       pid: this.pid,
       generation: this.generation,
+      processTreeCustody: this.processTreeCustody?.custody?.diagnostics?.() ?? null,
       pendingRequests: this.pending.size,
       queuedRequests: REQUEST_PRIORITIES.reduce(
         (total, priority) => total + this.requestQueues[priority].length,
@@ -231,6 +235,7 @@ export class CodexAppServerTransport {
 
   async #start() {
     let child;
+    let custody;
     try {
       child = await this.spawnProcess(["app-server", "--stdio"]);
       if (!child.pid) {
@@ -239,13 +244,24 @@ export class CodexAppServerTransport {
           child.once("error", reject);
         });
       }
+      custody = await this.createProcessTreeCustody?.(child.pid);
+      await custody?.start?.();
     } catch (error) {
-      child?.kill();
+      let retired = false;
+      try {
+        if (custody) retired = await custody.close() === true;
+      } catch {}
+      try {
+        if (!retired && child?.pid && typeof this.stopProcessTree === "function") {
+          await this.stopProcessTree(child.pid, { requireTreeConfirmation: true });
+        } else if (!retired && child) child.kill();
+      } catch {}
       throw Object.assign(new Error(`Codex app-server failed to start: ${error.message}`, { cause: error }),
         { ...(error?.code ? { code: error.code } : {}) });
     }
 
     this.child = child;
+    this.processTreeCustody = custody ? { child, custody } : null;
     this.generation += 1;
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (data) => this.onStderr(String(data).trimEnd()));
@@ -261,10 +277,36 @@ export class CodexAppServerTransport {
   async stop() {
     const child = this.child;
     if (!child) return;
-    if (!child.pid || typeof this.stopProcessTree !== "function") {
-      child.kill();
+    let stopped = false;
+    const ownership = this.processTreeCustody?.child === child ? this.processTreeCustody : null;
+    if (ownership) {
+      try {
+        stopped = await ownership.custody.close() === true;
+      } catch (error) {
+        if (this.child !== child) return;
+        throw Object.assign(new Error(
+          `Codex app-server owned job ${child.pid} could not be stopped: ${error.message}`,
+          { cause: error },
+        ), { code: error?.code ?? "CODEX_APP_SERVER_STOP_FAILED" });
+      }
+    } else if (!child.pid || typeof this.stopProcessTree !== "function") {
+      stopped = child.kill();
     } else {
-      await this.stopProcessTree(child.pid).catch(() => child.kill());
+      try {
+        stopped = await this.stopProcessTree(child.pid, { requireTreeConfirmation: true }) === true;
+      } catch (error) {
+        if (this.child !== child) return;
+        throw Object.assign(new Error(
+          `Codex app-server owned process tree ${child.pid} could not be stopped: ${error.message}`,
+          { cause: error },
+        ), { code: "CODEX_APP_SERVER_STOP_FAILED" });
+      }
+    }
+    if (this.child !== child) return;
+    if (!stopped) {
+      throw Object.assign(new Error(
+        `Codex app-server owned process tree ${child.pid ?? "unknown"} did not confirm stop`,
+      ), { code: "CODEX_APP_SERVER_STOP_UNCONFIRMED" });
     }
     await this.#handleExit(child, null, "owner-stop", new Error("stopped by Hub owner"));
   }
@@ -746,6 +788,21 @@ export class CodexAppServerTransport {
 
   async #handleExit(instance, code, signal, cause = null) {
     if (this.child !== instance) return;
+    const ownership = this.processTreeCustody?.child === instance ? this.processTreeCustody : null;
+    if (ownership) {
+      try {
+        const retired = await ownership.custody.close();
+        if (retired !== true) throw new Error("owned job retirement was not confirmed");
+      } catch (error) {
+        // Keep the dead root identity and custody owner attached. A replacement
+        // must not start while an exact old cohort has an unknown stop outcome.
+        this.onMessageError(Object.assign(new Error(
+          `Codex app-server owned job ${instance.pid} cleanup failed: ${error.message}`,
+          { cause: error },
+        ), { code: error?.code ?? "CODEX_APP_SERVER_STOP_UNCONFIRMED" }));
+        return;
+      }
+    }
     const detail = cause?.message ?? `code=${code}, signal=${signal}`;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
@@ -775,6 +832,7 @@ export class CodexAppServerTransport {
     this.lines?.close?.();
     this.lines = null;
     this.child = null;
+    this.processTreeCustody = null;
     try {
       await this.onExit?.({ code, signal, cause, detail });
     } catch (error) {

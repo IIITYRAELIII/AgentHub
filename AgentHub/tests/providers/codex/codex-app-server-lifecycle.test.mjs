@@ -23,7 +23,7 @@ function fixture(overrides = {}) {
     unavailableMcpOverrides: async () => ({ disabled: [], args: [] }),
     executableArgs: [],
     projectRoot: () => process.cwd(),
-    stopProcessTree: async () => {},
+    stopProcessTree: async () => true,
     onMessage: () => {},
     rpcTimeoutMs: 1_000,
     isStopping: overrides.isStopping ?? (() => false),
@@ -201,7 +201,7 @@ test("Codex App Server lifecycle blocks an unverified executable before spawn", 
     spawnProcess: () => { events.push("spawn"); return spawnableChild(); },
     executableArgs: [],
     projectRoot: () => process.cwd(),
-    stopProcessTree: async () => {},
+    stopProcessTree: async () => true,
     onMessage: () => {},
     onStartupFailure: async () => false,
     rpcTimeoutMs: 1_000,
@@ -231,7 +231,7 @@ test("Codex App Server lifecycle spawns only verified last-known-good after laun
     spawnProcess: (command) => { spawned.push(command); return spawnableChild(); },
     executableArgs: [],
     projectRoot: () => process.cwd(),
-    stopProcessTree: async () => {},
+    stopProcessTree: async () => true,
     onMessage: () => {},
     onStartupFailure: async () => true,
     rpcTimeoutMs: 1_000,
@@ -388,4 +388,111 @@ test("Codex App Server lifecycle still restarts after a transport crash", async 
   assert.deepEqual(events.map(([name]) => name), [
     "error", "start", "initialize", "notify",
   ]);
+});
+
+test("Codex tool-session lifecycle recycles the exact App Server generation after the last turn", async () => {
+  const { lifecycle, events } = fixture({ activeRuns: () => [] });
+
+  assert.equal(await lifecycle.recycleToolSessionAfterTurn({ reason: "turn-completed" }), true);
+  assert.deepEqual(events.map(([name]) => name), ["stop", "start", "initialize", "notify", "attach"]);
+  assert.deepEqual(lifecycle.toolSessionDiagnostics(), {
+    requested: 1,
+    completed: 1,
+    deferredForActiveRuns: 0,
+    deferredForLifecycle: 0,
+    failed: 0,
+    last: {
+      atMs: lifecycle.toolSessionDiagnostics().last.atMs,
+      generation: 1,
+      pid: 17,
+      outcome: "recycled",
+      reason: "turn-completed",
+      retiredGeneration: 1,
+      retiredPid: 17,
+    },
+  });
+});
+
+test("Codex tool-session lifecycle preserves another Stream's active run", async () => {
+  const foreign = { provider: "codex", streamId: "other-stream", status: "running" };
+  const { lifecycle, events } = fixture({ activeRuns: () => [foreign] });
+
+  assert.equal(await lifecycle.recycleToolSessionAfterTurn({ reason: "turn-cancelled" }), false);
+  assert.deepEqual(events, []);
+  assert.equal(lifecycle.toolSessionDiagnostics().deferredForActiveRuns, 1);
+  assert.equal(lifecycle.toolSessionDiagnostics().last.activeRunCount, 1);
+});
+
+test("a concurrently admitted foreign run wins before Codex tool-session stop", async () => {
+  const runs = [];
+  const { lifecycle, events } = fixture({ activeRuns: () => runs });
+
+  const recycle = lifecycle.recycleToolSessionAfterTurn({ reason: "turn-completed" });
+  runs.push({ provider: "codex", streamId: "new-stream", status: "running" });
+
+  assert.equal(await recycle, false);
+  assert.deepEqual(events, []);
+  assert.equal(lifecycle.toolSessionDiagnostics().deferredForActiveRuns, 1);
+});
+
+test("repeated Codex tool sessions return to one owned process-tree baseline", async () => {
+  const { lifecycle } = fixture({ activeRuns: () => [] });
+  const live = new Set([17]);
+  const retired = [];
+  let nextPid = 18;
+  lifecycle.transport.stop = async () => {
+    retired.push(lifecycle.transport.pid);
+    live.delete(lifecycle.transport.pid);
+    lifecycle.transport.running = false;
+  };
+  lifecycle.transport.start = async () => {
+    lifecycle.transport.pid = nextPid++;
+    lifecycle.transport.generation += 1;
+    lifecycle.transport.running = true;
+    live.add(lifecycle.transport.pid);
+  };
+
+  assert.equal(await lifecycle.recycleToolSessionAfterTurn({ reason: "turn-completed" }), true);
+  assert.equal(await lifecycle.recycleToolSessionAfterTurn({ reason: "turn-failed" }), true);
+
+  assert.deepEqual(retired, [17, 18]);
+  assert.deepEqual([...live], [19]);
+  assert.equal(lifecycle.toolSessionDiagnostics().completed, 2);
+});
+
+test("Codex tool-session lifecycle does not spawn a duplicate after stop timeout", async () => {
+  const { lifecycle, events } = fixture({ activeRuns: () => [] });
+  lifecycle.transport.stop = async () => {
+    const error = new Error("tree stop timed out");
+    error.code = "CODEX_APP_SERVER_STOP_UNCONFIRMED";
+    throw error;
+  };
+
+  assert.equal(await lifecycle.recycleToolSessionAfterTurn({ reason: "turn-timeout" }), false);
+  assert.deepEqual(events.map(([name]) => name), ["error"]);
+  assert.equal(lifecycle.toolSessionDiagnostics().failed, 1);
+  assert.equal(lifecycle.toolSessionDiagnostics().last.errorCode, "CODEX_APP_SERVER_STOP_UNCONFIRMED");
+});
+
+test("Codex tool-session lifecycle retries recovery only after confirmed retirement and failed replacement", async () => {
+  const { lifecycle, events } = fixture({ activeRuns: () => [] });
+  lifecycle.transport.stop = async () => {
+    events.push(["stop"]);
+    lifecycle.transport.running = false;
+  };
+  lifecycle.transport.start = async () => {
+    events.push(["start"]);
+    throw new Error("replacement unavailable");
+  };
+
+  assert.equal(await lifecycle.recycleToolSessionAfterTurn({ reason: "turn-completed" }), false);
+  assert.deepEqual(events.map(([name]) => name), ["stop", "start", "error", "retry"]);
+});
+
+test("Codex tool-session lifecycle defers cleanup to an actual pending runtime restart", async () => {
+  const { lifecycle, events } = fixture({ isStopping: () => true });
+
+  assert.equal(await lifecycle.recycleToolSessionAfterTurn({ reason: "turn-failed" }), false);
+  assert.deepEqual(events, []);
+  assert.equal(lifecycle.toolSessionDiagnostics().deferredForLifecycle, 1);
 });
