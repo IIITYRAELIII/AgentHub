@@ -1307,16 +1307,21 @@
     const siblings = [...((column ?? panel)?.querySelectorAll("[data-board-task-id]") ?? [])];
     const index = siblings.indexOf(card);
     lifecycleFocus = {
-      id, columnId: column?.dataset.boardColumnId, panel,
+      id, opening: taskDetailsOpening, columnId: column?.dataset.boardColumnId, panel,
       next: siblings.slice(index + 1).map(element => element.dataset.boardTaskId),
       previous: siblings.slice(0, index).reverse().map(element => element.dataset.boardTaskId),
     };
   }
 
-  function finishLifecycleFocus(id) {
+  function takeLifecycleFocus(id) {
     const frame = lifecycleFocus;
-    if (frame?.id !== id) return;
+    if (frame?.id !== id) return null;
     lifecycleFocus = null;
+    return frame;
+  }
+
+  function finishLifecycleFocus(frame) {
+    if (!frame) return;
     const column = frame.panel ?? [...columns.querySelectorAll(".task-board-column")]
       .find(element => element.dataset.boardColumnId === frame.columnId);
     const cards = [...(column?.querySelectorAll("[data-board-task-id]") ?? [])];
@@ -3130,19 +3135,23 @@
         taskDeleteDialog.finish({ succeeded, error, cancelled });
         if (succeeded) {
           closeTaskCard();
-          finishLifecycleFocus(id);
+          finishLifecycleFocus(takeLifecycleFocus(id));
           announceLifecycle("Задача удалена.");
         }
       }
       if (type === "complete" && state.completingTaskId === id) {
         state.completingTaskId = null;
+        const frame = takeLifecycleFocus(id);
+        const sameOpening = state.openTaskId === id && frame?.opening === taskDetailsOpening;
         if (succeeded) {
-          closeTaskCard();
-          finishLifecycleFocus(id);
+          if (sameOpening) {
+            closeTaskCard();
+            finishLifecycleFocus(frame);
+          }
           announceLifecycle("Задача закрыта и сохранена в архиве.");
-        } else {
+        } else if (state.openTaskId === id) {
           renderOpenTaskCard();
-          taskCardActions.querySelector("[data-task-archive-trigger]")?.focus();
+          if (sameOpening) taskCardActions.querySelector("[data-task-archive-trigger]")?.focus();
         }
       }
       if (type === "status" && state.savingStatusTaskId === id) {

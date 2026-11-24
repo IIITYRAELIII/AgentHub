@@ -270,6 +270,46 @@ for (const surface of surfaces) test(`lifecycle actions preserve archive/delete 
   } finally { await browser.close(); }
 });
 
+for (const target of ["after", "subject"]) {
+  for (const succeeded of [true, false]) {
+    test(`late archive ${succeeded ? "success" : "refusal"} preserves the new opening of ${target}`, { timeout: 30000 }, async () => {
+      const browser = await launchBrowser();
+      try {
+        const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+        const diagnostics = await setup(page, { surface: "web" });
+        const modal = page.locator("[data-task-card-modal]");
+        const editor = modal.locator("[data-task-card-title]");
+        await openCard(page);
+        await modal.locator("[data-task-archive-trigger]").click();
+        await page.waitForFunction(() => window.__lifecycleHeld.length === 1);
+        await modal.locator("[data-task-card-close]").click();
+        await openCard(page, target);
+        await editor.fill("Unsaved title for the new opening");
+
+        const refusal = "Archive refused by server";
+        await page.evaluate(error => window.__settleLifecycle({ error }), succeeded ? "" : refusal);
+        await page.waitForFunction(({ succeeded, refusal }) => succeeded
+          ? document.querySelector("[data-task-lifecycle-status]").textContent.includes("архиве")
+          : document.querySelector("[data-toast]").textContent.includes(refusal), { succeeded, refusal });
+
+        assert.equal(await modal.isVisible(), true);
+        assert.equal(await editor.inputValue(), "Unsaved title for the new opening");
+        assert.equal(await editor.evaluate(input => input === document.activeElement), true);
+        const board = page.locator("[data-task-board-columns]");
+        assert.equal(await board.locator('[data-board-task-id="subject"]').count(), succeeded ? 0 : 1);
+        assert.equal(await board.locator('[data-board-task-id="after"]').count(), 1);
+        if (!succeeded && target === "subject") {
+          assert.equal(await modal.locator("[data-task-archive-trigger]").isEnabled(), true);
+        }
+        const calls = await page.evaluate(() => window.__lifecycleCalls.map(({ action, params }) => [action, params.id]));
+        assert.deepEqual(calls, [["board-task-complete", "subject"]]);
+        assert.deepEqual(diagnostics, succeeded
+          ? [] : ["Failed to load resource: the server responded with a status of 400 (Bad Request)"]);
+      } finally { await browser.close(); }
+    });
+  }
+}
+
 test("card opened from the conversation Task rail returns focus to its own next Task", { timeout: 30000 }, async () => {
   const browser = await launchBrowser();
   try {
