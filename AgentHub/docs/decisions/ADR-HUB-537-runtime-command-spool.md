@@ -18,6 +18,14 @@ An acknowledgement retires both copies after the requests are gone.
 Legacy replies and acknowledgements retain the addresses existing
 clients use. The previous server's configured queue excludes abandoned
 directories written under unrelated working folders.
+During the automatic installer rollback to 2.1.23, the installer verifies the
+stopped candidate and the previous release's receipt owners. Before it changes
+the release pointer or launches the old Host, it imports retained command IDs
+into the previous server's journal under that journal's lock. The import keeps
+started effects and terminal outcomes, including commands whose old request has
+not arrived. A repeated import accepts identical records. A conflicting or
+unverified journal, or one inside a Git working tree, blocks automatic restart
+and leaves the command files in place for recovery.
 The legacy reader can be retired when the installed hooks have been refreshed
 and the last old writer and pending request have been accounted for.
 

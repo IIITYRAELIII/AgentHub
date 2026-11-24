@@ -76,6 +76,12 @@ export function runtimeCommandEndpoint(runtimeRoot = runtimeCommandRoot()) {
 
 export { runtimeCommandSpoolDirectory };
 
+export const RUNTIME_COMMAND_RECEIPT_LAYOUT = "runtime-data-v1";
+
+export function runtimeCommandReceiptFile(runtimeRoot) {
+  return path.join(path.dirname(runtimeCommandSpoolDirectory(runtimeRoot)), "runtime-command-receipts.json");
+}
+
 async function readSpoolDirectory(directory) {
   return readdir(directory).catch((error) => {
     if (error?.code === "ENOENT") return [];
@@ -152,7 +158,7 @@ export class RuntimeCommandServer {
     this.#captureUnexpectedException = captureUnexpectedException;
     const receiptFile = temporaryRoot
       ? path.join(this.#spoolDirectory, "receipts.json")
-      : path.join(path.dirname(this.#spoolDirectory), "runtime-command-receipts.json");
+      : runtimeCommandReceiptFile(runtimeRoot);
     this.#spoolReceipts = new DurableCommandReceipts({ file: receiptFile });
     this.#legacyReceipts = this.#legacySpoolDirectory && new DurableCommandReceipts({
       file: path.join(this.#legacySpoolDirectory, "receipts.json"),

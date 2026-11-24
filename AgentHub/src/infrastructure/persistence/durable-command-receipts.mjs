@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
@@ -113,6 +114,40 @@ export class DurableCommandReceipts {
       if (existing && (existing.phase !== "prepared" || original.phase === "prepared")) return;
       this.#records.set(id, { ...original });
       await this.#persist();
+    });
+  }
+
+  async retainForRollback(source) {
+    const originals = await source.#readJournal();
+    const ids = new Set();
+    for (const record of originals) {
+      if (!record.id || record.id.trim() !== record.id || ids.has(record.id)
+          || !/^[0-9a-f]{64}$/u.test(record.fingerprint)
+          || !["prepared", "effect-started", "completed", "reconciled", "failed"].includes(record.phase)
+          || (["completed", "reconciled"].includes(record.phase) && !Object.hasOwn(record, "result"))
+          || (record.phase === "failed" && typeof record.error !== "string")
+          || (record.phase === "effect-started"
+            && (!Number.isSafeInteger(record.effectOwner?.pid) || record.effectOwner.pid <= 0
+              || typeof record.effectOwner.token !== "string" || !record.effectOwner.token))) {
+        throw new Error("Runtime command rollback receipt identity is invalid");
+      }
+      ids.add(record.id);
+    }
+    if (!originals.length) return 0;
+    return this.#withLock(async () => {
+      if ((await this.#readJournal()).length !== this.#records.size) {
+        throw new Error("Previous runtime command rollback journal has duplicate identities");
+      }
+      for (const original of originals) {
+        const existing = this.#records.get(original.id);
+        if (existing && !isDeepStrictEqual(existing, original)) {
+          throw new Error("Runtime command rollback receipts disagree");
+        }
+      }
+      const missing = originals.filter(({ id }) => !this.#records.has(id));
+      for (const record of missing) this.#records.set(record.id, record);
+      if (missing.length) await this.#persist();
+      return originals.length;
     });
   }
 

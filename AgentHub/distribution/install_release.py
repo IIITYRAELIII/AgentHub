@@ -1927,8 +1927,21 @@ if(action==='wait-probe') {
   if(createHash('sha256').update(manifest).digest('hex')!==value.previous.manifestSha256) throw Error('Previous version manifest changed');
   const {verifyRuntimeManifest}=await load('src/infrastructure/filesystem/runtime-manifest-verifier.mjs');
   await verifyRuntimeManifest(oldRoot,value.previous.releaseId);
+  const {preserveRuntimeCommandsForRollback}=await load('src/infrastructure/process/runtime-command-rollback.mjs');
+  execFileSync(value.python,[value.installer,'--assert-stopped',root],{windowsHide:true,stdio:'pipe'});
+  const receiptHandoff=await preserveRuntimeCommandsForRollback({
+    runtimeRoot:root,previousLaunchRoot:value.launchRoot,previousRoot:oldRoot,manifest:JSON.parse(manifest),
+    readLegacyProjectRoot:async()=>{
+      process.chdir(path.join(value.launchRoot,'releases',value.previous.releaseId));
+      process.env.AGENT_HUB_CONFIG=path.join(value.launchRoot,'config.json');
+      process.env.AGENT_HUB_RUNTIME_ROOT=value.launchRoot;
+      const {loadConfig}=await import(pathToFileURL(path.join(oldRoot,'src/infrastructure/filesystem/config.mjs')));
+      return (await loadConfig()).projectRoot;
+    }});
   const {installPreparedRuntime}=await load('src/runtime/runtime-manager.mjs');
   await installPreparedRuntime({runtimeRoot:root,releaseId:value.previous.releaseId});
+  console.log(JSON.stringify(receiptHandoff));
+  process.exit(0);
 } else if(action==='previous-ready') {
   const {callDesktopControl}=await load('src/infrastructure/process/desktop-control.mjs');
   const health=await callDesktopControl('runtime-health',{}, {runtimeRoot:root,timeoutMs:5000});
@@ -2075,6 +2088,7 @@ def autonomous_worker(request_file):
         if mode not in INSTALL_MODES: raise ValueError("Missing explicit installation mode")
         wait_process = None
         admission_root = root
+        previous_launch_root = root
         if mode == "wait":
             # Old APIs cannot promise a fenced drain. Never silently fall back
             # to force; keep the old Hub running and offer the explicit mode.
@@ -2086,6 +2100,10 @@ def autonomous_worker(request_file):
             proof, admission_root = ready_process_proof(root,previous,for_wait=True)
             if not wait_process or wait_process.get("pid") != proof[1]["pid"]:
                 raise RuntimeError("Waiting endpoint is not the selected native Hub")
+            previous_launch_root = admission_root
+        else:
+            try: _, previous_launch_root = ready_process_proof(root,previous,for_wait=True)
+            except (OSError,RuntimeError,ValueError,KeyError): pass
         binding = dict(runtimeRoot=str(root),archiveSha256=file_hash(archive),releaseId=descriptor["releaseId"],previous=previous,
                        mode=mode,
                        installerSha256=request["installerSha256"],workerPid=os.getpid(),
@@ -2186,13 +2204,18 @@ def autonomous_worker(request_file):
                     # grants no stopped-backup/install authority over survivors.
                     stop_selected(root,inspect_only=True)
                     retirement_unknown = True
+                if not previous_launch_root.samefile(root):
+                    raise RuntimeError("Previous runtime launch root changed during recovery")
                 if install_started:
-                    owner("restore",dict(previous=previous,targetReleaseId=descriptor["releaseId"]))
+                    handoff = owner("restore",dict(previous=previous,targetReleaseId=descriptor["releaseId"],
+                        launchRoot=str(previous_launch_root),python=sys.executable,installer=str(Path(__file__).resolve())))
+                    _write_record(cache/"recovery-command-receipts.json",handoff)
                 elif owner("previous") != previous:
                     raise RuntimeError("Previous code changed before recovery launch")
+                stop_selected(root,inspect_only=True)
                 _write_record(cache/"recovery-launch-intent.json",previous)
                 with (cache/"recovery.stdout").open("w",encoding="utf-8") as out, (cache/"recovery.stderr").open("w",encoding="utf-8") as err:
-                    recovered_host=subprocess.Popen([str(root/"AgentHub.RuntimeHost.exe")],cwd=str(root),env=environment,
+                    recovered_host=subprocess.Popen([str(previous_launch_root/"AgentHub.RuntimeHost.exe")],cwd=str(previous_launch_root),env=environment,
                         stdin=subprocess.DEVNULL,stdout=out,stderr=err,creationflags=0x08000000)
                 restored=owner("recovered",dict(releaseId=previous["releaseId"],hostPid=recovered_host.pid,
                     hostCreated=process_identity(int(recovered_host._handle))["created"],python=sys.executable,
