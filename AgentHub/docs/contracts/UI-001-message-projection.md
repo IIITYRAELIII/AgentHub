@@ -769,7 +769,17 @@ rendered and cannot stop history refresh or remove a completion overlay.
 Canonical ordering follows durable provider sequence without rewriting user
 chronology. Durable intake owns immutable `submittedAt`, which remains the
 displayed `time` through queued, active and completed projections. Provider
-dispatch owns the separate `startedAt`. Legacy rows without `submittedAt` fall
+dispatch owns the separate `startedAt`. While live and paged projections are
+mixed, ordering across turns uses the exact root's provider start as a lower
+bound. A prior terminal answer precedes the new turn at an equal boundary on
+the same provider Thread. If both turns start and end in one clock tick,
+retain the observed same-Thread terminal sequence as history replaces either
+overlay. Both full snapshots and compact snapshots with exact final identity
+can establish this sequence. The answer body is required to create a new
+snapshot overlay. Two confirmed history positions take precedence. Intake
+times never establish provider execution order.
+Intra-turn placement and displayed timestamps keep
+their original evidence. Legacy rows without `submittedAt` fall
 back to the existing user-message time. Only the root user message may then
 fall back to provider start. A steer never inherits the parent turn's start or
 submission time: its exact receipt supplies intake time, or its own timestamp
