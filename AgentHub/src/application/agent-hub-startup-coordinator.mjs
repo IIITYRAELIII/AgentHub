@@ -110,6 +110,12 @@ export class AgentHubStartupCoordinator {
       log,
       logError,
     });
+    if (commandTrace?.measureBestEffort && typeof startDesktopControl === "function") {
+      this.startDesktopControl = () => startDesktopControl((phase, operation) => commandTrace.measureBestEffort({
+        commandId: `startup:${startupTraceId}`, stage: `startup-desktop-control-${phase}`, transport: "server-runtime",
+        metadata: { startupTraceId, operationId: "desktop-control" },
+      }, operation));
+    }
     // Wrap the existing awaited ports, keeping their order and failure handling.
     // Recording the start separately makes a never-settled port observable.
     for (const [name, stage] of [
@@ -125,13 +131,10 @@ export class AgentHubStartupCoordinator {
     ]) {
       const operation = this[name];
       if (commandTrace?.measureBestEffort && typeof operation === "function") {
-        const measure = (source, run) => commandTrace.measureBestEffort({
-          commandId: `startup:${startupTraceId}`, stage: `startup-${source}`,
+        this[name] = (...args) => commandTrace.measureBestEffort({
+          commandId: `startup:${startupTraceId}`, stage: `startup-${stage}`,
           transport: "server-runtime", metadata: { startupTraceId, operationId: stage },
-        }, run);
-        this[name] = (...args) => measure(stage, () => name === "startDesktopControl"
-          ? operation((phase, run) => measure(`${stage}-${phase}`, run))
-          : operation(...args));
+        }, () => operation(...args));
       }
     }
   }
