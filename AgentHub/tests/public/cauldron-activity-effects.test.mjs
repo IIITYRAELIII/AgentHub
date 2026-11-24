@@ -151,13 +151,13 @@ test("Nexus: both outer rail edges stay visible beside the elapsed time", async 
     await page.locator("[data-theme-select]").selectOption("nexus", { force: true });
     await setting(page, "streamStatusEffect", "static");
     const card = page.locator(RAIL);
-    const box = await card.boundingBox();
-    const clips = [box.x, box.x + box.width - 3].map(x => ({
-      x, y: box.y + box.height / 2 - 4, width: 3, height: 8,
-    }));
     const capture = async () => {
+      const box = await card.boundingBox();
       const images = [];
-      for (const clip of clips) images.push(await page.screenshot({ clip, scale: "device" }));
+      for (const x of [box.x, box.x + box.width - 7]) {
+        const clip = { x, y: box.y + box.height / 2 - 4, width: 7, height: 8 };
+        images.push(await page.screenshot({ clip, scale: "device" }));
+      }
       return images;
     };
     const visible = await capture();
@@ -166,6 +166,16 @@ test("Nexus: both outer rail edges stay visible beside the elapsed time", async 
     for (const [i, side] of ["left", "right"].entries()) {
       const pixels = await paintChange(page, visible[i], hidden[i], { inset: 0, minBrightContrast: 2.5 });
       assert.ok(pixels >= 16, `${side} outer edge has only ${pixels} contrasting pixels`);
+    }
+    await card.locator(".activity-run-frame use").first().evaluate(node => node.removeAttribute("opacity"));
+    for (const running of [false, true]) {
+      await publish(page, { running, otherRunning: true });
+      const edges = await capture();
+      for (const [i, side] of ["left", "right"].entries()) {
+        // The card changes rows. Exclude the wallpaper at the crop boundary.
+        assert.equal(await paintChange(page, visible[i], edges[i], { inset: 2 }), 0,
+          `${side} selected rim changed when running=${running}`);
+      }
     }
   } finally { await browser.close(); }
 });
