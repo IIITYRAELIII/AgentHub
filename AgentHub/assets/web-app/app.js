@@ -8733,9 +8733,6 @@ function renderQueueForTask(taskId, container) {
     const content = el("div", { class: "queue-content" }, [
       entry.author ? el("strong", { class: "queue-author", text: entry.author }) : null,
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
-      (entry.waitReason === "managed-run-activity-unknown"
-        || task?.activityUnknown && [entry.waitReason, entry.conflictKind].includes("task-running"))
-        ? el("div", { class: "queue-status", text: "Состояние прежнего хода не подтверждено. Автоматическое продолжение отключено; новый ввод сохранён до проверки завершения. Доступен Stop." }) : null,
       entry.state === "paused" && entry.waitReason === "task-running"
         ? el("div", { class: "queue-status", text: 'Сообщение на паузе; нажми "Продолжить", чтобы вернуть его в очередь.' }) : null,
       entry.waitReason === "provider-thread-active"
