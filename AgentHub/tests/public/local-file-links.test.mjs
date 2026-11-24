@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { webcrypto } from "node:crypto";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { MiniAppServer } from "../../src/interfaces/web/mini-app-server.mjs";
+import { deviceSessionMessage, TrustedDeviceStore } from "../../src/infrastructure/persistence/trusted-device-store.mjs";
 import { launchBrowser, snapshot } from "./composer-production.fixture.mjs";
 
 const journal = () => ({ subscribe: () => () => {}, version: "local-files", html: () => "" });
@@ -120,5 +122,104 @@ test("real Edge file-link menu downloads and reveals inside and outside files th
     assert.deepEqual(copied, revealed);
     assert.ok(calls.includes("snapshot"));
     assert.deepEqual(errors, []);
+  } finally { await browser?.close(); await server.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("Android file-link save uses the HttpOnly device session and delivers the exact PNG to the existing save port", { timeout: 40_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-android-file-ui-"));
+  const target = path.join(root, "Камень вне проекта.png");
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5WQAAAAASUVORK5CYII=", "base64");
+  let now = Date.now();
+  const deviceStore = new TrustedDeviceStore({ filePath: path.join(root, "devices.json"), now: () => now });
+  const initial = snapshot();
+  const history = { provider: "codex", threadId: "thread-a", streamId: "stream-a",
+    items: [{ id: "file-link-turn", completed: true, status: "completed", terminalRevision: 1,
+      answer: `[PNG](<${target.replaceAll("\\", "/")}>)` }],
+    start: 0, end: 1, total: 1, messageTotal: 1, nextBefore: null, version: "android-file-link" };
+  const server = new MiniAppServer({ port: 0, journalDatabase: journal(), deviceStore, localAccessSecret: "m".repeat(43),
+    controlHandler: async ({ action }) => {
+      if (action === "task-history") return history;
+      if (action === "open-task") return { history, snapshot: initial };
+      if (action === "runtime-health") return { ok: true, ready: true };
+      return initial;
+    } });
+  let browser;
+  try {
+    await writeFile(target, png);
+    await deviceStore.load();
+    const { url } = await server.start();
+    const origin = new URL(url).origin;
+    const keys = await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const pairing = await deviceStore.createPairing("42");
+    const { device } = await deviceStore.pair({ code: pairing.code, name: "Fixture phone", platform: "Android",
+      publicKey: Buffer.from(await webcrypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url") });
+    const challenge = await deviceStore.createChallenge({ deviceId: device.id, origin });
+    const message = deviceSessionMessage({ ...challenge, origin, deviceId: device.id });
+    const signature = Buffer.from(await webcrypto.subtle.sign(
+      { name: "ECDSA", hash: "SHA-256" }, keys.privateKey, Buffer.from(message),
+    )).toString("base64url");
+    const session = await deviceStore.createSession({ deviceId: device.id, challengeId: challenge.challengeId, signature });
+    browser = await launchBrowser();
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    // Model Android's existing injection points; all HTML, API requests,
+    // session resolution, ticket consumption and file bytes are real.
+    await context.addCookies([{ name: "agent_hub_device", value: session.token, url, httpOnly: true, secure: true, sameSite: "Strict" }]);
+    const saved = [], responses = [];
+    await context.exposeBinding("recordAndroidSave", (_source, name, data) => {
+      const comma = data.indexOf(",");
+      saved.push({ name, media: data.slice(0, comma), bytes: Buffer.from(data.slice(comma + 1), "base64") });
+    });
+    await context.addInitScript(deviceId => {
+      window.AgentHubAndroid = {
+        getDeviceId: () => deviceId,
+        saveDataUrl: (name, data) => {
+          void window.recordAndroidSave(name, data).then(() => { window.androidSaveCompleted = true; });
+        },
+      };
+    }, device.id);
+    const page = await context.newPage();
+    page.on("response", response => {
+      const pathname = new URL(response.url()).pathname;
+      if (pathname.startsWith("/api/workspace-file")) {
+        responses.push({ pathname, method: response.request().method(), status: response.status() });
+      }
+    });
+    await page.route("https://telegram.org/**", route => route.fulfill({ body: "" }));
+    await page.goto(url, { waitUntil: "load" });
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-stream-task-id="stream-a"]')));
+    await page.evaluate(() => window.AgentHub.selectTask("stream-a"));
+    const link = page.getByRole("link", { name: "PNG", exact: true });
+    assert.deepEqual(await page.evaluate(() => ({
+      scriptSeesCookie: document.cookie.includes("agent_hub_device"),
+      browserPaired: Boolean(window.AgentHubBrowserDevice?.isPaired()),
+    })), { scriptSeesCookie: false, browserPaired: false });
+
+    const save = async () => {
+      await link.click();
+      await page.locator('[data-resource-action="save"]').click();
+    };
+    await save();
+    // Published RED fails here with the actual wrong "сначала сопряги"
+    // message and zero HTTP requests. On success wait for the native port.
+    await page.waitForFunction(() => document.querySelector("[data-toast]")?.textContent.includes("сначала сопряги")
+      || window.androidSaveCompleted === true, null, { timeout: 5000 });
+    const toast = page.locator("[data-toast]");
+    assert.doesNotMatch(await toast.textContent(), /сначала сопряги/u);
+    assert.deepEqual(saved, [{ name: path.basename(target), media: "data:image/png;base64", bytes: png }], await toast.textContent());
+    assert.deepEqual(responses.map(({ method, status }) => [method, status]), [["POST", 200], ["GET", 200]]);
+    const replay = await context.request.get(new URL(responses[1].pathname, url).href);
+    assert.equal(replay.status(), 404);
+
+    now = session.expiresAt + 1;
+    for (const status of [403, 401]) {
+      if (status === 401) await context.clearCookies({ name: "agent_hub_device" });
+      const denied = page.waitForResponse(response => response.url().endsWith("/api/workspace-file/transfer-ticket"));
+      await save();
+      assert.equal((await denied).status(), status);
+      assert.equal(saved.length, 1);
+    }
+    assert.deepEqual(responses.map(({ method, status }) => [method, status]), [
+      ["POST", 200], ["GET", 200], ["POST", 403], ["POST", 401],
+    ]);
   } finally { await browser?.close(); await server.close(); await rm(root, { recursive: true, force: true }); }
 });
