@@ -8,6 +8,7 @@ import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageInstaller;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -395,8 +396,10 @@ public final class MainActivity extends Activity {
         content.setBackgroundColor(Color.rgb(7, 17, 22));
         content.addView(webView, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        int viewportInsets = WindowInsets.Type.systemBars()
-            | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime();
+        // WebView M139+ exposes the keyboard by resizing the visual viewport.
+        // Older providers need native IME padding to keep the composer visible.
+        int viewportInsets = WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
+            | (webViewResizesForKeyboard() ? 0 : WindowInsets.Type.ime());
         content.setOnApplyWindowInsetsListener((view, insets) -> {
             Insets viewport = insets.getInsets(viewportInsets);
             view.setPadding(viewport.left, viewport.top, viewport.right, viewport.bottom);
@@ -405,6 +408,18 @@ public final class MainActivity extends Activity {
         });
         setContentView(content);
         content.requestApplyInsets();
+    }
+
+    private static boolean webViewResizesForKeyboard() {
+        PackageInfo provider = WebView.getCurrentWebViewPackage();
+        String version = provider == null ? null : provider.versionName;
+        if (version == null) return false;
+        int separator = version.indexOf('.');
+        try {
+            return Integer.parseInt(separator < 0 ? version : version.substring(0, separator)) >= 139;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
     }
 
     private Uri[] selectedFiles(int resultCode, Intent data) {
