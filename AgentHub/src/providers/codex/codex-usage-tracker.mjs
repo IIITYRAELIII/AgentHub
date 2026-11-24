@@ -1,6 +1,8 @@
 import {
   addTokenUsage,
+  captureMeasuredTokenUsage,
   emptyTokenUsage,
+  isGpt62UsageModel,
   normalizeTokenUsage,
   tokenUsageDelta,
 } from "../../domain/token-usage.mjs";
@@ -165,8 +167,10 @@ export class CodexUsageTracker {
     });
   }
 
-  track(params, { provisionalContext = false } = {}) {
-    const current = normalizeTokenUsage(params?.tokenUsage?.total);
+  track(params, { provisionalContext = false, model } = {}) {
+    const captureFields = isGpt62UsageModel(model);
+    const normalize = captureFields ? captureMeasuredTokenUsage : normalizeTokenUsage;
+    const current = normalize(params?.tokenUsage?.total);
     const threadId = String(params?.threadId ?? "").trim();
     const turnId = String(params?.turnId ?? "").trim();
     const previous = this.threadTotals.get(threadId);
@@ -174,8 +178,8 @@ export class CodexUsageTracker {
     this.rememberContext(params, { provisional: provisionalContext });
     const tracker = this.turns.get(turnId);
     if (!tracker) return null;
-    const delta = tokenUsageDelta(current, previous, params?.tokenUsage?.last);
-    tracker.usage = addTokenUsage(tracker.usage, delta);
+    const delta = tokenUsageDelta(current, previous, normalize(params?.tokenUsage?.last));
+    tracker.usage = captureFields && !tracker.reported ? delta : addTokenUsage(tracker.usage, delta);
     tracker.reported = true;
     return tracker;
   }

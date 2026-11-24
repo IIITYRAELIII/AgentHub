@@ -8,7 +8,8 @@ import test from "node:test";
 
 import { WorkLogUsageSyncWorkerStore } from "../../src/runtime/work-log-usage-sync-worker-client.mjs";
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
-import { USAGE_FACT_SCHEMA_VERSION } from "../../src/domain/usage-facts.mjs";
+import { normalizeUsageTurnFact, usageFactSummary, USAGE_FACT_SCHEMA_VERSION } from "../../src/domain/usage-facts.mjs";
+import { CodexUsageTracker } from "../../src/providers/codex/codex-usage-tracker.mjs";
 import { WorkLogUsageRepository } from "../../src/infrastructure/persistence/work-log-usage-repository.mjs";
 import { createWorkLogUsageStore } from "../../src/application/work-log-usage-store.mjs";
 import { buildLazyJournalPayload } from "../../src/application/journal-projection-data.mjs";
@@ -111,6 +112,62 @@ test("GPT-6.2 pricing refreshes durable journal rows and Statistics without touc
     assert.equal(corrected.totalApiEstimateCredits, 560);
     assert.equal(corrected.unpricedCount, 4);
     assert.equal(corrected.uncalibratedCount, 8);
+
+    const source = { inputTokens: 100_000, outputTokens: 10_000, totalTokens: 110_000 };
+    const observedZeroCache = { ...source, cachedInputTokens: 0 };
+    const factUsage = (usage, turnId) => normalizeUsageTurnFact({
+      ...record("gpt-6.2-sol", turnId), usage, deviceId: "device-local",
+      runtimeHomeId: "fixture-home",
+    });
+    const missing = factUsage(source, "fact-missing-cache");
+    const zeroCache = factUsage(observedZeroCache, "fact-cache-zero");
+    await worker.importSnapshot({ events: [missing, zeroCache] });
+    const synced = await worker.facts();
+    const fromStore = ({ eventId }) => synced.find(fact => fact.eventId === eventId);
+    assert.deepEqual(fromStore(missing).usage, missing.usage);
+    assert.deepEqual(fromStore(zeroCache).usage, zeroCache.usage);
+    assert.deepEqual(usageFactSummary([missing]), usageFactSummary([{
+      ...missing, usage: Object.fromEntries(Object.entries(missing.usage).filter(
+        ([field]) => field !== "measuredTokenFields",
+      )),
+    }]), "the existing sync digest uses numeric facts on either server version");
+    const tracker = new CodexUsageTracker();
+    const live = (usage, turnId) => {
+      tracker.turns.set(turnId, { reported: false });
+      const next = { ...usage, inputTokens: usage.inputTokens * 2, outputTokens: usage.outputTokens * 2,
+        totalTokens: usage.totalTokens * 2 };
+      tracker.track({ threadId: turnId, turnId, tokenUsage: { last: usage, total: usage } },
+        { model: "gpt-6.2-sol" });
+      tracker.track({ threadId: turnId, turnId, tokenUsage: { last: usage, total: next } },
+        { model: "gpt-6.2-sol" });
+      tracker.restore(tracker.snapshot());
+      return tracker.consume(turnId).usage;
+    };
+    const denseLegacy = { ...observedZeroCache, reasoningOutputTokens: 0 };
+    await journal.upsertRecords([
+      { ...record("gpt-6.2-sol", "fact-missing-cache"), usage: fromStore(missing).usage },
+      { ...record("gpt-6.2-sol", "fact-cache-zero"), usage: fromStore(zeroCache).usage },
+      incomingLedgerRecord({ ...record("gpt-6.2-sol", "live-missing-cache"), usage: live(source, "live-missing-cache") }),
+      incomingLedgerRecord({ ...record("gpt-6.2-sol", "live-cache-zero"),
+        usage: live(observedZeroCache, "live-cache-zero") }),
+      { ...record("gpt-6.2-sol", "legacy-dense"), usage: denseLegacy },
+    ]);
+    await worker.projectJournal(options);
+    for (const [turnId, cost] of [["fact-missing-cache", null], ["fact-cache-zero", 7.5],
+      ["live-missing-cache", null], ["live-cache-zero", 15], ["legacy-dense", null]]) {
+      const { turns: [indexed] } = await journal.turnPage({ threadId: turnId });
+      const details = await journal.fragment("turn", indexed.turnRef);
+      const cached = /Из кэша 0/u.test(details);
+      assert.equal(cached, cost !== null, turnId);
+      assert.equal(/data-work-log-turn-credits="([^"]+)"/u.exec(indexed.html)?.[1],
+        cost === null ? undefined : String(cost), turnId);
+    }
+    const fromIngress = await worker.usageHistory({ now: options.now, range: "24h" });
+    assert.equal(fromIngress.totalCredits, 582.5);
+    assert.equal(fromIngress.totalQuotaUnits, 4660);
+    assert.equal(fromIngress.unpricedCount, 7);
+    const legacy = Object.values((await journal.loadLedger()).turns).find(entry => entry.turnId === "legacy-dense");
+    assert.deepEqual(legacy.usage, denseLegacy);
   } finally {
     await worker.close();
     journal.close();

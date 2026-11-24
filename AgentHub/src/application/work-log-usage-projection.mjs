@@ -25,6 +25,7 @@ import {
   formatCredits,
   formatTaskCreditBreakdown,
   isGpt62UsageModel,
+  measuredGpt62TokenUsage,
   normalizeJournalTokenUsage,
   normalizeServiceTier,
   normalizeTokenUsage,
@@ -1590,11 +1591,11 @@ function formatTurnEntry(
   const breakdown = recordCreditBreakdown(record);
   const quota = recordQuotaBreakdown(record);
   const quotaQualifier = !quota.uncalibrated ? ""
-    : record?.usageReported === false || quota.basis === "unknown"
+    : record?.usageReported === false || breakdown.missingTokenBreakdown || quota.basis === "unknown"
       ? " · неполное покрытие" : " · предварительная оценка";
   const modelId = String(record?.model ?? "").trim().toLowerCase();
   const gpt62 = isGpt62UsageModel(modelId);
-  const usage = gpt62 && record?.usageReported !== false ? record?.usage : null;
+  const usage = gpt62 && record?.usageReported !== false ? measuredGpt62TokenUsage(record?.usage) : null;
   const tokenParts = usage ? [
     ["Вход", usage.inputTokens], ["Из кэша", usage.cachedInputTokens],
     ["Выход", usage.outputTokens], ["Всего", usage.totalTokens],
@@ -1638,7 +1639,7 @@ function formatTurnEntry(
   const pricing = record?.model
     ? `<div data-work-log-turn-pricing>${
       escapeHtmlText(record.model)
-    }${record.serviceTier === "fast" ? ` · Fast ×${String(fastMultiplier).replace(".", ",")}` : ""}${gpt62 && creditsKnown ? " · Credits по ставке API" : ""}</div>`
+    }${record.serviceTier === "fast" ? ` · Fast ×${String(fastMultiplier).replace(".", ",")}` : ""}${gpt62 && creditsKnown && breakdown.priced ? " · Credits по ставке API" : ""}</div>`
     : "";
   const metaDetails = [
     `<div data-work-log-turn-facts>${pricing}`

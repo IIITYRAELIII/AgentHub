@@ -115,14 +115,13 @@ function isReportedTokenCount(value) {
 }
 
 function hasCompleteGpt62Usage(usage, normalized) {
-  const { inputTokens, cachedInputTokens, outputTokens, totalTokens } = usage;
+  const { inputTokens, cachedInputTokens, outputTokens, totalTokens } = measuredGpt62TokenUsage(usage);
   if (totalTokens === 0 && !Object.values(normalized).some(value => value > 0)) return true;
   return isReportedTokenCount(inputTokens) && isReportedTokenCount(outputTokens)
     && (isReportedTokenCount(cachedInputTokens) || (inputTokens === 0 && cachedInputTokens === undefined))
     && normalized.cachedInputTokens + (normalized.cacheWriteInputTokens ?? 0) <= inputTokens
     && normalized.reasoningOutputTokens <= outputTokens
-    && (!Object.hasOwn(usage, "totalTokens")
-      || (isReportedTokenCount(totalTokens) && totalTokens === inputTokens + outputTokens));
+    && (totalTokens === undefined || totalTokens === inputTokens + outputTokens);
 }
 
 export function normalizeServiceTier(value) {
@@ -398,15 +397,50 @@ export function normalizeTokenUsage(usage) {
       normalized[field] = Math.trunc(value);
     }
   }
+  if (typeof usage?.measuredTokenFields === "string") {
+    const names = new Set(usage.measuredTokenFields.split(","));
+    normalized.measuredTokenFields = TOKEN_USAGE_FIELDS.filter(field => names.has(field)
+      && isReportedTokenCount(usage[field])).join(",");
+  }
   return normalized;
 }
 
-// Preserve which counters were actually supplied for models that require a
-// complete breakdown. General token arithmetic keeps using the dense shape.
+export function captureMeasuredTokenUsage(usage) {
+  return normalizeTokenUsage({
+    ...usage,
+    measuredTokenFields: TOKEN_USAGE_FIELDS.filter(field => isReportedTokenCount(usage?.[field])).join(","),
+  });
+}
+
+function legacyDenseTokenUsage(usage) {
+  return TOKEN_USAGE_FIELDS.every(field => isReportedTokenCount(usage?.[field]));
+}
+
+function measuredTokenFields(usage) {
+  if (typeof usage?.measuredTokenFields === "string") return usage.measuredTokenFields.split(",");
+  const legacyDense = legacyDenseTokenUsage(usage);
+  return TOKEN_USAGE_FIELDS.filter(field => isReportedTokenCount(usage?.[field])
+    && (!legacyDense || usage[field] > 0));
+}
+
 export function normalizeJournalTokenUsage(usage, model) {
-  const normalized = normalizeTokenUsage(usage);
-  if (!isGpt62UsageModel(model)) return normalized;
-  return Object.fromEntries(Object.entries(normalized).filter(([field]) => isReportedTokenCount(usage?.[field])));
+  if (!isGpt62UsageModel(model) || typeof usage?.measuredTokenFields === "string"
+    || legacyDenseTokenUsage(usage)) return normalizeTokenUsage(usage);
+  return captureMeasuredTokenUsage(usage);
+}
+
+// Older dense records have no provenance for padded zeros. Keep their raw
+// counters and restrict pricing and display to the fields with evidence.
+export function measuredGpt62TokenUsage(usage) {
+  const fields = new Set(measuredTokenFields(usage));
+  return Object.fromEntries(Object.entries(usage ?? {}).filter(([field, count]) =>
+    isReportedTokenCount(count) && (fields.has(field) || PRICING_USAGE_FIELDS.includes(field))));
+}
+
+function combinedMeasuredTokenFields(left, right) {
+  if (typeof left?.measuredTokenFields !== "string" && typeof right?.measuredTokenFields !== "string") return {};
+  const shared = new Set(measuredTokenFields(left));
+  return { measuredTokenFields: measuredTokenFields(right).filter(field => shared.has(field)).join(",") };
 }
 
 export function tokenUsageDelta(current, previous, fallback) {
@@ -415,19 +449,21 @@ export function tokenUsageDelta(current, previous, fallback) {
   )) {
     return normalizeTokenUsage(fallback);
   }
-  return normalizeTokenUsage(Object.fromEntries(
-    [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].map((field) => [
+  return normalizeTokenUsage({
+    ...Object.fromEntries([...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].map((field) => [
       field, (current[field] ?? 0) - (previous[field] ?? 0),
-    ]),
-  ));
+    ])),
+    ...combinedMeasuredTokenFields(current, previous),
+  });
 }
 
 export function addTokenUsage(total, addition) {
-  return normalizeTokenUsage(Object.fromEntries(
-    [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].map((field) => [
+  return normalizeTokenUsage({
+    ...Object.fromEntries([...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].map((field) => [
       field, (total?.[field] ?? 0) + (addition?.[field] ?? 0),
-    ]),
-  ));
+    ])),
+    ...combinedMeasuredTokenFields(total, addition),
+  });
 }
 
 export function formatTurnTokenUsage(tracker) {
