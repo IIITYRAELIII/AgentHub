@@ -12,7 +12,10 @@ downstream authorization are unchanged.
 The listening owner processes commands already in the previous configured spool
 through their original journal. The same journal guards effects if installation
 rolls back before Ready. A request appearing in both queues uses its original
-receipt. Legacy replies and acknowledgements retain the addresses existing
+receipt. If the new queue handled it first, the listening owner retains its
+exact durable state in the previous journal before replying on that queue.
+An acknowledgement retires both copies after the requests are gone.
+Legacy replies and acknowledgements retain the addresses existing
 clients use. The previous server's configured queue excludes abandoned
 directories written under unrelated working folders.
 The legacy reader can be retired when the installed hooks have been refreshed

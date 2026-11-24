@@ -99,6 +99,23 @@ export class DurableCommandReceipts {
     return (await this.#readJournal()).map(({ id }) => id);
   }
 
+  async retainFrom(source, { id, fingerprint }) {
+    const original = (await source.#readJournal()).find((record) => record.id === id);
+    if (!original) throw new DurableCommandRetryableError("original command receipt is temporarily unavailable");
+    if (original.fingerprint !== fingerprint) throw new Error("durable command receipt fingerprint conflict");
+    await this.#withLock(async () => {
+      const existing = this.#records.get(id);
+      if (existing && existing.fingerprint !== fingerprint) {
+        throw new Error("durable command receipt fingerprint conflict");
+      }
+      // A prepared receipt has not started an effect. Retain any more advanced
+      // source state before the compatibility reader can execute this ID.
+      if (existing && (existing.phase !== "prepared" || original.phase === "prepared")) return;
+      this.#records.set(id, { ...original });
+      await this.#persist();
+    });
+  }
+
   async #load({ fresh = false } = {}) {
     if (this.#loaded && !fresh) return;
     const records = new Map();

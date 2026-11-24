@@ -180,16 +180,22 @@ export class RuntimeCommandServer {
     }
   }
 
-  async #handleSpool(request, receipts) {
+  async #handleSpool(request, receipts, canonicalIds) {
     const authorized = await this.#authorize(request);
+    const fingerprint = commandFingerprint({
+      command: request.command,
+      args: request.args,
+      cwd: request.cwd,
+      environment: request.environment,
+    });
+    if (receipts === this.#legacyReceipts && canonicalIds.has(request.id)) {
+      // The previous runtime may read this request after automatic rollback.
+      // Bind the existing effect in its journal before publishing a reply.
+      await receipts.retainFrom(this.#spoolReceipts, { id: request.id, fingerprint });
+    }
     return receipts.execute({
       id: request.id,
-      fingerprint: commandFingerprint({
-        command: request.command,
-        args: request.args,
-        cwd: request.cwd,
-        environment: request.environment,
-      }),
+      fingerprint,
       action: request.command,
       effect: () => this.#handler(authorized ?? request),
       reconcile: this.#reconcile ? (receipt) => this.#reconcile(request, receipt) : null,
@@ -289,6 +295,7 @@ export class RuntimeCommandServer {
       await removeSpoolFile(path.join(directory, `${id}.response.json`));
     }
     await receipts.forget(id);
+    if (receipts === this.#legacyReceipts) await this.#spoolReceipts.forget(id);
     for (const { directory } of snapshots) {
       await removeSpoolFile(path.join(directory, `${id}.ack`));
     }
@@ -313,13 +320,17 @@ export class RuntimeCommandServer {
         for (const id of await this.#legacyReceipts.ids()) legacyIds.add(id);
       }
     }
+    const hasSharedRequests = snapshots.some(({ allNames }) => allNames
+      .some((name) => name.endsWith(".request.json")
+        && legacyIds.has(name.slice(0, -".request.json".length))));
+    const canonicalIds = new Set(hasSharedRequests ? await this.#spoolReceipts.ids() : []);
     const acknowledgedIds = await this.#retireAcknowledgedSpool(snapshots, legacyIds);
     for (const snapshot of snapshots) {
-      await this.#drainDirectory(snapshot, snapshots, acknowledgedIds, legacyIds);
+      await this.#drainDirectory(snapshot, snapshots, acknowledgedIds, legacyIds, canonicalIds);
     }
   }
 
-  async #drainDirectory({ directory, allNames }, snapshots, acknowledgedIds, legacyIds) {
+  async #drainDirectory({ directory, allNames }, snapshots, acknowledgedIds, legacyIds, canonicalIds) {
     for (const name of allNames.filter((item) => item.endsWith(".response.json"))) {
       const filePath = path.join(directory, name);
       const info = await stat(filePath).catch(() => null);
@@ -359,7 +370,7 @@ export class RuntimeCommandServer {
         if (text === null) continue;
         const request = validateRuntimeCommand(JSON.parse(text));
         if (request.id !== id) throw new Error("Runtime command file identity mismatch");
-        const result = await this.#handleSpool(request, receipts);
+        const result = await this.#handleSpool(request, receipts, canonicalIds);
         response = { ok: true, result: String(result ?? "") };
       } catch (error) {
         if (error instanceof DurableCommandRetryableError) continue;
