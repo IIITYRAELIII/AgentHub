@@ -2923,6 +2923,12 @@
       state.selectedWorkspaceId = nextWorkspaceId;
       renderWorkspacePanel();
     },
+    setWorkspaceFolderCatalog(folderNames) {
+      const next = window.AgentHubStreamTabs.workspaceFolderNames([], folderNames);
+      if (sameSnapshotValue(state.folderNames, next)) return;
+      state.folderNames = next;
+      renderBoard();
+    },
     setSnapshot(payload = {}) {
       const changes = taskBoardSnapshotChanges(state, payload, {
         initialized: state.snapshotInitialized,

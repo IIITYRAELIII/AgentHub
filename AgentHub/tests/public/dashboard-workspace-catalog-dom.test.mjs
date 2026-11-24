@@ -411,3 +411,74 @@ for (const host of ['web','vscode']) test(`canonical ${host} snapshot refresh up
     assert.equal(await page.locator('[data-board-scope="workspace:workspace-1"] .task-workspace-folder-count').textContent(),'1');
   } finally { await browser.close(); }
 });
+
+
+for (const scenario of [{host:'web',width:1280},{host:'vscode',width:520}]) {
+  test(`local empty folder creation and rename reach Dashboard without a server snapshot: ${scenario.host}`, {timeout:20000}, async()=>{
+    const browser=await launchBrowser();
+    try {
+      const page=await browser.newPage({viewport:{width:scenario.width,height:900}});
+      page.setDefaultTimeout(4000);
+      const server=snapshot();
+      server.workspaces[0].settings={catalogFolder:'Серверная'};
+      await openFixture(page,{surface:scenario.host,themeRegistry,fixtureSnapshot:server});
+      await page.waitForFunction(()=>document.querySelector('[data-board-scope="workspace:workspace-1"]'));
+      // Freeze delivery, not catalog behavior: no later snapshot can rescue the
+      // projection. Both actual client transports remain otherwise installed.
+      await page.route('**/api/snapshot', route=>route.abort('blockedbyclient'));
+      await page.evaluate(()=>{
+        window.__catalogSnapshotBefore=JSON.stringify(window.__agentHubFixture.snapshot);
+        window.__catalogLogStart=window.__agentHubFixture.log.length;
+        const original=window.__fixtureBridge.postMessage.bind(window.__fixtureBridge);
+        window.__fixtureBridge.postMessage=message=>{if(message.action!=='snapshot') original(message);};
+      });
+      const chat=async()=>{
+        await page.locator(scenario.width<960?'[data-mobile-button="tasks"]':'[data-view-button="chat"]').click();
+      };
+      const dashboard=async()=>{
+        await page.locator(scenario.width<960?'[data-mobile-button="dashboard"]':'[data-view-button="dashboard"]').click();
+        await openCatalog(page,scenario.width);
+      };
+      await chat();
+      await page.locator('[data-action="workspace-folder-new"]').click();
+      await page.locator('[data-text-dialog-input]').fill('Локальная пустая');
+      await page.locator('[data-text-dialog-ok]').click();
+      const local=page.locator('[data-task-list] [data-workspace-folder-name="Локальная пустая"]');
+      assert.equal(await local.count(),1);
+      await dashboard();
+      const created=page.locator('[data-task-board-scopes] [data-board-scope="folder:Локальная пустая"]');
+      assert.equal(await created.count(),1,'local catalog mutation reaches Dashboard synchronously');
+      assert.equal(await created.locator('.task-workspace-folder-count').textContent(),'0');
+      await page.screenshot({path:path.join(output,`${scenario.host}-local-empty-created.png`),animations:'disabled'});
+      if(scenario.width<960) await page.keyboard.press('Escape');
+      await chat();
+      await local.dispatchEvent('contextmenu',{clientX:80,clientY:150});
+      await page.locator('[data-workspace-folder-menu-action="rename"]').click();
+      await page.locator('[data-text-dialog-input]').fill('Переименованная пустая');
+      await page.locator('[data-text-dialog-ok]').click();
+      assert.equal(await page.locator('[data-task-list] [data-workspace-folder-name="Переименованная пустая"]').count(),1);
+      await dashboard();
+      assert.equal(await created.count(),0);
+      const renamed=page.locator('[data-task-board-scopes] [data-board-scope="folder:Переименованная пустая"]');
+      assert.equal(await renamed.count(),1);
+      assert.equal(await renamed.locator('.task-workspace-folder-count').textContent(),'0');
+      await page.screenshot({path:path.join(output,`${scenario.host}-local-empty-renamed.png`),animations:'disabled'});
+      const proof=await page.evaluate(()=>({snapshotUnchanged:JSON.stringify(window.__agentHubFixture.snapshot)===window.__catalogSnapshotBefore,
+        actions:window.__agentHubFixture.log.slice(window.__catalogLogStart).map(e=>e.action)}));
+      assert.equal(proof.snapshotUnchanged,true);
+      assert.equal(proof.actions.some(action=>['rename-workspace-folder','create-workspace','move-workspace-to-folder','create-workspace-folder'].includes(action)),false);
+      if(scenario.width<960) await page.keyboard.press('Escape');
+      await chat();
+      await page.locator('[data-task-list] [data-workspace-folder-name="Серверная"]').dispatchEvent('contextmenu',{clientX:80,clientY:150});
+      await page.locator('[data-workspace-folder-menu-action="rename"]').click();
+      await page.locator('[data-text-dialog-input]').fill('Серверное переименование');
+      await page.locator('[data-text-dialog-ok]').click();
+      await page.waitForFunction(()=>window.__agentHubFixture.log.some(e=>e.action==='rename-workspace-folder'));
+      const serverRename=await page.evaluate(()=>window.__agentHubFixture.log.find(e=>e.action==='rename-workspace-folder'));
+      assert.equal(serverRename.params.fromFolderName,'Серверная');
+      assert.equal(serverRename.params.toFolderName,'Серверное переименование');
+      proof.nonemptyServerOwner={fromFolderName:serverRename.params.fromFolderName,toFolderName:serverRename.params.toFolderName};
+      await writeFile(path.join(output,`${scenario.host}-local-catalog-proof.json`),JSON.stringify(proof,null,2));
+    } finally {await browser.close();}
+  });
+}

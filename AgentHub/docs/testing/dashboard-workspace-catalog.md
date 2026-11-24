@@ -3,6 +3,11 @@
 Dashboard and Dialogs share `workspaceCatalogGroups` and `workspaceSections`.
 Activity belongs to the existing conversation projection; board column order
 does not reorder the navigation catalog. Declared empty folders stay visible.
+The existing browser catalog owner publishes local create/rename changes
+synchronously to the Dashboard projection. Renaming an empty local folder does
+not issue a server mutation; folders containing Workspaces retain the server
+rename owner. The regression freezes snapshot delivery while exercising the
+actual Dialogs create and context-menu rename paths in Web and narrow WebView.
 Folder names are one level, not path syntax.
 
 The catalog contains navigation and disclosure only. Workspace/column editing,

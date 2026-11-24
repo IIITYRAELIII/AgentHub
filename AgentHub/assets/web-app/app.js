@@ -2483,6 +2483,7 @@ function createWorkspaceFolder(requestedName) {
   state.workspaceFolderNames.add(folderName);
   persistWorkspaceFolders();
   renderTasks();
+  window.AgentHubTaskBoard?.setWorkspaceFolderCatalog(workspaceFolderCatalogNames());
   showToast(`Папка «${folderName}» создана`);
   return true;
 }
@@ -2502,6 +2503,7 @@ function renameWorkspaceFolderCatalog(fromFolderName, toFolderName) {
   }
   persistCollapsedWorkspaceFolders();
   renderTasks();
+  window.AgentHubTaskBoard?.setWorkspaceFolderCatalog(workspaceFolderCatalogNames());
   return true;
 }
 
@@ -5468,6 +5470,11 @@ async function renameWorkspaceFolder(folderName) {
   if (!plan) return;
   if (plan.duplicateFolderName) {
     showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
+    return;
+  }
+  if (plan.workspaceIds.length === 0) {
+    renameWorkspaceFolderCatalog(plan.fromFolderName, plan.toFolderName);
+    showToast(`Папка «${plan.fromFolderName}» переименована в «${plan.toFolderName}»`);
     return;
   }
   emit("workspace:folder-rename", plan);
