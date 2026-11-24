@@ -10,6 +10,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInstaller;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
@@ -23,6 +24,7 @@ import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.SslErrorHandler;
@@ -37,6 +39,7 @@ import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -379,8 +382,28 @@ public final class MainActivity extends Activity {
                 if (request.isForMainFrame()) showPairing(serverUrl, "Agent Hub недоступен.");
             }
         });
-        setContentView(webView);
+        setHubContentView();
         webView.loadUrl(serverUrl);
+    }
+
+    private void setHubContentView() {
+        if (Build.VERSION.SDK_INT < 35) {
+            setContentView(webView);
+            return;
+        }
+        FrameLayout content = new FrameLayout(this);
+        content.setBackgroundColor(Color.rgb(7, 17, 22));
+        content.addView(webView, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        int safeArea = WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout();
+        content.setOnApplyWindowInsetsListener((view, insets) -> {
+            Insets bars = insets.getInsets(safeArea);
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+            // The WebView must still receive changes such as the keyboard inset.
+            return new WindowInsets.Builder(insets).setInsets(safeArea, Insets.NONE).build();
+        });
+        setContentView(content);
+        content.requestApplyInsets();
     }
 
     private Uri[] selectedFiles(int resultCode, Intent data) {
