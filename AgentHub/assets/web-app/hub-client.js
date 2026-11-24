@@ -3554,9 +3554,13 @@ agentHub.on("task:select", ({ id }) => {
       // A cold local page can paint and acknowledge its exact final while the
       // independently ordered selection is still waiting for persistence.
       const stillOpening = () => navigationIntents.current(generation) && sameIdentity(taskIdentity(id), identity);
+      const knownFinal = snapshotTask(lastSnapshot, id)?.latestFinal;
       const [selection, history] = await Promise.allSettled([
         control("select-task", taskOpenParams(identity, { clientTraceId: traceId, deferSnapshot: true })),
-        control("task-history", { ...identity, limit: 30, coldHistory: true, clientTraceId: traceId }).then((history) => {
+        control("task-history", { ...identity, limit: 30, coldHistory: true, clientTraceId: traceId,
+          ...(knownFinal && { knownFinal: { provider: knownFinal.provider, threadId: knownFinal.threadId,
+            turnId: knownFinal.turnId, revision: knownFinal.revision } }),
+        }).then((history) => {
           verifiedTaskHistory(history, identity);
           if (stillOpening()) {
             const opened = bindSnapshotBaseline(commandTrace.associate({ history, snapshot: null }, traceId),

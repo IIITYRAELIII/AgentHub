@@ -34,8 +34,10 @@ test("real HTTP cold history paints thirty turns before the background refresh",
   { timeout: 45_000 }, () => verifyColdHistory(false));
 test("cold HTTP history includes the known final behind two newer requests in the first page",
   { timeout: 45_000 }, () => verifyColdHistory(true));
+test("cold HTTP paints the complete final when newer requests alone exceed the transport budget",
+  { timeout: 45_000 }, () => verifyColdHistory(true, true));
 
-async function verifyColdHistory(latestOutsideTail) {
+async function verifyColdHistory(latestOutsideTail, oversizedRequests = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-cold-http-history-"));
   const store = new LocalTaskSyncStore({ filePath: path.join(root, "history.json"), historyLimit: 50 });
   const state = snapshot();
@@ -70,7 +72,12 @@ async function verifyColdHistory(latestOutsideTail) {
       randomBytes(latestOutsideTail && index < 18 ? 25_000 : 4_000).toString("base64"), 900 + index));
     const userOnly = [1001, 1002].map(position => {
       const value = turn("user-only-" + position, "", position);
-      return { ...value, answer: "", messages: value.messages.slice(0, 1) };
+      if (!oversizedRequests) return { ...value, answer: "", messages: value.messages.slice(0, 1) };
+      const messages = Array.from({ length: 55 }, (_, index) => ({
+        itemId: value.id + "-request-" + index, role: "user",
+        text: `${position}-${index} ` + "X".repeat(11_990),
+      }));
+      return { ...value, prompt: messages[0].text, answer: "", messages };
     });
     await store.recordHistory(taskB, [...old, newest, ...(latestOutsideTail ? userOnly : [])], {});
     const readHistory = createDesktopTaskHistoryFactory({
@@ -148,10 +155,21 @@ async function verifyColdHistory(latestOutsideTail) {
     const final = page.locator('[data-chat-pane] [data-role="agent"][data-turn-id="latest-b"]').first();
     await final.waitFor();
     const displayed = await final.textContent();
-    assert.ok(displayed.includes("Start latest-b") && displayed.includes("End latest-b"));
+    assert.ok(displayed.includes("Start latest-b") && displayed.includes(newest.answer.split("\n\n")[1])
+      && displayed.includes("End latest-b"));
     const lastUser = page.locator('[data-chat-pane] [data-role="user"][data-turn-id="latest-b"]').first();
     assert.match(await lastUser.textContent(), /Request latest-b/u);
     const firstPaint = performance.now() - start;
+    if (oversizedRequests) {
+      const reply = await response.json();
+      assert.equal(reply.ok, true, reply.error);
+      assert.deepEqual(reply.result.items.map(item => item.id), [newest.id]);
+      assert.ok(studies[0].jsonBytes <= 850_000);
+      assert.ok(reply.result.transportTruncated);
+      assert.equal(reply.result.nextBefore, reply.result.total - 3);
+      assert.equal(reply.result.end, reply.result.start + 1);
+      assert.equal(reply.result.items[0].answer, newest.answer);
+    }
     await page.evaluate(async () => {
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const trace = window.AgentHubCommandTrace;
@@ -199,10 +217,18 @@ async function verifyColdHistory(latestOutsideTail) {
     const retainedPaint = performance.now() - repeat;
     releaseSelect();
     releaseFollowup();
-    await page.locator('[data-chat-pane] [data-role="agent"][data-turn-id="old-b-14"]').first().waitFor({ state: "attached" });
-    assert.match(await final.textContent(), /End latest-b/u);
+    if (oversizedRequests) {
+      await page.locator('[data-chat-pane] [data-role="user"][data-turn-id="user-only-1002"]').first().waitFor();
+    } else {
+      await page.locator('[data-chat-pane] [data-role="agent"][data-turn-id="old-b-14"]').first().waitFor({ state: "attached" });
+      assert.match(await final.textContent(), /End latest-b/u);
+    }
     assert.deepEqual(errors, []);
     await refreshed;
+    if (oversizedRequests) {
+      const older = await readHistory({ ...taskB, before: studies[0].start, limit: 30 });
+      assert.equal(older.items.at(-1).id, old.at(-1).id);
+    }
     assert.ok(refreshedThreads.includes(taskB.threadId));
     console.log("retained-history-measurements", JSON.stringify({ retainedPaint, requests: studies }));
     assert.equal(studies[0].limit, 30);

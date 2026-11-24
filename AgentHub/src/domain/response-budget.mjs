@@ -47,40 +47,79 @@ function textSlots(payload) {
   return slots;
 }
 
+function coldPageFinal(items, knownFinal) {
+  const exact = knownFinal && items.find(item => item.id === knownFinal.turnId
+    && item.provider === knownFinal.provider && item.threadId === knownFinal.threadId
+    && (!knownFinal.revision || item.terminalRevision === knownFinal.revision));
+  return exact ?? items.findLast(item => item.completed && (item.answer
+    || item.messages?.some(message => message.role === "agent" && message.text
+      && (!message.phase || ["final", "final_answer", "finalAnswer"].includes(message.phase)))));
+}
+
+function shrinkTextToBudget(page, excessBytes, minimum) {
+  // Each slot is one JSON string. Updating its encoded byte delta avoids
+  // serializing the entire page again for every shortened message.
+  const slots = textSlots(page).map(slot => ({ slot, bytes: utf8ByteLength(slot.read()) }));
+  while (excessBytes > 0) {
+    let largest;
+    for (const entry of slots) {
+      if (entry.bytes > (largest?.bytes ?? minimum)) largest = entry;
+    }
+    if (!largest) return;
+    const previous = largest.slot.read();
+    const next = truncateUtf8(previous, Math.max(minimum, Math.floor(largest.bytes * 0.65)));
+    largest.slot.write(next);
+    largest.bytes = utf8ByteLength(next);
+    excessBytes -= utf8ByteLength(JSON.stringify(previous)) - utf8ByteLength(JSON.stringify(next));
+  }
+}
+
+function fitColdWindow(page, budget, knownFinal) {
+  const items = page.items;
+  const envelope = { ...page, items: [] };
+  let bytes = 0;
+  let first = items.length - 1;
+  for (let i = first; i >= 0; i -= 1) {
+    envelope.start = page.start + i;
+    envelope.nextBefore = envelope.start || null;
+    bytes += utf8ByteLength(JSON.stringify(items[i])) + (i === items.length - 1 ? 0 : 1);
+    if (bytes + utf8ByteLength(JSON.stringify(envelope)) > budget) break;
+    first = i;
+  }
+  const final = coldPageFinal(items, knownFinal);
+  const anchor = final ? items.indexOf(final) : -1;
+  if (anchor >= 0 && anchor < first) {
+    // Paint the complete exchange first. The ordinary refresh loads newer requests.
+    first = anchor;
+    page.end = page.start + anchor + 1;
+    page.items = [final];
+  } else {
+    page.items = items.slice(first);
+  }
+  page.start += first;
+  page.nextBefore = page.start || null;
+}
+
 export function fitTaskHistoryPayload(payload, {
   maxBytes,
   minimumTextBytes = 1_024,
   preferCompleteTail = false,
+  knownFinal,
+  reservedBytes = 0,
 } = {}) {
-  const budget = Math.max(64 * 1_024, Math.trunc(Number(maxBytes) || 0));
+  const budget = Math.max(64 * 1_024, Math.trunc(Number(maxBytes) || 0)) - reservedBytes;
   const result = structuredClone(payload);
-  let truncated = false;
   const encodedSize = () => utf8ByteLength(JSON.stringify(result));
+  if (encodedSize() <= budget) return result;
+  result.transportTruncated = true;
+  if (preferCompleteTail && result.items?.length > 1) fitColdWindow(result, budget, knownFinal);
 
+  const excessBytes = encodedSize() - budget;
+  if (excessBytes > 0) shrinkTextToBudget(result, excessBytes, minimumTextBytes);
   while (encodedSize() > budget) {
-    if (preferCompleteTail && result.items?.length > 1) {
-      result.items.shift();
-      result.start += 1;
-      result.nextBefore = result.start;
-      truncated = true;
-      continue;
-    }
-    const largest = textSlots(result)
-      .map((slot) => ({ slot, bytes: utf8ByteLength(slot.read()) }))
-      .filter((entry) => entry.bytes > minimumTextBytes)
-      .sort((left, right) => right.bytes - left.bytes)[0];
-    if (largest) {
-      largest.slot.write(truncateUtf8(
-        largest.slot.read(),
-        Math.max(minimumTextBytes, Math.floor(largest.bytes * 0.65)),
-      ));
-      truncated = true;
-      continue;
-    }
     const activityItem = (result.items ?? []).find((item) => (item.activities?.length ?? 0) > 0);
     if (activityItem) {
       activityItem.activities = activityItem.activities.slice(Math.ceil(activityItem.activities.length / 2));
-      truncated = true;
       continue;
     }
     const groupedActivityItem = (result.items ?? []).find((item) => (
@@ -89,14 +128,12 @@ export function fitTaskHistoryPayload(payload, {
     if (groupedActivityItem) {
       const group = groupedActivityItem.activityGroups.find((entry) => (entry.activities?.length ?? 0) > 0);
       group.activities = group.activities.slice(Math.ceil(group.activities.length / 2));
-      truncated = true;
       continue;
     }
     if ((result.items?.length ?? 0) > 1) {
       result.items.shift();
       result.start += 1;
       result.nextBefore = result.start > 0 ? result.start : null;
-      truncated = true;
       continue;
     }
     break;
@@ -104,6 +141,5 @@ export function fitTaskHistoryPayload(payload, {
   if (encodedSize() > budget) {
     throw new TaskHistoryResponseBudgetError(budget);
   }
-  if (truncated) result.transportTruncated = true;
   return result;
 }

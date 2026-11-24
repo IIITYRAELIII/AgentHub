@@ -1067,7 +1067,9 @@ Canonical history supplies the complete last request and final response. Existin
 history pages, older-page cursors, retained windows and exact navigation provide
 the rest of the conversation. The cold tab requests the latest 30 visible turns
 from the canonical chat history. The page cursor includes older turns omitted
-to fit the transport budget. Selection, identity, exact final revision and
+to fit the transport budget. When newer requests would displace the known
+final, the first page can end at that exchange. Its actual bounds are returned,
+and the post-paint refresh loads newer turns. Selection, identity, exact final revision and
 freshness guards still apply. After the first paint, the existing refresh
 path retains the page's scroll and cursor. See ADR-HUB-536.
 The same rendered-final and durable read-cursor owner clears Ready on both

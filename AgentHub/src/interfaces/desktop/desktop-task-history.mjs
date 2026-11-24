@@ -36,6 +36,7 @@ import { isLegacyCodexContextProbeTurn } from "../../domain/legacy-codex-context
 import { withDurableMessageMetadata } from "../../domain/stream-message-pin.mjs";
 
 const MAX_CACHED_HISTORIES = 12;
+const HISTORY_VERSION_LENGTH = 22;
 const MAX_CACHED_TURNS_PER_HISTORY = 40;
 
 function coalesceInterstreamRootAlias(messages, turn) {
@@ -1073,7 +1074,11 @@ export function createDesktopTaskHistoryFactory({
       }),
     }));
     const fitted = sync("history-fit-page", () => responseBudget.fit(payload, {
-      ...(deferProviderRefresh ? { preferCompleteTail: true } : {}),
+      ...(deferProviderRefresh ? {
+        preferCompleteTail: true,
+        knownFinal: params.knownFinal ?? entry.latestFinal,
+        reservedBytes: Buffer.byteLength(',"version":""') + HISTORY_VERSION_LENGTH,
+      } : {}),
       maxBytes: Math.min(
         Math.max(Number(params.maxResponseBytes) || 3_500_000, 64 * 1_024),
         3_500_000,
@@ -1082,7 +1087,7 @@ export function createDesktopTaskHistoryFactory({
     const version = sync("history-version", () => createHash("sha256")
       .update(JSON.stringify(fitted))
       .digest("base64url")
-      .slice(0, 22));
+      .slice(0, HISTORY_VERSION_LENGTH));
     if (params.knownVersion && String(params.knownVersion) === version) {
       return {
         ...(binding.streamId ? { streamId: binding.streamId } : {}),
