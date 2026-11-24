@@ -195,7 +195,7 @@ test("Android file-link save uses the HttpOnly device session and delivers the e
     })), { scriptSeesCookie: false, browserPaired: false });
 
     const save = async () => {
-      await link.click();
+      await link.click({ button: "right" });
       await page.locator('[data-resource-action="save"]').click();
     };
     await save();
