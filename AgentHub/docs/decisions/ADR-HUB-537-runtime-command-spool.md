@@ -26,6 +26,10 @@ started effects and terminal outcomes, including commands whose old request has
 not arrived. A repeated import accepts identical records. A conflicting or
 unverified journal, or one inside a Git working tree, blocks automatic restart
 and leaves the command files in place for recovery.
+The previous Host relaunch and its spool both use the verified lexical launch
+root. A separately configured absolute data directory determines the wait
+admission scope. Losing the launch address of a live previous instance leaves
+the rollback unresolved instead of choosing a different spool.
 The legacy reader can be retired when the installed hooks have been refreshed
 and the last old writer and pending request have been accounted for.
 

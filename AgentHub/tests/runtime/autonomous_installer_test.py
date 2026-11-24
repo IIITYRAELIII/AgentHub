@@ -281,7 +281,7 @@ await server.start();fs.writeFileSync(root+'/fixture-ready','ready');
                     self.assertEqual(result.returncode,0,result.stderr); return json.loads(result.stdout)
                 initial=call('wait-probe'); self.assertEqual(initial['process']['pid'],child.pid)
                 observed_process=next(row for row in installer.process_snapshot() if row['ProcessId']==child.pid)
-                admission_root=installer.wait_admission_root(root,'legacy',installer.node_entrypoint(observed_process))
+                _,admission_root=installer.previous_runtime_roots(root,'legacy',installer.node_entrypoint(observed_process))
                 self.assertEqual(admission_root,alias)
                 original=call('create',dict(runtimeRoot=str(admission_root),physicalRuntimeRoot=str(root),mode='wait'))
                 self.assertEqual(original['phase'],'installer-waiting')
@@ -305,7 +305,7 @@ await server.start();fs.writeFileSync(root+'/fixture-ready','ready');
                 child.stdout.close(); child.stderr.close()
 
     @unittest.skipUnless(shutil.which('node'), 'Windows junction fixture')
-    def test_wait_admission_root_requires_selected_installation(self):
+    def test_previous_runtime_launch_and_admission_use_their_own_lexical_roots(self):
         with tempfile.TemporaryDirectory() as temp:
             base=Path(temp); root=base/'hub'; foreign=base/'foreign'
             release=root/'releases/revision'; release.mkdir(parents=True)
@@ -315,9 +315,15 @@ await server.start();fs.writeFileSync(root+'/fixture-ready','ready');
             alias=base/'alias'
             subprocess.run(['node','-e',"require('fs').symlinkSync(process.argv[1],process.argv[2],'junction')",
                            str(root),str(alias)],check=True,capture_output=True,creationflags=0x08000000)
-            self.assertEqual(installer.wait_admission_root(root,'revision',alias/'releases/revision/agent-hub-main.mjs'),alias)
+            entry=alias/'releases/revision/agent-hub-main.mjs'
+            self.assertEqual(installer.previous_runtime_roots(root,'revision',entry),(alias,alias))
+            (root/'config.json').write_text(json.dumps(dict(dataDir=str(root/'data'))),encoding='utf-8')
+            self.assertEqual(installer.previous_runtime_roots(root,'revision',entry),(alias,root))
+            (root/'config.json').write_text(json.dumps(dict(dataDir=str(foreign))),encoding='utf-8')
+            with self.assertRaisesRegex(RuntimeError,'data root has different physical ownership'):
+                installer.previous_runtime_roots(root,'revision',entry)
             with self.assertRaisesRegex(RuntimeError,'different physical ownership'):
-                installer.wait_admission_root(root,'revision',foreign/'bot.mjs')
+                installer.previous_runtime_roots(root,'revision',foreign/'bot.mjs')
 
     @unittest.skipUnless(shutil.which('node'), 'Real SQLite owner contention fixture')
     def test_ready_checkpoint_waits_for_real_writer_without_replaying_launch_and_keeps_cas(self):
@@ -1141,7 +1147,7 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                                                                          retirementScope=retired_scope)),
                         "selected_runtime_job_scope": dict(return_value=retired_scope),
                         "read_update_original": dict(return_value=None),
-                        "ready_process_proof": dict(return_value=([host, node], root)),
+                        "ready_process_proof": dict(return_value=([host, node], (root, root))),
                         "wait_for_current_turns": dict(return_value=dict(activeCount=0)),
                         "process_snapshot": dict(return_value=[new_host]),
                         "extract_verified": dict(return_value=dict(releaseId="new")),
