@@ -2,11 +2,18 @@
 
 (() => {
   const imageLinkExtensions = new Set([
-    "apng", "avif", "bmp", "cur", "dib", "gif", "heic", "heif", "ico", "jfif", "jpe",
-    "jpeg", "jpg", "jp2", "j2k", "jxl", "png", "psd", "svg", "tga", "tif", "tiff", "webp",
+    "apng", "avif", "bmp", "cur", "dib", "gif", "ico", "jfif", "jpe", "jpeg", "jpg",
+    "png", "svg", "webp",
+  ]);
+  const fileOnlyImageExtensions = new Set(["heic", "heif", "jp2", "j2k", "jxl", "psd", "tga", "tif", "tiff"]);
+  const imageLinkMimeTypes = new Set([
+    "image/*", "image/apng", "image/avif", "image/bmp", "image/gif", "image/jpeg",
+    "image/pjpeg", "image/png", "image/svg+xml", "image/vnd.microsoft.icon", "image/webp",
+    "image/x-icon", "image/x-ms-bmp",
   ]);
   const knownFileExtensions = new Set([
     ...imageLinkExtensions,
+    ...fileOnlyImageExtensions,
     "avi", "bsl", "c", "cfe", "cf", "cmd", "cpp", "cs", "csproj", "css", "docx", "epf",
     "erf", "go", "h", "html", "ini", "java", "jpeg", "jpg", "js", "json", "jsx", "m4v",
     "md", "mjs", "mkv", "mov", "mp4", "pdf", "php", "png", "ps1", "py", "rb", "rs", "sh",
@@ -230,7 +237,7 @@
     };
   }
 
-  function imageLinkPreview({ href = "", localPath = "", type = "" } = {}) {
+  function imageLinkPreview({ href = "", localPath = "", type = "", attachmentName = "" } = {}) {
     const ending = (value) => value.match(/\.([^./\\\s:]+)$/u)?.[1]?.toLowerCase() ?? "";
     if (localPath) {
       const file = workspaceFilePath(localPath);
@@ -242,7 +249,10 @@
       const url = new URL(href);
       if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) return null;
       const name = decodedUrlPart(url.pathname.split("/").at(-1) ?? "");
-      return imageLinkExtensions.has(ending(name)) || String(type).toLowerCase().startsWith("image/")
+      const extension = ending(name);
+      if (fileOnlyImageExtensions.has(extension) || fileOnlyImageExtensions.has(ending(attachmentName))) return null;
+      const mime = String(type).split(";", 1)[0].trim().toLowerCase();
+      return imageLinkExtensions.has(extension) || imageLinkMimeTypes.has(mime)
         ? { url: url.href, name }
         : null;
     } catch {

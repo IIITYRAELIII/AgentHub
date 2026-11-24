@@ -29,7 +29,6 @@ import { JournalDatabase } from "../../infrastructure/persistence/journal-databa
 import { validLocalWebviewSession } from "./local-webview-session.mjs";
 import { acquireAttachmentUploadService } from "../../infrastructure/filesystem/attachment-upload-service.mjs";
 import { attachmentUploadLimits } from "../../domain/attachment-upload-policy.mjs";
-import { createWorkspaceImagePreview } from "../../infrastructure/media/attachment-thumbnail-service.mjs";
 
 export { extractWorkLogHtml } from "./mini-app-journal-data.mjs";
 
@@ -61,18 +60,6 @@ const WORKSPACE_IMAGE_TYPES = new Map([
   [".dib", "image/bmp"],
   [".jfif", "image/jpeg"],
   [".jpe", "image/jpeg"],
-  [".jxl", "image/jxl"],
-]);
-
-const WORKSPACE_PREVIEW_FORMATS = new Map([
-  [".tif", "TIFF"],
-  [".tiff", "TIFF"],
-  [".heic", "HEIF"],
-  [".heif", "HEIF"],
-  [".jp2", "JPEG2000"],
-  [".j2k", "JPEG2000"],
-  [".psd", "PSD"],
-  [".tga", "TGA"],
 ]);
 
 function staticAssetManifest(assetsDirectory) {
@@ -1431,12 +1418,6 @@ export class MiniAppServer {
         // response sandboxed even when the source is an active SVG document.
         headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'";
         const extension = path.extname(file.name).toLowerCase();
-        const decoderFormat = WORKSPACE_PREVIEW_FORMATS.get(extension);
-        if (decoderFormat) {
-          const body = await createWorkspaceImagePreview(file, decoderFormat);
-          send(response, 200, "image/webp", body, method, { headers });
-          return;
-        }
         const type = WORKSPACE_IMAGE_TYPES.get(extension) ?? STATIC_CONTENT_TYPES.get(extension) ?? file.type;
         if (!type.startsWith("image/")) {
           json(response, 415, { error: "Формат изображения не поддерживается" }, method);

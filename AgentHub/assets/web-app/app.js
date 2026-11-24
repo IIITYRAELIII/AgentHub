@@ -7235,6 +7235,8 @@ function markdownLink(raw, fileContext = currentFileLinkContext()) {
     : source;
   const taskReferenceLink = TaskReferences.link(value);
   if (taskReferenceLink) return taskReferenceLink;
+  const imageLink = projectedImageLink(value, fileContext.attachments);
+  if (imageLink) return imageLink;
   if (/^https?:\/\//iu.test(value)) {
     try {
       return { href: new URL(value).href };
@@ -7243,6 +7245,25 @@ function markdownLink(raw, fileContext = currentFileLinkContext()) {
     }
   }
   return desktopFileLink(value, fileContext);
+}
+
+function projectedImageLink(value, attachments) {
+  if (!Array.isArray(attachments) || !attachments.length) return null;
+  let target;
+  try { target = new URL(value, window.location.href); }
+  catch { return null; }
+  if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) return null;
+  for (const attachment of attachments) {
+    if (!attachment?.url || !resourceInteractions.isImageAttachment(attachment)) continue;
+    try {
+      if (new URL(attachment.url, window.location.href).href !== target.href) continue;
+      const imageMime = String(attachment.type || "image/*");
+      if (resourceInteractions.imageLinkPreview({ href: target.href, type: imageMime, attachmentName: attachment.name ?? "" })) {
+        return { href: target.href, imageMime };
+      }
+    } catch { /* Invalid attachment metadata has no authority. */ }
+  }
+  return null;
 }
 
 function codexFileCitation(raw) {
@@ -7280,6 +7301,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           rel: "noopener noreferrer",
         });
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
+        if (targetLink.imageMime) link.dataset.agentHubImageMime = targetLink.imageMime;
         target.append(link);
         appendLocalResourceOverflow(target, link, targetLink, citation?.label);
       } else {
@@ -7325,14 +7347,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         });
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
-        if (!targetLink.taskId && !targetLink.localPath) {
-          const attachment = (Array.isArray(fileContext.attachments) ? fileContext.attachments : []).find((item) => {
-            if (!item?.url || !resourceInteractions.isImageAttachment(item)) return false;
-            try { return new URL(item.url, window.location.href).href === link.href; }
-            catch { return false; }
-          });
-          if (attachment) link.dataset.agentHubImageMime = String(attachment.type || "image/*");
-        }
+        if (targetLink.imageMime) link.dataset.agentHubImageMime = targetLink.imageMime;
         target.append(link);
         appendLocalResourceOverflow(target, link, targetLink, parts[1]);
       } else {

@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { MiniAppServer } from "../../src/interfaces/web/mini-app-server.mjs";
 import { createLocalWebviewSession } from "../../src/interfaces/web/local-webview-session.mjs";
+import { createAttachmentStorageName } from "../../src/domain/attachment-files.mjs";
 import { launchBrowser, snapshot } from "./composer-production.fixture.mjs";
 
 const journal = () => ({ subscribe: () => () => {}, version: "local-files", html: () => "" });
@@ -49,6 +50,12 @@ test("local file APIs retain authentication and file errors without configured r
     assert.match(webviewImage.headers.get("content-security-policy"), /^sandbox;/u);
     assert.match(await webviewImage.text(), /<svg /u);
     assert.equal((await fetch(`${direct(target)}&preview=image`, { headers: webviewHeaders })).status, 415);
+    for (const name of ["photo.TIFF", "photo.HEIC"]) {
+      const unsupported = path.join(root, name);
+      await writeFile(unsupported, bytes);
+      assert.equal((await fetch(`${direct(unsupported)}&preview=image`, { headers: webviewHeaders })).status, 415);
+      assert.deepEqual(Buffer.from(await (await fetch(direct(unsupported), { headers })).arrayBuffer()), bytes);
+    }
     for (const action of ["copy", "reveal"]) {
       const response = await fetch(`${url}api/workspace-file/${action}`, { method: "POST",
         headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ path: target }) });
@@ -99,14 +106,24 @@ test("real Edge opens chat images and keeps file commands on explicit actions", 
       answer: [
         ...targets.map((file, index) => `[file-${index}](<${file.replaceAll("\\", "/")}>)`),
         "[relative-vector](Vector.SVG)",
+        "[ordinary-tiff-file](photo.TIFF)",
         `[uri-gif](${pathToFileURL(gifFile).href}?download=1#image)`,
         `[remote-photo](${remoteOrigin}/ANIMATION.GIF?download=1#image)`,
         `[remote-html](${remoteOrigin}/looks-like.png)`,
         `[normal-page](${remoteOrigin}/ordinary?file=photo.png)`,
       ].join("\n\n") }],
     start: 0, end: 1, total: 1, messageTotal: 1, nextBefore: null, version: "file-links" };
+  const linkedId = createAttachmentStorageName("linked.gif", "relative-image-fixture").replace(/\.gif$/u, "");
+  const linkedUrl = `/api/message-attachment/${linkedId}`;
+  await writeFile(path.join(root, linkedId), gif);
+  history.items[0].messages = [{
+    role: "agent", phase: "final_answer", itemId: "file-links-answer",
+    text: `${history.items[0].answer}\n\n[canonical-mime](${linkedUrl})\n\n[mismatched-mime](${linkedUrl}?other=1)`,
+    attachments: [{ id: linkedId, name: "linked.gif", url: linkedUrl, type: "image/gif", isImage: true }],
+  }];
   const secret = "b".repeat(43);
   const server = new MiniAppServer({ port: 0, journalDatabase: journal(), localAccessSecret: secret,
+    attachmentDirectory: root,
     // A deliberately narrower legacy input cannot restrict local file links.
     workspaceFileRoots: [workspace],
     revealWorkspaceFile: async file => revealed.push(file), copyWorkspaceFile: async file => copied.push(file),
@@ -153,6 +170,9 @@ test("real Edge opens chat images and keeps file commands on explicit actions", 
     await openImage("file-1", 1);
     await openImage("relative-vector", 8);
     await openImage("uri-gif", 8);
+    await openImage("canonical-mime", 8);
+    assert.equal(await page.getByRole("link", { name: "mismatched-mime", exact: true }).count(), 0);
+    assert.equal(await page.getByText(`[mismatched-mime](${linkedUrl}?other=1)`, { exact: true }).isVisible(), true);
     await openImage("remote-photo", 8);
     assert.deepEqual(remoteRequests, [["/ANIMATION.GIF", "image", null]]);
     await page.getByRole("link", { name: "remote-html", exact: true }).click();
@@ -167,6 +187,11 @@ test("real Edge opens chat images and keeps file commands on explicit actions", 
     assert.equal(new URL(popup.url()).pathname, "/ordinary");
     assert.equal(await viewer.isVisible(), false);
     await popup.close();
+    await page.getByRole("link", { name: "ordinary-tiff-file", exact: true }).click();
+    await page.locator('[data-resource-action="save"]').waitFor();
+    assert.equal(await viewer.isVisible(), false);
+    await page.keyboard.press("Escape");
+    await page.locator('[data-resource-action="save"]').waitFor({ state: "hidden" });
     assert.equal(await page.evaluate(() => document.documentElement.dataset.svgScript), undefined);
     for (let index = 0; index < targets.length; index += 1) {
       const link = page.getByRole("link", { name: `file-${index}`, exact: true });

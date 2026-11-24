@@ -185,7 +185,13 @@ test("image links use their file type or projected MIME, independent of URL deco
   assert.equal(interactions.imageLinkPreview({ href: "https://images.example/page?file=a.png" }), null);
   assert.equal(interactions.imageLinkPreview({ href: "https://images.example/page.png/" }), null);
   assert.equal(interactions.imageLinkPreview({ href: "file:///C:/picture.png" }), null);
-  assert.equal(interactions.imageLinkPreview({ localPath: "C:/work/very#real.TIFF" }).localPath, "C:/work/very#real.TIFF");
+  assert.equal(interactions.imageLinkPreview({ localPath: "C:/work/very#real.GIF" }).localPath, "C:/work/very#real.GIF");
+  assert.equal(interactions.imageLinkPreview({ localPath: "C:/work/photo.TIFF" }), null);
+  assert.equal(interactions.imageLinkPreview({ href: "https://images.example/photo.HEIC?download#image" }), null);
+  assert.equal(interactions.imageLinkPreview({ href: "https://images.example/render", type: "image/tiff" }), null);
+  assert.equal(interactions.imageLinkPreview({ href: "https://images.example/render", type: "image/*", attachmentName: "photo.HEIC" }), null);
+  assert.equal(interactions.resolveFileReference("photo.HEIC", { projectRoot: "C:/work" }).localPath,
+    "C:/work/photo.HEIC");
   assert.equal(interactions.resolveFileReference("file:///C:/work/picture%23one.GIF?a=1#frame").localPath,
     "C:/work/picture#one.GIF");
 });
