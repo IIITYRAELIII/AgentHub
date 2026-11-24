@@ -395,12 +395,13 @@ public final class MainActivity extends Activity {
         content.setBackgroundColor(Color.rgb(7, 17, 22));
         content.addView(webView, new FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        int safeArea = WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout();
+        int viewportInsets = WindowInsets.Type.systemBars()
+            | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime();
         content.setOnApplyWindowInsetsListener((view, insets) -> {
-            Insets bars = insets.getInsets(safeArea);
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom);
-            // The WebView must still receive changes such as the keyboard inset.
-            return new WindowInsets.Builder(insets).setInsets(safeArea, Insets.NONE).build();
+            Insets viewport = insets.getInsets(viewportInsets);
+            view.setPadding(viewport.left, viewport.top, viewport.right, viewport.bottom);
+            // Keep dispatching changes, but only apply each inset once.
+            return new WindowInsets.Builder(insets).setInsets(viewportInsets, Insets.NONE).build();
         });
         setContentView(content);
         content.requestApplyInsets();
