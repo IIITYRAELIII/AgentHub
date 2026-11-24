@@ -2609,17 +2609,23 @@ export class LocalTaskSyncStore {
     return row ? this.#hydrateHistoryRows([row])[0] ?? null : null;
   }
 
-  async readHistoryPage(references, options = {}) {
-    const page = this.historyPage(references, options);
+  async readHistoryPage(references, { timing, ...options } = {}) {
+    const read = () => this.historyPage(references, options);
+    const page = timing ? timing.sync("history-sqlite-page", read) : read();
     const candidates = page.items.filter(({ turn }) => (
       turn.completed === true && turn.active !== true
       && turn.userMessageRecoveryVersion !== TERMINAL_USER_RECOVERY_VERSION
     )).map(({ provider, threadId, turn }) => ({ provider, threadId, turnId: turn.id }));
     if (!candidates.length) return page;
-    await this.#mutations.run(() => this.#transaction(() => (
+    const repair = () => this.#mutations.run(() => this.#transaction(() => (
       this.#recoverTerminalCommandIdentities(candidates)
     )), { timeoutMs: this.#mutationTimeoutMs, requestId: "task-sync:page-terminal-recovery" });
-    return this.historyPage(references, options);
+    if (!timing) {
+      await repair();
+      return read();
+    }
+    await timing.measure("history-terminal-identity-repair", repair);
+    return timing.sync("history-sqlite-reread", read);
   }
 
   historyPage(references, {

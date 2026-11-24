@@ -402,6 +402,8 @@
         "src/interfaces/web/http-read-timing.mjs",
         "tests/application/runtime-cpu-sample.test.mjs",
         "tests/interfaces/web/http-read-timing.test.mjs",
+        "docs/decisions/ADR-HUB-517-cold-history-http.md",
+        "tests/public/cold-history-http.test.mjs",
         "test-suite.mjs",
         "src/infrastructure/process/test-resource-*",
         "src/interfaces/web/journal-publication.mjs",

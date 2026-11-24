@@ -1863,10 +1863,31 @@ async function prepareSnapshotTransport() {
   if (vscode) await window.__agentHubDirectTransport?.available?.();
 }
 
+async function readHistoryHttpResponse(response, traceId, requestId) {
+  const measure = (action, operation) => commandTrace.measure("ui-control", action, operation, traceId);
+  try {
+    const text = await measure("http-history-body", () => response.text());
+    return measure("http-history-json-parse", () => JSON.parse(text));
+  } finally {
+    const entry = performance.getEntriesByName?.(response.url, "resource")?.findLast(resource =>
+      resource.serverTiming?.some(metric => metric.name === "hub-history" && metric.description === requestId));
+    if (entry?.requestStart > 0 && entry.responseEnd >= entry.responseStart && entry.responseStart >= entry.requestStart) {
+      commandTrace.record("ui-control", "http-history-resource", entry.duration, traceId, {
+        browserBeforeRequestMs: entry.requestStart - entry.startTime,
+        browserRequestToHeadersMs: entry.responseStart - entry.requestStart,
+        browserBodyTransferMs: entry.responseEnd - entry.responseStart,
+        encodedBodyBytes: entry.encodedBodySize,
+        decodedBodyBytes: entry.decodedBodySize,
+      });
+    }
+  }
+}
+
 async function httpControl(action, params = {}) {
   if (action === "snapshot" && !params.messageReceiptIds?.length) return readSnapshot(params);
   await localSessionReady;
   const commandId = crypto.randomUUID();
+  const historyTraceId = action === "task-history" ? params.clientTraceId : "";
   const payload = await retryConnectionFailure(async () => {
     const requestParams = params.clientTiming
       ? {
@@ -1887,7 +1908,9 @@ async function httpControl(action, params = {}) {
       },
       body: JSON.stringify({ action, params: requestParams, commandId }),
     }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS, params.clientTraceId);
-    const result = await response.json().catch(() => ({}));
+    const result = await (historyTraceId
+      ? readHistoryHttpResponse(response, historyTraceId, commandId)
+      : response.json()).catch(() => ({}));
     if (!response.ok || result.ok === false) throw httpControlError(response.status, result);
     return result;
   }, {
@@ -3179,6 +3202,7 @@ function applyOpened(result, {
   skipSnapshot = false,
   selectTask = true,
   exactNavigation = null,
+  settleHistory = true,
 } = {}) {
   const historyReceivedAtMs = Date.now();
   const historyProjectionStarted = commandTrace.now();
@@ -3249,7 +3273,7 @@ function applyOpened(result, {
       total: history.total,
       messageTotal: history.messageTotal,
       nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
-      loading: false,
+      loading: !settleHistory && history.nextBefore != null,
       version: history.version ?? "",
     });
   }
@@ -3316,7 +3340,7 @@ function applyOpened(result, {
       itemId: result.focusedMessage.itemId,
     }));
   }
-  if (selectTask && !result.focusedTurn) {
+  if (settleHistory && selectTask && !result.focusedTurn) {
     void settleOpenedTaskHistory(id, {
       ...(history.streamId ? { streamId: history.streamId } : {}),
       provider: history.provider,
@@ -3578,22 +3602,44 @@ agentHub.on("task:select", ({ id }) => {
       const generation = navigationIntents.capture();
       // A cold local page can paint and acknowledge its exact final while the
       // independently ordered selection is still waiting for persistence.
+      const stillOpening = () => navigationIntents.current(generation) && sameIdentity(taskIdentity(id), identity);
       const [selection, history] = await Promise.allSettled([
         control("select-task", taskOpenParams(identity, { clientTraceId: traceId, deferSnapshot: true })),
-        control("task-history", { ...identity, limit: 20, clientTraceId: traceId }).then((history) => {
+        control("task-history", { ...identity, limit: 2, coldHistory: true, clientTraceId: traceId }).then(async (history) => {
           verifiedTaskHistory(history, identity);
-          if (navigationIntents.current(generation) && sameIdentity(taskIdentity(id), identity)) {
+          const current = snapshotTask(lastSnapshot, id);
+          if (stillOpening() && history.nextBefore != null && (history.transportTruncated === true
+            || !historyContainsLatestAnswer(history, current, { expectedTurnId: current?.latestFinal?.turnId }))) {
+            history = verifiedTaskHistory(await control("task-history", {
+              ...identity, limit: 20, coldHistory: true, clientTraceId: traceId,
+            }), identity);
+          }
+          if (stillOpening()) {
             const opened = bindSnapshotBaseline(commandTrace.associate({ history, snapshot: null }, traceId),
               responseSnapshotBaselines.get(history));
-            applyOpened(opened, { skipSnapshot: true });
+            applyOpened(opened, { skipSnapshot: true, settleHistory: false });
             replaceRoute(`#/chat/stream/${encodeURIComponent(id)}`);
             const paintedPage = historyPageByTask.get(id);
             commandTrace.afterPaint("ui-render", "history-page-paint", started, traceId,
-              { ...identity, clientAssetRevision: "hub427.history.1", trigger: "cold-page",
+              { ...identity, clientAssetRevision: "hub517.history.1", trigger: "cold-page",
                 count: historyWindowByTask.get(id)?.length ?? 0 }, null,
-              () => navigationIntents.current(generation) && selectedTaskId === id
+              () => stillOpening() && selectedTaskId === id
                 && historyPageByTask.get(id) === paintedPage && paintedPage?.version === history.version
                 && !document.hidden && document.documentElement.dataset.view === "chat");
+            const settle = () => {
+              if (historyPageByTask.get(id) !== paintedPage || paintedPage?.version !== history.version) return;
+              // Automatic older-page loading must not start during the first
+              // paint just because a two-turn viewport is underfilled.
+              if (paintedPage.loading) {
+                paintedPage.loading = false;
+                syncHistoryPagination(id);
+              }
+              if (stillOpening() && selectedTaskId === id) {
+                void settleOpenedTaskHistory(id, identity, { preserveScroll: true });
+              }
+            };
+            if (document.hidden) settle();
+            else window.requestAnimationFrame(() => window.requestAnimationFrame(settle));
           }
           return history;
         }),
@@ -3619,10 +3665,11 @@ agentHub.on("task:select", ({ id }) => {
   return selectionTail;
 });
 
-async function settleOpenedTaskHistory(id, identity) {
+async function settleOpenedTaskHistory(id, identity, { preserveScroll = false } = {}) {
   await enqueueTaskHistoryLoad(id, identity, {
     refreshSource: true,
     onlyWhenSelected: true,
+    preserveScroll,
   });
 }
 

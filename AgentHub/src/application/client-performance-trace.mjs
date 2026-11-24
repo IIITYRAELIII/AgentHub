@@ -10,7 +10,9 @@ const IDENTIFIERS = new Set(["documentInstanceId", "previousDocumentInstanceId",
   "requestTraceId", "turnId", "beforeTurnId", "afterTurnId", "threadId", "streamId",
   "finalTurnId", "finalRevision"]);
 const NUMBERS = new Set(["count", "longTaskCount", "maxLongTaskMs", "totalLongTaskMs", "droppedEvents", "droppedCount", "queueDepth",
-  "chunkIndex", "serverAuthMs", "serverBodyMs", "serverStorageMs", "serverOwnerMs"]);
+  "chunkIndex", "serverAuthMs", "serverBodyMs", "serverStorageMs", "serverOwnerMs",
+  "browserBeforeRequestMs", "browserRequestToHeadersMs", "browserBodyTransferMs",
+  "encodedBodyBytes", "decodedBodyBytes"]);
 const FAILURE_KINDS = new Set(["aborted", "timeout", "error", "hidden", "superseded"]);
 const READ_IDS = new Set(["streamId", "threadId", "turnId", "instanceId", "releaseId", "documentId"]);
 const READ_FLAGS = new Set(["viewport", "tabReady", "cardReady", "tabPresent", "cardPresent"]);
