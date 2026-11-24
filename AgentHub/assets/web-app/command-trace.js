@@ -230,11 +230,15 @@
     } catch (error) { return failed(error); }
   }
 
-  function afterPaint(stage, action, started, commandId, metadata = {}, observe = null, isCurrent = null) {
+  function afterPaint(stage, action, started, commandId, metadata = {}, observe = null, isCurrent = null, onSettled = null) {
     // A hidden WebView cannot paint. Never leave per-event frame callbacks
     // accumulating while it is suspended; the immediate stage remains recorded.
     if (pendingPaints.size >= BATCH_SIZE) { droppedCount += 1; return false; }
-    const finish = begin(stage, action, commandId, started, metadata);
+    const finishSpan = begin(stage, action, commandId, started, metadata);
+    const finish = (outcome, details) => {
+      finishSpan(outcome, details);
+      try { onSettled?.(outcome); } catch { /* One observer cannot interrupt other paint records. */ }
+    };
     if (global.document?.hidden) { finish("cancelled", { failureKind: "hidden" }); return false; }
     const entry = { frame: null, finish };
     pendingPaints.add(entry);

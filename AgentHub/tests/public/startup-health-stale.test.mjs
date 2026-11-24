@@ -224,3 +224,65 @@ test("first online working paint shares the confirmed Ready health request ID", 
     await f.browser.close();
   }
 });
+
+test("a hidden tab retries the first working paint with the original Ready ID", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  const { page } = f;
+  try {
+    await f.call(1);
+    await page.evaluate(() => {
+      window.startupTraceEvents = [];
+      AgentHubCommandTrace.bindReporter(async ({ events }) => startupTraceEvents.push(...events));
+      document.documentElement.dataset.connection = "online";
+      const requestFrame = window.requestAnimationFrame.bind(window);
+      let paused = true;
+      let hidden = false;
+      window.requestAnimationFrame = callback => paused ? -1 : requestFrame(callback);
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+      window.setStartupFixtureVisibility = value => {
+        hidden = value;
+        if (!hidden) paused = false;
+        document.dispatchEvent(new Event("visibilitychange"));
+      };
+    });
+    await f.answer(1, health(INITIAL_GENERATION, true));
+    await page.waitForFunction(() => AgentHubCommandTrace.diagnostics().paintPending > 0,
+      null, { polling: 25 });
+    await page.evaluate(async () => {
+      setStartupFixtureVisibility(true);
+      await AgentHubCommandTrace.flush();
+    });
+    const readyId = await page.evaluate(() => new URL(healthRequests[0].url, location.href).searchParams.get("clientTraceId"));
+    assert.ok(readyId);
+    await page.waitForFunction(id => startupTraceEvents.some(event => event.commandId === id
+      && event.metadata.action === "startup-first-working-paint" && event.outcome === "cancelled"
+      && event.metadata.failureKind === "hidden"), readyId, { polling: 25 });
+
+    await page.evaluate(() => {
+      setStartupFixtureVisibility(false);
+      for (let i = 0; i < 2; i++) {
+        window.dispatchEvent(new CustomEvent("agenthub:connection-state", { detail: { status: "online" } }));
+      }
+    });
+    await f.call(2);
+    await f.answer(2, health(INITIAL_GENERATION, true));
+    await page.waitForFunction(() => {
+      void AgentHubCommandTrace.flush();
+      return startupTraceEvents.some(event => event.metadata.action === "startup-first-working-paint"
+        && event.outcome === "succeeded");
+    });
+    await page.evaluate(async () => {
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await AgentHubCommandTrace.flush();
+    });
+    const successful = await page.evaluate(() => startupTraceEvents.filter(event =>
+      event.metadata.action === "startup-first-working-paint" && event.outcome === "succeeded"));
+    assert.equal(successful.length, 1);
+    assert.equal(successful[0].commandId, readyId);
+    assert.equal(successful[0].metadata.httpRequestId, readyId);
+    assert.equal(await page.locator("#chat").isEnabled(), true);
+    assert.deepEqual(f.errors, []);
+  } finally {
+    await f.browser.close();
+  }
+});

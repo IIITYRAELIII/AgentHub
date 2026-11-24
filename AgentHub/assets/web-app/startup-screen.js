@@ -310,14 +310,17 @@ function recordProjectedPaint(model) {
 function recordFirstWorkingPaint() {
   const observation = workingObservation;
   const trace = window.AgentHubCommandTrace;
-  if (!observation || !trace || stopped || !screen.hidden
+  if (!observation || observation.pending || !trace || stopped || !screen.hidden
     || root.dataset.connection !== "online" || document.hidden) return;
   const epoch = healthEpoch;
-  const queued = trace.afterPaint("ui-render", "startup-first-working-paint", observation.navigationStarted,
+  observation.pending = trace.afterPaint("ui-render", "startup-first-working-paint", observation.navigationStarted,
     observation.id, { httpRequestId: observation.id, clientAssetRevision: "startup-stale.v2" },
-    () => ({ outcome: !stopped && epoch === healthEpoch && screen.hidden && root.dataset.connection === "online"
-      ? "succeeded" : "cancelled" }));
-  if (queued) workingObservation = null;
+    null, () => !stopped && epoch === healthEpoch && workingObservation === observation
+      && screen.hidden && root.dataset.connection === "online",
+    outcome => {
+      observation.pending = false;
+      if (outcome === "succeeded" && workingObservation === observation) workingObservation = null;
+    });
 }
 
 function revealCurrentOperation() {
@@ -485,7 +488,9 @@ async function refresh() {
     if (restartExpected) {
       showDisconnectedState({ force: true, responding: true });
     } else if (model.ready) {
-      if (request.id && (request.trace || !confirmedModel?.ready)) {
+      const newGeneration = lastStartupStartedAtMs > 0 && observedGeneration > lastStartupStartedAtMs;
+      if (newGeneration) workingObservation = null;
+      if (request.id && (!confirmedModel?.ready || request.trace || newGeneration) && !workingObservation) {
         workingObservation = { id: request.id, navigationStarted: workingPaintStarted };
       }
       confirmedModel = model;
@@ -552,6 +557,10 @@ window.addEventListener("agenthub:connection-state", (event) => {
     queueMicrotask(recordFirstWorkingPaint);
     if (restartExpected) scheduleRefresh(0);
   }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) recordFirstWorkingPaint();
 });
 
 function updateTimer() {
