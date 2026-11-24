@@ -31,13 +31,17 @@ function turn(id, historyBody = "", position = 0) {
 }
 
 test("real HTTP cold history paints thirty turns before the background refresh",
-  { timeout: 45_000 }, () => verifyColdHistory(false));
+  { timeout: 45_000 }, () => verifyColdHistory());
 test("cold HTTP history includes the known final behind two newer requests in the first page",
-  { timeout: 45_000 }, () => verifyColdHistory(true));
+  { timeout: 45_000 }, () => verifyColdHistory("short"));
 test("cold HTTP paints the complete final when newer requests alone exceed the transport budget",
-  { timeout: 45_000 }, () => verifyColdHistory(true, true));
+  { timeout: 45_000 }, () => verifyColdHistory("large"));
+test("scrollback reaches the intervening annotated turn after a disjoint post-paint refresh",
+  { timeout: 45_000 }, () => verifyColdHistory("annotated"));
 
-async function verifyColdHistory(latestOutsideTail, oversizedRequests = false) {
+async function verifyColdHistory(newerRequests = "none") {
+  const latestOutsideTail = newerRequests !== "none";
+  const oversizedRequests = newerRequests === "large" || newerRequests === "annotated";
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-cold-http-history-"));
   const store = new LocalTaskSyncStore({ filePath: path.join(root, "history.json"), historyLimit: 50 });
   const state = snapshot();
@@ -73,6 +77,16 @@ async function verifyColdHistory(latestOutsideTail, oversizedRequests = false) {
     const userOnly = [1001, 1002].map(position => {
       const value = turn("user-only-" + position, "", position);
       if (!oversizedRequests) return { ...value, answer: "", messages: value.messages.slice(0, 1) };
+      if (newerRequests === "annotated") {
+        const middle = position === 1001;
+        const messages = [{ ...value.messages[0], responseAnnotations: [
+          { text: "X".repeat(middle ? 460_000 : 510_000), annotation: "kept quote" },
+        ] }];
+        if (!middle) messages.push(...Array.from({ length: 25 }, (_, i) => ({
+          role: "user", itemId: value.id + "-extra-" + i, text: i + " " + "Y".repeat(11_990),
+        })));
+        return { ...value, answer: "", messages };
+      }
       const messages = Array.from({ length: 55 }, (_, index) => ({
         itemId: value.id + "-request-" + index, role: "user",
         text: `${position}-${index} ` + "X".repeat(11_990),
@@ -225,6 +239,25 @@ async function verifyColdHistory(latestOutsideTail, oversizedRequests = false) {
     }
     assert.deepEqual(errors, []);
     await refreshed;
+    if (newerRequests === "annotated") {
+      const latest = studies.find(study => study.start === studies[0].end + 1 && study.end === study.total);
+      assert.ok(latest, "the refresh leaves exactly one intervening turn");
+      const olderRequest = page.waitForResponse(response => {
+        if (!new URL(response.url()).pathname.endsWith("/api/control")) return false;
+        const body = response.request().postDataJSON();
+        return body?.action === "task-history" && body.params?.before != null;
+      });
+      await page.locator("[data-history-load]").click();
+      const loaded = await olderRequest;
+      assert.equal(loaded.request().postDataJSON().params.before, latest.start);
+      const reply = await loaded.json();
+      assert.equal(reply.ok, true, reply.error);
+      const previous = reply.result;
+      const middle = previous.items.find(item => item.id === "user-only-1001");
+      assert.equal(middle.messages.length, 1);
+      assert.equal(middle.messages[0].responseAnnotations[0].text.length, 460_000);
+      await page.locator('[data-chat-pane] [data-role="user"][data-turn-id="user-only-1001"]').first().waitFor();
+    }
     if (oversizedRequests) {
       const older = await readHistory({ ...taskB, before: studies[0].start, limit: 30 });
       assert.equal(older.items.at(-1).id, old.at(-1).id);

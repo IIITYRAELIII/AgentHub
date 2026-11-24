@@ -1,5 +1,6 @@
 import { receiptUserDisplay, userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   displayUserPrompt,
   exactTurnReceiptBindings,
@@ -413,9 +414,9 @@ export function createDesktopTaskHistoryFactory({
     }
   }
 
-  async function hydrateHistory(history) {
+  async function hydrateHistory(history, cachedAttachments) {
     const result = structuredClone(Array.isArray(history) ? history : []);
-    await Promise.all(result.flatMap((item) => (
+    await Promise.all(result.flatMap((item, index) => (
       (Array.isArray(item.messages) ? item.messages : [])
         .filter((message) => (
           ["user", "agent"].includes(String(message?.role ?? ""))
@@ -424,7 +425,9 @@ export function createDesktopTaskHistoryFactory({
           && !(Array.isArray(message.attachments) && message.attachments.length)
         ))
         .map(async (message) => {
-          const imported = await attachmentImporter(message.attachmentSources);
+          const cached = cachedAttachments?.[index]?.messages?.find(previous =>
+            previous.attachments?.length && isDeepStrictEqual(previous.attachmentSources, message.attachmentSources));
+          const imported = cached ? structuredClone(cached.attachments) : await attachmentImporter(message.attachmentSources);
           if (imported.length) message.attachments = imported;
         })
     )));
@@ -601,14 +604,9 @@ export function createDesktopTaskHistoryFactory({
         const key = `${source.provider}:${source.threadId}`;
         const id = String(source.turn?.id ?? "").trim();
         const providerTurn = readCachedTurn(providerHistories, key, id);
-        const hydratedTurn = readCachedTurn(hydratedHistories, key, id);
-        let item = mergeCachedTaskHistory(
+        const item = mergeCachedTaskHistory(
           providerTurn ? [providerTurn] : [],
           [source.turn],
-        )[0];
-        item = mergeCachedTaskHistory(
-          hydratedTurn ? [hydratedTurn] : [],
-          [item],
         )[0];
         if (!(await visibleProviderHistory(source.provider, [item],
           (turn) => noteLegacyProbe(source, turn))).length) continue;
@@ -772,7 +770,12 @@ export function createDesktopTaskHistoryFactory({
       rawPage = orderedHistory.slice(start, end);
     }
     const pageSources = rawPage.map((item) => historySources.get(item));
-    const page = await measure("history-attachment-hydration", () => hydrateHistory(rawPage));
+    // SQL already supplies these turns. The previous hydration can supply
+    // imported attachments, but replaying its messages would duplicate legacy requests.
+    const cachedAttachments = pagedHistory ? rawPage.map((item, index) =>
+      item.messages?.some(message => message.attachmentSources?.length && !message.attachments?.length)
+        ? readCachedTurn(hydratedHistories, pageSources[index]?.key, item.id) : null) : null;
+    const page = await measure("history-attachment-hydration", () => hydrateHistory(rawPage, cachedAttachments));
     for (let index = 0; index < page.length; index += 1) {
       const source = pageSources[index];
       if (source?.key) cacheHistory(hydratedHistories, source.key, [page[index]]);

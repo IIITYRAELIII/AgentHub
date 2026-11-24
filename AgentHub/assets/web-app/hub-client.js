@@ -3205,7 +3205,8 @@ function applyOpened(result, {
   const previousPage = existingPage && sameIdentity(existingPage.identity, history) ? existingPage : null;
   const preserveOlder = !result.focusedTurn
     && previousPage
-    && Number(previousPage.start) < Number(history.start);
+    && Number(previousPage.start) < Number(history.start)
+    && Number(previousPage.end) >= Number(history.start);
   if (retainsPinnedFocus) setFocusedHistoryWindow(id, result, exactNavigation);
   const previousWindow = previousPage ? historyWindowByTask.get(id) : null;
   setHistoryWindow(id, retainsPinnedFocus && previousWindow
@@ -3865,7 +3866,7 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
       id,
       prependOlderHistory(historyWindowByTask.get(id) ?? [], historyMessages(history)),
     );
-    const nextBefore = Number(history.nextBefore);
+    const nextBefore = history.nextBefore;
     Object.assign(page, {
       start: history.start,
       total: history.total,
