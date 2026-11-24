@@ -2,8 +2,12 @@
 
 Deferred Codex admission reads the existing rollout activity evidence on a
 bounded path independent of history backfill and trace pages. A missing source
-can be rediscovered through the normal Thread read. Unavailable evidence or a
-read deadline holds the original command. The exact message ledger reserves
+can be rediscovered through the normal Thread read. An absent .jsonl can use
+its exact .jsonl.zst companion after worker-side streaming validation of the
+archive and Thread identity. Fresh provider activity and native ownership of
+both paths govern dispatch. A proven missing or invalid source pauses the
+saved command with a specific reason until explicit resume. Transient unknown
+evidence or a read deadline holds the original command. The exact message ledger reserves
 dispatch before the provider call. Snapshot persistence remains available for
 unowned legacy input. For exact deferred Codex commands the same ledger also
 checkpoints the admitted run and the provider request on the reserved command.

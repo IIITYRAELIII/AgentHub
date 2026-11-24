@@ -40,6 +40,7 @@ function createRolloutWorkerClient(admission = false) {
           (request, error) => request.reject(error),
           Object.assign(new Error(message?.error?.message || "Codex rollout activity worker failed"), {
             ...(message?.timing ? { timing: message.timing } : {}),
+            ...(message?.error?.code ? { code: message.error.code } : {}),
           }),
         );
       }
@@ -81,7 +82,7 @@ const requestAdmissionWorker = createRolloutWorkerClient(true);
 const MAX_ADMISSION_READS = 8;
 const admissionReads = new Map();
 
-export function readCodexAdmissionActivityInWorker(rolloutPath, pathKey) {
+export function readCodexAdmissionActivityInWorker(rolloutPath, pathKey, threadId, deadlineAt) {
   const active = admissionReads.get(pathKey);
   if (active) return active;
   if (admissionReads.size >= MAX_ADMISSION_READS) {
@@ -89,7 +90,7 @@ export function readCodexAdmissionActivityInWorker(rolloutPath, pathKey) {
       code: "ERR_DEFERRED_ACTIVITY_BACKPRESSURE",
     }));
   }
-  const pending = requestAdmissionWorker("read", { rolloutPath });
+  const pending = requestAdmissionWorker("read", { rolloutPath, threadId, deadlineAt });
   admissionReads.set(pathKey, pending);
   const clear = () => {
     if (admissionReads.get(pathKey) === pending) admissionReads.delete(pathKey);

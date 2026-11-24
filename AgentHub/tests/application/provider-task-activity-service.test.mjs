@@ -203,3 +203,69 @@ test("deferred activity refuses a delayed read without consulting the idle resol
   await refusal;
   completeRead({ activity: { running: false } });
 });
+
+test("compressed Codex admission requires fresh provider and native writer evidence", async () => {
+  const { service, events } = fixture();
+  const path = "C:/rollout.jsonl";
+  const archived = { sourceKind: "compressed", sourceGeneration: "one", rolloutPath: path, archivePath: path + ".zst" };
+  const admissionTrace = (_stage, operation) => operation();
+  let provider = "notLoaded", holding = null, reads = 0, finalActivity = archived;
+  service.readCodexThread = async (id, options) => {
+    events.push(["fresh", id, options.priority]);
+    return { thread: { id, path, status: { type: provider } } };
+  };
+  service.readAdmissionRolloutActivity = async (sourcePath, threadId) => {
+    assert.equal(sourcePath, path);
+    assert.equal(threadId, "fixture");
+    return { activity: ++reads === 2 ? finalActivity : archived };
+  };
+  service.resolveActivity = async ({ activity, threadStatus }, options) => {
+    assert.equal(threadStatus.type, "notLoaded");
+    if (!options.forceFresh) return { state: activity.running ? "active" : "inactive" };
+    return { state: options.rolloutPath === holding ? "active" : "inactive", executionOwner: "external" };
+  };
+  const read = async () => { reads = 0; return service.readCodex({ threadId: "fixture" }, { admissionTrace }); };
+  assert.equal((await read()).state, "inactive");
+  holding = archived.archivePath;
+  assert.equal((await read()).state, "active");
+  holding = path;
+  assert.equal((await read()).state, "active");
+  holding = null;
+  finalActivity = { ...archived, sourceGeneration: "changed" };
+  assert.equal((await read()).state, "unknown");
+  finalActivity = { sourceKind: "plain", running: true };
+  assert.equal((await read()).state, "active");
+  provider = "active";
+  assert.equal((await read()).state, "active");
+  provider = "unknown";
+  assert.equal((await read()).state, "unknown");
+  assert.ok(events.some((event) => event.join(":") === "fresh:fixture:interactive"));
+});
+
+test("a confirmed missing or invalid rollout returns an exact pause reason", async () => {
+  const { service } = fixture({ rolloutPath: "" });
+  service.readCodexThread = async (id) => ({ thread: { id, path: "C:/rollout.jsonl", status: { type: "notLoaded" } } });
+  service.resolveActivity = () => assert.fail("unavailable source cannot infer idle");
+  for (const [sourceIssue, waitReason] of [["missing", "codex-rollout-missing"],
+    ["invalid", "codex-rollout-corrupt"], ["thread-mismatch", "codex-rollout-mismatch"], ["changed", undefined]]) {
+    service.readAdmissionRolloutActivity = async () => ({ activity: { sourceUnavailable: true, sourceIssue } });
+    const result = await service.readCodex({ threadId: "fixture" }, { admissionTrace: (_stage, operation) => operation() });
+    assert.equal(result.state, "unknown");
+    assert.equal(result.waitReason, waitReason);
+  }
+});
+
+
+test("admission reads back an exact corrupt archive when thread/read cannot return a path", async () => {
+  const { service } = fixture({ rolloutPath: "" });
+  service.readAdmissionRolloutActivity = () => assert.fail("Codex did not return a path");
+  const expected = "fixture-exact";
+  const admissionTrace = (_stage, operation) => operation();
+  const failure = (thread) => Object.assign(new Error(
+    "failed to read thread: failed to read session metadata rollout-" + thread + ".jsonl: Unknown frame descriptor",
+  ), { code: -32603 });
+  service.readCodexThread = async () => { throw failure(expected); };
+  assert.equal((await service.readCodex({ threadId: expected }, { admissionTrace })).waitReason, "codex-rollout-corrupt");
+  service.readCodexThread = async () => { throw failure("other-thread"); };
+  await assert.rejects(service.readCodex({ threadId: expected }, { admissionTrace }), { code: -32603 });
+});
