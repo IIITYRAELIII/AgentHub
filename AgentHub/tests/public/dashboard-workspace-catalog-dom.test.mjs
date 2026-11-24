@@ -173,7 +173,9 @@ for (const surface of [
       const nav=page.locator('[data-task-board-scopes]');
       assert.equal(await nav.count(),1);
       assert.equal(await page.locator('[data-task-board-scope-select]').count(),0);
-      assert.equal(await nav.locator('[draggable], [data-board-destination], [data-workspace-select], [data-workspace-menu], input, select').count(),0);
+      assert.equal(await nav.locator('[draggable], [data-workspace-select], [data-workspace-menu], input, select').count(),0);
+      const destinations=await nav.locator('[data-board-destination]').evaluateAll(nodes=>nodes.map(n=>[n.dataset.boardScope,n.dataset.boardDestination]));
+      assert.deepEqual(destinations,surface.width>959?['active','long','a','z','zero'].map(id=>[`workspace:${id}`,`workspace:${id}`]):[]);
       const order=await nav.locator('[data-board-scope^="workspace:"]').evaluateAll(nodes=>nodes.map(n=>n.dataset.boardScope));
       assert.deepEqual(order,['workspace:active','workspace:long','workspace:a','workspace:z','workspace:zero']);
       await checkCounts(page);

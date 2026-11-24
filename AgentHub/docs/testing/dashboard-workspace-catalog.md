@@ -10,8 +10,11 @@ rename owner. The regression freezes snapshot delivery while exercising the
 actual Dialogs create and context-menu rename paths in Web and narrow WebView.
 Folder names are one level, not path syntax.
 
-The catalog contains navigation and disclosure only. Workspace/column editing,
-context menus and Task drops stay with their existing board owners. Global
+The catalog has no Workspace/column editing or context menus. Its wide
+Workspace navigation rows retain the existing Task-card drop action through
+the board's `moveTask` owner; this moves the Task, never the Workspace/catalog.
+Folder and global rows are not drop targets. The narrow popover has no drop
+targets; keyboard/touch users retain the card's destination control. Global
 scopes are separate from the Workspace catalog. Dashboard has one nav: the
 desktop sidebar owns it above 959px; a toolbar auto-popover presents that same
 node on narrower surfaces. There is no parallel select or mobile drawer owner.
@@ -53,3 +56,36 @@ Each capture execution owns a fresh `mkdtemp` directory under ignored
 subsequent executions never write there. WebView uses the host fixture, not an
 installed native VS Code session. Manual screen-reader certification and live
 destructive operations are outside these synthetic checks.
+
+## Task-drop correction (PR #7)
+
+Only a visible Workspace navigation row above 959px accepts a recognized,
+current Task from another destination. The existing `is-dragover` background
+is reused without CSS, token, markup-geometry or copy changes. Nested child
+transitions retain the highlight; leave, drop, dragend, Escape, blur, resize,
+surface change and snapshot replacement clear it. Native and pointer fallback
+paths share eligibility. Column dropping is unchanged.
+
+Backlog-to-Workspace retains the direct path. Workspace-to-Workspace retains
+the existing confirmation and its post-confirm revision/destination checks:
+Cancel/Escape sends nothing; confirmation sends one original move command.
+An unresolved command stays with the existing pending owner. Counters and
+hierarchy change only after authoritative snapshot delivery.
+
+Non-GUI behavioral regression (full production modules in a layout-free Node
+DOM double; no browser, native pointer, pixels or installed-host claim):
+
+```sh
+node --test tests/public/dashboard-task-drop.test.mjs
+```
+
+`AGENT_HUB_TEST_GIT_TREE=<exact-tree>` reads the same complete production
+modules from Git for patch-port checks; it does not change branches or files.
+The correction was checked against the exact PR head and the integrated folder
+catalog composition. It does not restore the legacy local rename owner in that
+composition. Prior frozen screenshot verdicts remain bound to their original
+bytes. New GUI tests were not run because the user restricted this correction
+to non-GUI checks; the updated browser assertion is retained for an authorized
+future run. Web and WebView share the corrected board module; narrow/mobile
+eligibility and the existing keyboard/touch destination path are checked in
+Node, without certifying actual WebView transport or physical touch behavior.

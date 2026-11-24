@@ -633,6 +633,7 @@
     onMove,
     windowTarget = window,
     threshold = 7,
+    canDrop = () => true,
   } = {}) {
     let pointer = null;
     let nativeDragTaskId = null;
@@ -694,7 +695,7 @@
       const column = closest(hit, "[data-board-destination]");
       if (!column) return null;
       const destination = String(column.dataset?.boardDestination ?? "").trim();
-      if (!destination) return null;
+      if (!destination || !canDrop({ taskId: pointer?.taskId, target: column, destination })) return null;
       const card = movableCard(hit);
       const beforeId = taskIdOf(card);
       if (beforeId && beforeId === pointer?.taskId) return null;
@@ -1335,6 +1336,7 @@
 
   const pointerTaskDrag = createTaskBoardPointerDrag({
     root: board,
+    canDrop: ({ taskId, target }) => !scopeStrip?.contains(target) || Boolean(workspaceTaskDropTarget(target, taskId)),
     onMove: ({ taskId, destination, beforeId }) => {
       const task = state.tasks.find((item) => item.id === taskId);
       if (task && task.status !== "done") moveTask(task, destination, beforeId);
@@ -2396,6 +2398,65 @@
     return `${count} ${mode} ${ending}`;
   }
 
+  function clearScopeTaskDrop() {
+    for (const row of scopeStrip?.querySelectorAll(".is-dragover") ?? []) row.classList.remove("is-dragover");
+  }
+
+  function workspaceTaskDropTarget(target, taskId) {
+    const row = target?.closest?.("[data-board-scope]");
+    const destination = row?.dataset.boardScope;
+    if (state.completedOnly || window.matchMedia("(max-width: 959px)").matches
+      || !scopeStrip?.contains(row) || !row.checkVisibility()
+      || !destination?.startsWith("workspace:") || !workspaceById(destination.slice(10))) return null;
+    const task = state.tasks.find(item => item.id === taskId);
+    if (!task || task.status === "done" || boardTaskPending(task.id) || destinationValue(task) === destination) return null;
+    return { row, task, destination };
+  }
+
+  function syncScopeTaskDropTargets() {
+    clearScopeTaskDrop();
+    const enabled = !state.completedOnly && !window.matchMedia("(max-width: 959px)").matches;
+    for (const row of scopeStrip?.querySelectorAll("[data-board-scope]") ?? []) {
+      const destination = row.dataset.boardScope;
+      if (enabled && destination.startsWith("workspace:") && workspaceById(destination.slice(10))) {
+        row.setAttribute("data-board-destination", destination);
+      } else row.removeAttribute("data-board-destination");
+    }
+  }
+
+  function scopeTaskDrop(event) {
+    if (hasColumnDrag(event.dataTransfer) || !TaskReferences.hasTransfer(event.dataTransfer)) return null;
+    return workspaceTaskDropTarget(event.target, TaskReferences.fromTransfer(event.dataTransfer)?.taskId);
+  }
+
+  for (const type of ["dragenter", "dragover"]) scopeStrip?.addEventListener(type, event => {
+    const target = scopeTaskDrop(event);
+    clearScopeTaskDrop();
+    if (!target) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    target.row.classList.add("is-dragover");
+  });
+  scopeStrip?.addEventListener("dragleave", event => {
+    const row = event.target?.closest?.("[data-board-scope]");
+    if (!row?.contains(event.relatedTarget)) row?.classList.remove("is-dragover");
+  });
+  scopeStrip?.addEventListener("drop", event => {
+    const target = scopeTaskDrop(event);
+    clearScopeTaskDrop();
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    moveTask(target.task, target.destination);
+  });
+  window.addEventListener("dragend", clearScopeTaskDrop);
+  window.addEventListener("blur", clearScopeTaskDrop);
+  document.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    clearScopeTaskDrop();
+    pointerTaskDrag.cancelForRerender();
+  });
+
   function scopeButton(scope, { folder = false } = {}) {
     return node("button", {
       type: "button", class: `task-board-scope ${folder ? "task-board-folder-navigation" : "task-workspace-item"}`,
@@ -2416,6 +2477,7 @@
 
   function renderScopeStrip() {
     if (!scopeStrip) return;
+    clearScopeTaskDrop();
     const focused = scopeStrip.contains(document.activeElement) ? document.activeElement : null;
     const focusScope = focused?.dataset.boardScope;
     const focusFolder = focused?.dataset.boardFolderToggle;
@@ -2477,6 +2539,7 @@
     }
     scopeStrip.replaceChildren(node("ul", { class: "task-board-global-scopes" }, globals.map(scope => node("li", {}, [scopeButton(scope)]))),
       node("ul", { class: "task-board-workspace-catalog", "aria-label": "Каталог воркспейсов" }, items));
+    syncScopeTaskDropTargets();
     if (scopeTrigger) {
       const scope = boardScopes.get(state.boardScope) ?? globals[0];
       scopeTrigger.replaceChildren(node("span", { text: scope.label }), node("span", { class: "task-workspace-folder-count", "aria-hidden": "true", text: String(scope.count) }),
@@ -2640,6 +2703,7 @@
     renderBoard();
   });
   function closeScopePopover() {
+    clearScopeTaskDrop();
     if (scopePopover?.matches(":popover-open")) {
       scopePopover.hidePopover();
       scopeTrigger?.focus({ preventScroll: true });
@@ -2668,6 +2732,7 @@
       closeScopePopover();
       parent?.append(scopeStrip);
     }
+    syncScopeTaskDropTargets();
     positionScopePopover();
   }
   window.addEventListener("resize", syncScopePresentation, { passive: true });
@@ -2727,6 +2792,7 @@
   }, { passive: true });
   if (typeof MutationObserver === "function") {
     new MutationObserver(() => {
+      clearScopeTaskDrop();
       syncTaskCardPlacement();
       scheduleTaskCardEditorSizing();
     }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-view"] });
