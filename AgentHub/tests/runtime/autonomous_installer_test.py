@@ -1165,6 +1165,55 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                                  else ["previous","wait-probe","create","codex-preflight","wait-complete","unknown"])
                 self.assertTrue((cache/"failure.json").exists())
 
+    def test_recovery_refuses_a_launch_address_for_a_host_discovered_only_at_retirement(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp).resolve()
+            root, cache = base/"hub", base/"cache"
+            root.mkdir()
+            (cache/"verified").mkdir(parents=True)
+            (cache/"verified/package-manifest.json").touch()
+            archive, request = base/"archive.zip", cache/"request.json"
+            archive.touch()
+            installer._write_record(request, dict(
+                runtimeRoot=str(root), runtimeIdentity=installer._directory_identity(root),
+                archive=str(archive), operationId="fixture-retirement", mode="force",
+                installerSha256="a"*64, sha256="b"*64))
+            actions = []
+
+            def run(args, **kwargs):
+                if args[1] == "-e":
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                if Path(args[1]).name == "install-prepared.mjs":
+                    raise subprocess.CalledProcessError(1, args)
+                action = args[5]
+                actions.append(action)
+                replies = {
+                    "previous": dict(releaseId="old", manifestSha256="a"*64),
+                    "codex-preflight": dict(status="eligible"), "backup": {}, "unknown": {},
+                }
+                response = (dict(metadata=dict(autonomousInstaller=installer._read_record(Path(args[6]))))
+                            if action == "create" else replies[action])
+                return subprocess.CompletedProcess(args, 0, json.dumps(response), "")
+
+            late_host = dict(pid=123, created="12345", image=str(root/"AgentHub.RuntimeHost.exe"))
+            with ExitStack() as mocks:
+                for name, kwargs in {
+                    "verified_worker_scope": dict(return_value=dict(pid=os.getpid(), outsideAllJobs=True)),
+                    "read_update_original": dict(return_value=None),
+                    "ready_process_proof": dict(side_effect=RuntimeError("No Ready owner")),
+                    "extract_verified": dict(return_value=dict(releaseId="new")),
+                    "stop_selected": dict(side_effect=[[], [late_host], [], [], []]),
+                }.items():
+                    mocks.enter_context(patch.object(installer, name, **kwargs))
+                mocks.enter_context(patch.object(installer.subprocess, "run", side_effect=run))
+                launch = mocks.enter_context(patch.object(installer.subprocess, "Popen"))
+                with self.assertRaises(subprocess.CalledProcessError):
+                    installer.autonomous_worker(request)
+                launch.assert_not_called()
+            self.assertEqual(actions, ["previous", "create", "codex-preflight", "backup", "unknown"])
+            self.assertIn("Previous runtime lexical launch root could not be verified",
+                          (cache/"worker.log").read_text(encoding="utf-8"))
+
     @unittest.skipUnless(shutil.which("node"), "Node process fixture")
     def test_rejected_codex_signature_preflight_records_terminal_refusal_without_stop(self):
         with tempfile.TemporaryDirectory() as temp:

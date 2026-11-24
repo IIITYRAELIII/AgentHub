@@ -2090,6 +2090,7 @@ def autonomous_worker(request_file):
         admission_root = root
         previous_launch_root = None
         previous_processes = None
+        previous_observed_stopped = False
         if mode == "wait":
             # Old APIs cannot promise a fenced drain. Never silently fall back
             # to force; keep the old Hub running and offer the explicit mode.
@@ -2109,7 +2110,7 @@ def autonomous_worker(request_file):
                 # stopped installation can use the selected root for recovery.
                 try: stop_selected(root,inspect_only=True)
                 except (OSError,RuntimeError,ValueError,KeyError): pass
-                else: previous_launch_root = root
+                else: previous_observed_stopped = True
         binding = dict(runtimeRoot=str(root),archiveSha256=file_hash(archive),releaseId=descriptor["releaseId"],previous=previous,
                        mode=mode,
                        installerSha256=request["installerSha256"],workerPid=os.getpid(),
@@ -2161,6 +2162,8 @@ def autonomous_worker(request_file):
             previous_processes[0] if previous_processes else None)
         stopped = stop_selected(root,trace=stop_trace,capture=stop_capture,scope=retirement_scope,
                                 expected_host=expected_previous_host)
+        if previous_observed_stopped and not stopped:
+            previous_launch_root = root
         _write_record(cache/"retired.json",dict(processes=stopped))
         stage("backing-up-durable-state")
         owner("backup",dict(destination=str(cache/"backup"),python=sys.executable,installer=str(Path(__file__).resolve())))
