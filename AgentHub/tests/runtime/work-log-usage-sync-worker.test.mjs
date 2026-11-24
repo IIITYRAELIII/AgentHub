@@ -21,6 +21,58 @@ import {
   WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
 } from "../../src/application/work-log-usage-projection.mjs";
 
+test("GPT-6.2 pricing refreshes durable journal rows and Statistics without touching their usage", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-gpt62-pricing-"));
+  const databaseFile = path.join(root, "journal.sqlite");
+  const journal = new JournalDatabase(databaseFile);
+  const worker = new WorkLogUsageSyncWorkerStore({ databaseFile, deviceId: "device-local" });
+  const startedAt = "2026-11-23T08:00:00.000Z";
+  const completedAt = "2026-11-23T08:05:00.000Z";
+  const usage = { inputTokens: 1_000_000, cachedInputTokens: 400_000, outputTokens: 100_000 };
+  const record = (model, turnId) => ({
+    provider: "codex", threadId: turnId, turnId, projectRoot: root,
+    startedAt, completedAt, model, serviceTier: "default", status: "completed", usageReported: true, usage,
+  });
+  const options = { projectRoots: [root], now: Date.parse("2026-11-23T12:00:00.000Z") };
+  try {
+    const saved = [record("gpt-6.2-sol", "sol-old"), record("gpt-6.2-astra", "astra-old")];
+    await journal.upsertRecords(saved);
+    const before = await journal.loadLedger();
+    await worker.projectJournal(options);
+    const database = new DatabaseSync(databaseFile);
+    try {
+      database.prepare("UPDATE journal_store_meta SET value = ? WHERE key = 'pricing_projection_version'")
+        .run("2026.10.1.2");
+    } finally { database.close(); }
+    const refreshed = await worker.projectJournal(options);
+    assert.equal(refreshed.projected, true);
+    assert.deepEqual(await journal.loadLedger(), before);
+    assert.equal((await worker.projectJournal(options)).reason, "unchanged");
+    assert.equal(await journal.pricingProjectionVersion(), WORK_LOG_ACCOUNTING_PROJECTION_VERSION);
+    for (const [turnId, credits] of [["sol-old", 56], ["astra-old", 224]]) {
+      const { turns } = await journal.turnPage({ threadId: turnId });
+      assert.equal(turns.length, 1);
+      assert.ok(turns[0].html.includes(`data-work-log-turn-credits="${credits}"`));
+      assert.ok(turns[0].html.includes(`data-work-log-turn-quota-units="${credits * 8}"`));
+      assert.match(turns[0].html, /data-work-log-turn-quota-incomplete="1"/u);
+      const details = await journal.fragment("turn", turns[0].turnRef);
+      assert.match(details, /data-work-log-turn-tokens>[\s\S]*Из кэша 400\s000/u);
+      assert.match(details, /предварительная оценка/u);
+    }
+    await journal.upsertRecords([record("gpt-6.2-sol", "sol-new"), record("gpt-6.2-astra", "astra-new")]);
+    await worker.projectJournal(options);
+    const history = await worker.usageHistory({ now: options.now, range: "24h" });
+    assert.equal(history.totalCredits, 560);
+    assert.equal(history.totalQuotaUnits, 4480);
+    assert.equal(history.totalApiEstimateCredits, 560);
+    assert.equal(history.uncalibratedCount, 4);
+  } finally {
+    await worker.close();
+    journal.close();
+    await removeRoot(root);
+  }
+});
+
 test("usage input metrics persist on the existing original worker span and latest health result", async () => {
   const { createCommandTraceComposition } = await import("../../src/composition/command-trace-composition.mjs");
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-usage-input-trace-"));

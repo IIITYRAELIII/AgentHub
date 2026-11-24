@@ -1590,7 +1590,20 @@ function formatTurnEntry(
   const quotaQualifier = !quota.uncalibrated ? ""
     : record?.usageReported === false || quota.basis === "unknown"
       ? " · неполное покрытие" : " · предварительная оценка";
-  const sol61 = String(record?.model ?? "").trim().toLowerCase() === "gpt-6.1-sol";
+  const modelId = String(record?.model ?? "").trim().toLowerCase();
+  const gpt62 = modelId === "gpt-6.2-sol" || modelId === "gpt-6.2-astra";
+  const usage = gpt62 && record?.usageReported !== false ? record?.usage : null;
+  const tokenParts = usage ? [
+    ["Вход", usage.inputTokens], ["Из кэша", usage.cachedInputTokens],
+    ["Выход", usage.outputTokens], ["Всего", usage.totalTokens],
+    ...(usage.cacheWriteInputTokens > 0 ? [["Запись кэша", usage.cacheWriteInputTokens]] : []),
+  ].filter(([, count]) => Number.isSafeInteger(count) && count >= 0) : [];
+  const tokens = tokenParts.length
+    ? `<div data-work-log-turn-tokens><strong>Токены:</strong> ${tokenParts.map(
+      ([name, count]) => `${name} ${count.toLocaleString("ru-RU")}`,
+    ).join(" · ")}</div>`
+    : "";
+  const sol61 = modelId === "gpt-6.1-sol";
   const longContextQualifier = sol61 && Number(record?.usage?.longContextInputTokens) > 0
     ? " · длинный контекст >272K учтён"
     : sol61 && Number(record?.usage?.inputTokens) > 272_000
@@ -1602,7 +1615,7 @@ function formatTurnEntry(
   const ownCredits = record?.usageReported === false && recordTotal <= 0
     ? "нет данных"
     : !breakdown.priced && recordTotal <= 0
-      ? "нет тарифа"
+      ? breakdown.missingTokenBreakdown ? "нет разбивки токенов" : "нет тарифа"
       : highlightUsageUnits(formatCredits(recordTotal), recordTotal, quota.total, quota.uncalibrated);
   const credits = displayedTotal > 0
     ? highlightUsageUnits(formatCredits(displayedTotal), displayedTotal,
@@ -1623,14 +1636,15 @@ function formatTurnEntry(
   const pricing = record?.model
     ? `<div data-work-log-turn-pricing>${
       escapeHtmlText(record.model)
-    }${record.serviceTier === "fast" ? ` · Fast ×${String(fastMultiplier).replace(".", ",")}` : ""}</div>`
+    }${record.serviceTier === "fast" ? ` · Fast ×${String(fastMultiplier).replace(".", ",")}` : ""}${gpt62 && creditsKnown ? " · Credits по ставке API" : ""}</div>`
     : "";
   const metaDetails = [
     `<div data-work-log-turn-facts>${pricing}`
       + `<div data-work-log-turn-context><strong>Длит.:</strong> ${
         formatDuration(durationStartForRecord(record), record?.completedAt)
       }</div>`
-      + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${formatQuotaUnits(quota.total)}${quotaQualifier}${longContextQualifier}${quota.apiEstimateCredits > 0 ? ` · API-основа: ${formatCredits(quota.apiEstimateCredits)}; опора GPT-6 Sol ≈ ${PROVISIONAL_QU_PER_API_CREDIT} QU/cr` : ""}</div>`
+      + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${gpt62 && quota.uncalibrated && quota.total === 0 ? "— QU" : formatQuotaUnits(quota.total)}${quotaQualifier}${longContextQualifier}${quota.apiEstimateCredits > 0 ? ` · API-основа: ${formatCredits(quota.apiEstimateCredits)}; опора GPT-6 Sol ≈ ${PROVISIONAL_QU_PER_API_CREDIT} QU/cr` : ""}</div>`
+      + tokens
       + (descendantCount > 0
         ? `<div data-work-log-turn-own-usage><strong>Свой расход:</strong> ${ownCredits}</div>`
         : "")
