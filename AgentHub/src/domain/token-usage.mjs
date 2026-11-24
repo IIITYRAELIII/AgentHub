@@ -443,18 +443,30 @@ function combinedMeasuredTokenFields(left, right) {
   return { measuredTokenFields: measuredTokenFields(right).filter(field => shared.has(field)).join(",") };
 }
 
-export function tokenUsageDelta(current, previous, fallback) {
+export function tokenUsageDelta(current, previous, fallback, { recoverMeasuredFields = false } = {}) {
   if (!previous || [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].some(
     (field) => (current[field] ?? 0) < (previous[field] ?? 0),
   )) {
     return normalizeTokenUsage(fallback);
   }
-  return normalizeTokenUsage({
-    ...Object.fromEntries([...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].map((field) => [
-      field, (current[field] ?? 0) - (previous[field] ?? 0),
-    ])),
+  const fields = [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS];
+  const delta = normalizeTokenUsage({
+    ...Object.fromEntries(fields.map(field => [field, (current[field] ?? 0) - (previous[field] ?? 0)])),
     ...combinedMeasuredTokenFields(current, previous),
   });
+  if (recoverMeasuredFields && typeof previous.measuredTokenFields !== "string") {
+    // On the first event of a new turn, an exact last request can supply the
+    // evidence absent from a pre-upgrade thread total. Never widen a running sum.
+    const required = ["inputTokens", "cachedInputTokens", "outputTokens", "totalTokens"];
+    const currentFields = measuredTokenFields(current);
+    const lastFields = measuredTokenFields(fallback);
+    if (required.every(field => currentFields.includes(field) && lastFields.includes(field))
+      && hasCompleteGpt62Usage(fallback, fallback)
+      && fields.every(field => (fallback[field] ?? 0) === (delta[field] ?? 0))) {
+      return { ...delta, measuredTokenFields: fallback.measuredTokenFields };
+    }
+  }
+  return delta;
 }
 
 export function addTokenUsage(total, addition) {

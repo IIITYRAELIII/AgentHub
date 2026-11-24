@@ -3087,7 +3087,7 @@ export function incomingLedgerRecord({
   runId,
   projectRoot,
   workLogId = null,
-  usage,
+  usage: providerUsage,
   usageReported,
   estimatedCredits,
   estimateKind,
@@ -3121,6 +3121,7 @@ export function incomingLedgerRecord({
   observedAt,
   status,
 }) {
+  const usage = isGpt62UsageModel(model) ? normalizeJournalTokenUsage(providerUsage, model) : providerUsage;
   const normalizedServiceUsageKind = ["context-probe", "context-compaction"].includes(serviceUsageKind)
     ? serviceUsageKind : "";
   const accountFields = normalizedAccountFields(normalizedServiceUsageKind ? {
@@ -3138,7 +3139,7 @@ export function incomingLedgerRecord({
   return {
     workLogId,
     projectRoot: normalizeProjectRoot(projectRoot),
-    usage: normalizeJournalTokenUsage(usage, model),
+    usage: normalizeTokenUsage(usage),
     usageReported: usageReported === true,
     estimatedCredits: normalizedEstimatedCredits,
     estimateKind: normalizedEstimateKind,

@@ -178,7 +178,9 @@ export class CodexUsageTracker {
     this.rememberContext(params, { provisional: provisionalContext });
     const tracker = this.turns.get(turnId);
     if (!tracker) return null;
-    const delta = tokenUsageDelta(current, previous, normalize(params?.tokenUsage?.last));
+    const delta = tokenUsageDelta(current, previous, normalize(params?.tokenUsage?.last), {
+      recoverMeasuredFields: captureFields && !tracker.reported,
+    });
     tracker.usage = captureFields && !tracker.reported ? delta : addTokenUsage(tracker.usage, delta);
     tracker.reported = true;
     return tracker;
