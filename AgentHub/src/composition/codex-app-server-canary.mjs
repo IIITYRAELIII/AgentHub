@@ -44,6 +44,8 @@ const SAFE_FAILURE_CODES = new Set([
   "CODEX_CANARY_TURN_TIMEOUT",
   "CODEX_CANARY_PROCESS_EXIT",
   "CODEX_CANARY_PROTOCOL",
+  "CODEX_CANARY_MCP_READ",
+  "CODEX_CANARY_SAFE_TOOL",
 ]);
 
 function withTimeout(operation, timeoutMs, message) {
@@ -91,7 +93,9 @@ function failureKind(error) {
   if (error?.code === "CODEX_CANARY_TURN_TIMEOUT") return "turn-timeout";
   if (error?.code === "CODEX_CANARY_PROCESS_EXIT") return "process-exit";
   if (error?.code === "CODEX_CANARY_PROTOCOL") return "protocol-failure";
-  if (/^Codex RPC [a-z/]+ timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "rpc-timeout";
+  if (error?.code === "CODEX_CANARY_MCP_READ") return "mcp-read-unconfirmed";
+  if (error?.code === "CODEX_CANARY_SAFE_TOOL") return "safe-tool-unconfirmed";
+  if (/^Codex RPC [A-Za-z/]+ timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "rpc-timeout";
   if (/^Codex compatibility canary timed out after \d+ ms$/u.test(String(error?.message ?? ""))) return "total-timeout";
   return "scenario-failure";
 }
@@ -161,7 +165,11 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
     await copyFile(path.join(sourceHome, "auth.json"), path.join(codexHome, "auth.json"));
 
     let mcpReadCount = 0;
-    let safeToolCount = 0;
+    let mcpReadRejected = 0;
+    let mcpReadMode = null;
+    const mcpContextCode = `CANARY_CONTEXT_${randomBytes(8).toString("hex")}`;
+    const mcpContextReplies = new Set();
+    let safeToolCount = 0, safeToolMode = "rpc";
     const safeToolItems = new Map();
     const safeToolNonce = `HUB_CANARY_TOOL_${randomBytes(12).toString("hex")}`;
     const safeToolShell = process.platform === "win32" ? trustedWindowsPowerShellPath(environment) : null;
@@ -197,8 +205,11 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
           },
         }],
         call: async (name, args) => {
-          if (name !== "hub_canary_read") throw new Error(`Unknown canary tool ${name}`);
-          if (args?.context_token !== canaryContextToken) throw new Error("Invalid isolated canary context token");
+          if (phase !== "mcp-read" || !mcpReadMode || name !== "hub_canary_read"
+            || args?.context_token !== canaryContextToken) {
+            mcpReadRejected = Math.min(MAX_DIAGNOSTIC_COUNT, mcpReadRejected + 1);
+            throw new Error("Isolated canary read refused");
+          }
           mcpReadCount += 1;
           return { ok: true, isolated: true, version: 1 };
         },
@@ -223,6 +234,19 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         status: safeTurnStatus(message?.params?.turn?.status),
         request: message?.id != null,
       });
+      if (message?.method === "mcpServer/startupStatus/updated" && message.params?.name === "agent_hub") {
+        const state = message.params.status;
+        record("mcp-server-startup", {
+          state: ["starting", "ready", "failed", "cancelled"].includes(state) ? state : "unknown",
+        });
+      }
+      if (message?.method === "item/completed" && phase === "mcp-context"
+        && message.params?.threadId === canaryThreadId
+        && message.params.item?.type === "agentMessage"
+        && message.params.item.text?.trim() === mcpContextCode) {
+        const id = safeIdentifier(message.params.turnId);
+        if (id) mcpContextReplies.add(id);
+      }
       if (message?.id != null) {
         if (message.method === "item/commandExecution/requestApproval") {
           const p = message.params ?? {}, owner = transport;
@@ -267,7 +291,8 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
           });
         }
         const params = message.params ?? {};
-        if (String(params.serverName ?? "") !== "agent_hub"
+        if (phase !== "mcp-read" || mcpReadMode !== "legacy-turn"
+          || String(params.serverName ?? "") !== "agent_hub"
           || String(params.threadId ?? "") !== canaryThreadId
           || String(params.turnId ?? "") !== mcpTurnId
           || params.mode !== "form") {
@@ -447,7 +472,9 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         additionalContext: buildCodexApplicationContext(
           [
             "Synthetic Guide context. ".repeat(300),
-            `For the isolated hub_canary_read verification, use context_token ${canaryContextToken}.`,
+            ...(turnPhase === "mcp-context" ? [`The public verification code is ${mcpContextCode}.`] : []),
+            ...(turnPhase === "mcp-read"
+              ? [`For the isolated hub_canary_read verification, use context_token ${canaryContextToken}.`] : []),
             "Synthetic Workspace context. ".repeat(300),
           ].join("\n\n"),
           `${id}:${turnPhase}`,
@@ -485,28 +512,102 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
 
       const ordinary = await startTurn(createdThreadId, "Reply exactly CANARY_ORDINARY_OK. Do not use tools.", "ordinary");
       await expectSuccessfulTurn(ordinary);
-      const mcp = await startTurn(
+      let mcp = await startTurn(
         createdThreadId,
-        "Call the agent_hub MCP tool hub_canary_read exactly once using the context_token from the current application instructions, then reply exactly CANARY_MCP_OK.",
-        "mcp-read",
+        "Reply with only the public verification code starting with CANARY_CONTEXT_ from the current application instructions. Do not call tools.",
+        "mcp-context",
       );
-      mcpTurnId = mcp.id;
       await expectSuccessfulTurn(mcp);
-      if (mcpReadCount !== 1) throw new Error(`Canary expected one Agent Hub MCP read, observed ${mcpReadCount}`);
-
-      let tool;
-      safeToolOpen = true;
+      if (!mcpContextReplies.has(mcp.id)) throw new Error("Canary did not confirm application context");
+      phase = "mcp-read";
+      mcpReadMode = "rpc";
+      record("phase", { phase });
+      let mcpResponseConfirmed = false;
       try {
-        tool = await startTurn(createdThreadId,
-          `Use a shell execution tool exactly once. Use ${safeToolShell ?? "the standard shell"}${safeToolPwsh ? ` or Microsoft PowerShell at ${safeToolPwsh}` : ""} with -Command (optionally -NoProfile). The exact command body is on the next line:\nWrite-Output ${safeToolNonce}\nEnd of command body. Do not add quotes around the nonce, statements, redirection or other commands. Do not read or modify files, use MCP or call other tools. Then reply CANARY_TOOL_OK.`,
-          "safe-tool");
-        await expectSuccessfulTurn(tool);
-        // turn/completed may precede asynchronous fixed-shell verification.
-        // Settle the observed completion proof before closing this phase.
-        await Promise.all(safeToolChecks);
-      } finally { safeToolOpen = false; bindSafeToolTurn(null); }
-      safeToolCount = safeToolItems.get(tool.id)?.size ?? 0;
-      if (safeToolCount !== 1) throw new Error("Canary safe tool execution was not confirmed");
+        let result;
+        try {
+          result = await transport.request("mcpServer/tool/call", {
+            threadId: createdThreadId,
+            server: "agent_hub",
+            tool: "hub_canary_read",
+            arguments: { context_token: canaryContextToken },
+          }, { timeoutMs: rpcTimeoutMs });
+        } catch (error) {
+          if (error?.code !== -32601 || mcpReadCount !== 0 || mcpReadRejected !== 0) throw error;
+          // Earlier App Servers have no direct call. A definite method-not-found
+          // with no server-side effect is the only safe legacy entry point.
+          mcpReadMode = "legacy-turn";
+          mcp = await startTurn(
+            createdThreadId,
+            "Call the agent_hub MCP tool hub_canary_read exactly once using the context_token from the current application instructions, then reply exactly CANARY_MCP_OK.",
+            "mcp-read",
+          );
+          mcpTurnId = mcp.id;
+          await expectSuccessfulTurn(mcp);
+          mcpResponseConfirmed = true;
+        }
+        if (mcpReadMode === "rpc") {
+          const response = result?.structuredContent;
+          const isError = result?.isError;
+          mcpResponseConfirmed = (isError === undefined || isError === null || isError === false)
+            && response?.ok === true && response.isolated === true && response.version === 1;
+        }
+        if (mcpReadCount !== 1 || !mcpResponseConfirmed) {
+          throw Object.assign(new Error("Canary did not confirm exactly one isolated MCP read"), {
+            code: "CODEX_CANARY_MCP_READ",
+          });
+        }
+      } finally {
+        record("mcp-read-outcome", {
+          mode: mcpReadMode,
+          successful: Math.min(mcpReadCount, MAX_DIAGNOSTIC_COUNT),
+          rejected: mcpReadRejected,
+          response: mcpResponseConfirmed ? "confirmed" : "unconfirmed",
+        });
+      }
+
+      phase = "safe-tool";
+      record("phase", { phase });
+      let tool = null;
+      let execResult;
+      try {
+        if (!safeToolShell) throw new Error("Trusted Windows PowerShell is unavailable");
+        execResult = await transport.request("command/exec", {
+          command: [safeToolShell, "-NoProfile", "-NonInteractive", "-Command", `Write-Output ${safeToolNonce}`],
+          cwd: projectRoot,
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
+          timeoutMs: Math.min(10_000, rpcTimeoutMs),
+          outputBytesCap: 1024,
+        }, { timeoutMs: rpcTimeoutMs });
+      } catch (error) {
+        if (error?.code !== -32601) {
+          record("safe-tool-outcome", { mode: safeToolMode, response: "unconfirmed" });
+          throw error;
+        }
+        // An explicit missing method is the only entry to the legacy turn.
+        // An unconfirmed execution never gets a second attempt.
+        safeToolMode = "legacy-turn";
+      }
+      if (safeToolMode === "rpc") {
+        const confirmed = execResult?.exitCode === 0 && typeof execResult.stdout === "string"
+          && execResult.stdout.trim() === safeToolNonce && execResult.stderr === "";
+        record("safe-tool-outcome", { mode: safeToolMode, response: confirmed ? "confirmed" : "unconfirmed" });
+        safeToolCount = confirmed ? 1 : 0;
+      } else {
+        safeToolOpen = true;
+        try {
+          tool = await startTurn(createdThreadId,
+            `Use a shell execution tool exactly once. Use ${safeToolShell ?? "the standard shell"}${safeToolPwsh ? ` or Microsoft PowerShell at ${safeToolPwsh}` : ""} with -Command (optionally -NoProfile). The exact command body is on the next line:\nWrite-Output ${safeToolNonce}\nEnd of command body. Do not add quotes around the nonce, statements, redirection or other commands. Do not read or modify files, use MCP or call other tools. Then reply CANARY_TOOL_OK.`,
+            "safe-tool");
+          await expectSuccessfulTurn(tool);
+          // turn/completed may precede asynchronous fixed-shell verification.
+          await Promise.all(safeToolChecks);
+        } finally { safeToolOpen = false; bindSafeToolTurn(null); }
+        safeToolCount = safeToolItems.get(tool.id)?.size ?? 0;
+      }
+      if (safeToolCount !== 1) {
+        throw Object.assign(new Error("Canary safe tool execution was not confirmed"), { code: "CODEX_CANARY_SAFE_TOOL" });
+      }
 
       const interrupted = await startTurn(
         createdThreadId,
@@ -545,13 +646,15 @@ export async function runCodexAppServerCompatibilityCanary(candidate, {
         turnIds: {
           ordinary: ordinary.id,
           mcp: mcp.id,
-          tool: tool.id,
+          tool: tool?.id ?? null,
           interrupted: interrupted.id,
           afterCancel: afterCancel.id,
           afterResume: afterResume.id,
         },
         mcpReadCount,
+        mcpReadMode,
         safeToolCount,
+        safeToolMode,
         safeToolApprovalCount: approvedToolItem ? 1 : 0,
         healthRead: true,
         restartResume: true,

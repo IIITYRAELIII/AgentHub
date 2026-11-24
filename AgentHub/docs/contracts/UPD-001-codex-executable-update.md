@@ -53,16 +53,28 @@ availability. See ADR-0138.
 - A new executable is not active until a bounded isolated compatibility canary
   succeeds. The canary covers App Server initialize/health, new Thread,
   restart/resume of that Thread, ordinary turn, isolated Agent Hub-shaped MCP
-  read, one real safe shell execution with an exact nonce/Thread/turn/item and
-  exit-zero proof, cancel, and a successful following turn. Canary runtime state and auth
+  read, one real safe shell execution with an exact nonce and exit-zero proof,
+  cancel, and a successful following turn. Canary runtime state and auth
   copies are removed after the result is recorded. Transport RPC acknowledgement,
   asynchronous model-turn completion, cancellation, and the whole scenario use
   separate bounded deadlines; an RPC deadline is never reused as a model SLA.
-  Because App Server mediates MCP permission through a client-side elicitation,
-  the canary answers only a safely auto-answerable request bound to its exact
-  isolated `agent_hub` server, Thread, and MCP turn. The synthetic safe-tool turn
-  also permits exactly one command-only approval after its exact accepted turn
-  and observed command item are bound: the isolated cwd and local environment
+  The model proves application-context delivery with a public verification code
+  from the supplied context. The canary then calls its isolated `agent_hub` tool
+  through the same App Server and Thread, requiring both the successful
+  protocol response and exactly one authenticated read on its test server.
+  An earlier App Server that explicitly lacks this RPC may still use the
+  model-driven MCP turn, only after method-not-found with no observed read or
+  rejection. A timeout, transport refusal or incomplete read never falls back.
+  The legacy MCP turn answers only a safely auto-answerable elicitation bound to
+  its exact isolated `agent_hub` server, Thread and MCP turn.
+  For shell execution, Hub sends one fixed System32 PowerShell argv to the same
+  App Server's `command/exec` in the isolated cwd with read-only sandbox and
+  network disabled. The matching buffered response must give exit zero, the
+  literal nonce on stdout, and empty stderr. A malformed result, timeout or
+  refusal cannot trigger a second attempt. Only explicit method-not-found permits
+  the legacy synthetic shell turn. That turn permits exactly one command-only
+  approval after its exact accepted turn and observed command item are bound.
+  The isolated cwd and local environment
   must execute only the generated literal `Write-Output` nonce through System32
   Windows PowerShell or valid Microsoft-signed PowerShell 7 at its fixed Program
   Files path. Remote environments and other shells are refused.
@@ -109,6 +121,8 @@ availability. See ADR-0138.
   selection and proves custody is still live immediately before spawn.
   A freshly inspected recorded bundle can transfer that same live custody to
   selection after the complete recorded identity and feature checks succeed.
+  The Windows custody process reads its JSON request as explicit UTF-8 on
+  stdin so canonical paths and file names are independent of the console code page.
   Custody lasts until that exact owned App
   Server's process `close`, including initialize-to-first-tool. Release frees the
   old bundle for the external updater. No files are copied into another bundle,
@@ -183,7 +197,8 @@ timeline and stderr observation counters under
 `data/codex-executable-canary/last-failure.json`. It records
 only allowlisted phases, protocol methods, validated Thread/turn identifiers,
 statuses, exit code/signal, candidate identity, failure class/code, timestamps,
-bounded counts and fixed safe-command scope/refusal flags. Arbitrary child stderr, RPC errors, prompts, the isolated
+bounded counts, MCP startup status and read outcome, fixed shell outcome, and
+safe-command scope/refusal flags. Arbitrary child stderr, RPC errors, prompts, the isolated
 MCP capability, auth material, and response contents are never retained in the
 file, attached evidence, thrown error, or canary-owned logs. The isolated run
 directory is still always removed.

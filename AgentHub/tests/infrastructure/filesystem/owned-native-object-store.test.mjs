@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { OwnedNativeObjectStore, nativeObjectStorageDescriptor } from "../../../src/infrastructure/filesystem/owned-native-object-store.mjs";
+import { OwnedNativeObjectStore, nativeObjectStorageDescriptor, ownedPackIndexContains } from "../../../src/infrastructure/filesystem/owned-native-object-store.mjs";
 import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { inventoryNativeCapture } from "../../../src/infrastructure/filesystem/native-capture-inventory.mjs";
@@ -64,9 +66,71 @@ async function objectFiles(root) {
   return files;
 }
 
+test("v2 pack membership agrees with Git for ordinary and extended indexes", async t => {
+  const f = await fixture(t);
+  await gitAt(f.source, ["gc", "--quiet"]);
+  const packs = path.join(f.source, ".git/objects/pack");
+  const file = (await readdir(packs)).find(name => name.endsWith(".idx"));
+  assert.ok(file);
+  const checksum = file.slice(5, -4);
+  const original = await readFile(path.join(packs, file));
+  const pack = path.join(packs, file.slice(0, -4) + ".pack");
+  const extendedPath = path.join(f.root, "extended.idx");
+  await gitAt(f.source, ["index-pack", "--index-version=2,1", "-o", extendedPath, pack]);
+  const extended = await readFile(extendedPath);
+  assert.ok(extended.length > original.length);
+  for (const bytes of [original, extended]) {
+    const ids = (await gitAt(f.source, ["show-index"], { input: bytes }))
+      .split(/\r?\n/u).map(line => line.split(" ")[1]);
+    assert.ok(ids.length > 1);
+    for (const id of ids) assert.equal(ownedPackIndexContains(bytes, checksum, new Set([id])), true);
+    assert.equal(ownedPackIndexContains(bytes, checksum, new Set(["0".repeat(40)])), false);
+  }
+  const damaged = Buffer.from(original);
+  damaged.writeUInt32BE(0xffffffff, 8);
+  createHash("sha1").update(damaged.subarray(0, -20)).digest().copy(damaged, damaged.length - 20);
+  assert.throws(() => ownedPackIndexContains(damaged, checksum, new Set([f.result])), /malformed/u);
+  assert.throws(() => ownedPackIndexContains(original, "0".repeat(40), new Set([f.result])), /malformed/u);
+  const legacyPath = path.join(f.root, "legacy.idx");
+  await gitAt(f.source, ["index-pack", "--index-version=1", "-o", legacyPath, pack]);
+  const legacy = await readFile(legacyPath);
+  assert.equal(ownedPackIndexContains(legacy, checksum, new Set([f.result])), null);
+  assert.match(await gitAt(f.source, ["show-index"], { input: legacy }), new RegExp(f.result, "u"));
+});
+
+test("v2 pack selection stops before aliasing after the owner changes", async t => {
+  const ownerLost = new Error("fixture owner changed during index selection");
+  let selectionRead = false;
+  const f = await fixture(t, { assertCurrent: async () => { if (selectionRead) throw ownerLost; } });
+  const consumerPack = path.join(f.root, "one/repository/.git/objects/pack");
+  const poolPack = path.join(f.objects.repository, "objects/pack");
+  const originalRead = fs.readFile;
+  fs.readFile = async (file, ...args) => {
+    const value = await originalRead(file, ...args);
+    if (typeof file === "string" && path.dirname(file) === poolPack && file.endsWith(".idx")
+        && await lstat(consumerPack).then(stat => stat.isDirectory(), () => false)) selectionRead = true;
+    return value;
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(compose(f, "one"), error => error === ownerLost);
+    assert.equal(selectionRead, true);
+    assert.deepEqual(await readdir(consumerPack), []);
+  } finally {
+    fs.readFile = originalRead;
+    syncBuiltinESMExports();
+  }
+});
+
 test("two real native checks share immutable history once with independent metadata and survive pool removal/consumer GC", async t => {
-  const f = await fixture(t), primaryHead = await gitAt(f.source, ["rev-parse", "HEAD"]), refs = await gitAt(f.source, ["show-ref"]);
+  let showIndexCalls = 0;
+  const f = await fixture(t, { gitAt(cwd, args, options) {
+    if (args.includes("show-index")) showIndexCalls += 1;
+    return gitAt(cwd, args, options);
+  } });
+  const primaryHead = await gitAt(f.source, ["rev-parse", "HEAD"]), refs = await gitAt(f.source, ["show-ref"]);
   const first = await compose(f, "one"), second = await compose(f, "two");
+  assert.equal(showIndexCalls, 0);
   assert.equal(first.tree, await gitAt(f.source, ["rev-parse", f.result + "^{tree}"]));
   assert.equal(second.tree, first.tree);
   const firstRepo = path.join(f.root, "one/repository"), secondRepo = path.join(f.root, "two/repository");

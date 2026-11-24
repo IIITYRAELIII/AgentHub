@@ -2,6 +2,7 @@ import path from "node:path";
 import { mkdir, readFile } from "node:fs/promises";
 import { createSelectedGitBundle, hasExactGitCommitObjects } from "./selected-git-bundle.mjs";
 import { createHash } from "node:crypto";
+import { sourceBlobs } from "./local-source-baseline.mjs";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
   from "../../domain/task-selected-composition.mjs";
@@ -111,55 +112,127 @@ async function metadataEntry(git, commit, file) {
   return `${match[1]} ${match[2]}`;
 }
 
+// A history proof reads each immutable metadata entry once, while every
+// promotion boundary runs its own complete proof against fresh authority.
+async function readNativeMetadataEntries(git, commit, files) {
+  const entries = new Map();
+  let batch = [];
+  let length = 0;
+  const read = async () => {
+    if (!batch.length) return;
+    const wanted = new Set(batch);
+    const output = String(await git(["--literal-pathspecs", "ls-tree", "--full-tree", "-z", commit, "--", ...batch],
+      { rawOutput: true }));
+    if (output && !output.endsWith("\0")) throw failure("Native metadata lookup is malformed or ambiguous");
+    for (const record of output.split("\0").slice(0, -1)) {
+      const match = /^(\d{6}) (blob|tree|commit) ([a-f0-9]{40})\t([\s\S]*)$/u.exec(record);
+      if (!match || !wanted.delete(match[4])) throw failure("Native metadata lookup is malformed or ambiguous");
+      entries.set(match[4], { mode: match[1], type: match[2], oid: match[3] });
+    }
+    batch = [];
+    length = 0;
+  };
+  for (const file of files) {
+    if (length + file.length + 4 > 12000) await read();
+    batch.push(file);
+    length += file.length + 4;
+  }
+  await read();
+  return entries;
+}
+
+function matchesMetadata(file, names) {
+  // Literal root pathspecs cover descendants of a directory with that name.
+  return names.some(name => file.startsWith(`${name}/`) || path.posix.basename(file) === name);
+}
+
 export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null }) {
   // Internal context, verified by the owning caller at every effect boundary.
   // Only Test may include its already managed dev ancestry here.
   const bases = [...new Set([baseCommit, ...(historyAuthority?.bases ?? [])])];
   const owned = new Set();
   const histories = [];
+  const ancestry = new Map();
+  const contains = async (ancestor, descendant) => {
+    const key = JSON.stringify([ancestor, descendant]);
+    if (!ancestry.has(key)) ancestry.set(key,
+      await maybe(git, ["merge-base", "--is-ancestor", ancestor, descendant]) !== null);
+    return ancestry.get(key);
+  };
+  const requests = new Map();
   for (const task of tasks) {
     const taskBase = task.baseCommit || baseCommit;
-    // The result ancestry check below still proves both commit objects exist,
-    // including an empty result. Equal base OIDs need no additional self-query.
-    if (taskBase !== baseCommit && await maybe(git, ["merge-base", "--is-ancestor", taskBase, baseCommit]) === null
-        || await maybe(git, ["merge-base", "--is-ancestor", taskBase, task.resultCommit]) === null) {
+    // Even an empty result needs its exact Git commit.
+    if (taskBase !== baseCommit && !await contains(taskBase, baseCommit)
+        || !await contains(taskBase, task.resultCommit)) {
       throw failure(`Task ${task.taskId} requires a main-based result or explicit historical migration`);
     }
     const rows = String(await git([
       "rev-list", "--first-parent", "--parents", task.resultCommit, ...bases.map(b => `^${b}`),
-    ])).split(/\r?\n/u).filter(Boolean).map((row) => row.split(" "));
+    ])).split(/\r?\n/u).filter(Boolean).map(row => row.split(" "));
     for (const [commit] of rows) owned.add(commit);
-    histories.push({ task, rows });
     const adopted = (historyAuthority?.adoptions ?? []).filter(a => a.taskId === task.taskId
       && a.resultCommit === task.resultCommit);
     const metadataBases = [...new Set([taskBase, ...(historyAuthority?.metadataBases ?? []),
       ...adopted.map(a => a.adoptedCommit)])];
-    // One immutable tree diff supplies both metadata classes. Keep all existing
-    // per-file mode/blob/version checks and re-read at every owning boundary.
     const changedMetadata = String(await git([
       "diff", "--name-only", "--no-renames", "-z", taskBase, task.resultCommit,
       "--", "CHANGELOG.md", ":(glob)**/CHANGELOG.md", "package.json", "package-lock.json",
       ":(glob)**/package.json", ":(glob)**/package-lock.json",
     ], { rawOutput: true })).split("\0").filter(Boolean);
-    // Literal root pathspecs also cover descendants of a directory with that
-    // name. Preserve that existing ownership check, not just basename matches.
-    const matchesMetadata = (file, names) => names.some(name => file.startsWith(`${name}/`)
-      || path.posix.basename(file) === name);
-    for (const file of changedMetadata.filter(file => matchesMetadata(file, ["CHANGELOG.md"]))) {
-      const entry = await metadataEntry(git, task.resultCommit, file);
-      const known = [];
-      for (const b of metadataBases) known.push(await metadataEntry(git, b, file));
+    const notes = changedMetadata.filter(file => matchesMetadata(file, ["CHANGELOG.md"]));
+    const packages = changedMetadata.filter(file => matchesMetadata(file, ["package.json", "package-lock.json"]));
+    histories.push({ task, rows, metadataBases, notes, packages });
+    if (notes.length || packages.length) {
+      for (const commit of [task.resultCommit, ...metadataBases]) {
+        if (!requests.has(commit)) requests.set(commit, new Set());
+        for (const file of [...notes, ...packages]) requests.get(commit).add(file);
+      }
+    }
+  }
+  const metadata = new Map();
+  for (const [commit, files] of requests) metadata.set(commit, await readNativeMetadataEntries(git, commit, files));
+  const packageObjects = new Map();
+  for (const { task, metadataBases, packages } of histories) {
+    for (const commit of [task.resultCommit, ...metadataBases]) {
+      for (const file of packages) {
+        const entry = metadata.get(commit)?.get(file);
+        if (entry?.type === "blob") packageObjects.set(entry.oid, entry);
+      }
+    }
+  }
+  const packageBytes = new Map();
+  const requestedObjects = [...packageObjects.keys()];
+  for (let offset = 0; offset < requestedObjects.length; offset += 32) {
+    const batch = requestedObjects.slice(offset, offset + 32);
+    for (const [oid, bytes] of await sourceBlobs(git, packageObjects, batch)) packageBytes.set(oid, bytes.toString("utf8").trim());
+  }
+  const packageAt = async (commit, file) => {
+    const entry = metadata.get(commit)?.get(file);
+    if (!entry) return null;
+    if (entry.type !== "blob") return maybe(git, ["show", `${commit}:${file}`]);
+    return packageBytes.get(entry.oid);
+  };
+  const changelogAt = (commit, file) => {
+    const entry = metadata.get(commit)?.get(file);
+    if (!entry) return null;
+    if (entry.type !== "blob") throw failure("Native metadata lookup is malformed or ambiguous");
+    return `${entry.mode} ${entry.oid}`;
+  };
+  for (const { task, metadataBases, notes, packages } of histories) {
+    for (const file of notes) {
+      const entry = changelogAt(task.resultCommit, file);
+      const known = metadataBases.map(commit => changelogAt(commit, file));
       const historical = file === "CHANGELOG.md" && (historyAuthority?.changelogEntries ?? []).some(bound =>
         bound.taskId === task.taskId && bound.resultCommit === task.resultCommit && bound.path === file
           && bound.mode === "100644" && entry === `${bound.mode} ${bound.blob}`);
       if (entry === null || !known.includes(entry) && !historical) throw failure(`Task ${task.taskId} changes release-owned CHANGELOG metadata`);
     }
-    const packages = changedMetadata.filter(file => matchesMetadata(file, ["package.json", "package-lock.json"]));
     for (const file of packages) {
       const priors = [];
-      for (const b of metadataBases) priors.push(await maybe(git, ["show", `${b}:${file}`]));
+      for (const commit of metadataBases) priors.push(await packageAt(commit, file));
       if (priors.every(bytes => bytes === null)) continue; // New packages are Task content.
-      const nextBytes = await maybe(git, ["show", `${task.resultCommit}:${file}`]);
+      const nextBytes = await packageAt(task.resultCommit, file);
       const next = nextBytes === null ? null : JSON.parse(nextBytes);
       if (!priors.filter(bytes => bytes !== null).map(bytes => JSON.parse(bytes)).some(prior =>
         (prior.version === undefined || prior.version === next?.version)
@@ -580,7 +653,7 @@ async function retainsOrderedResolution({ git, baseCommit, merges, resolutions, 
 // Reachability alone does not prove content. Reproduce each selected delta, but
 // retain the actual automatic context and verified conflict resolutions instead
 // of requiring a message to authorize that same Git evidence.
-async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges,
+async function assertSelectedContent({ git, baseCommit, tasks, head, tree, resolutions, identity, merges,
   manualCompatibilityReview = null, verifyManualReview = null, root = null }) {
   const compatibility = await verifyManualCompatibility({ git, root, identity, head,
     proof: manualCompatibilityReview, verifyReview: verifyManualReview });
@@ -607,22 +680,20 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
     ? new Map(await entries(git, ["ls-tree", "-r", "-z", publication.commit])) : new Map();
   const capturedComposition = identity.policy === NATIVE_RELEASE_POLICY && identity.baseCommit === baseCommit
     && Array.isArray(identity.tasks) && taskGitIdentityHash(identity.tasks) === taskGitIdentityHash(tasks);
-  const target = new Map(await entries(git, ["ls-tree", "-r", "-z", head]));
+  const treeEntries = new Map();
+  const inventory = async tree => {
+    if (!treeEntries.has(tree)) treeEntries.set(tree, new Map(await entries(git, ["ls-tree", "-r", "-z", tree])));
+    return treeEntries.get(tree);
+  };
+  const target = await inventory(tree);
   const resolvedPaths = new Set();
   for (const { binding, conflictPaths } of resolutions) {
-    const resolved = new Map(await entries(git, ["ls-tree", "-r", "-z", binding.tree]));
+    const resolved = await inventory(binding.tree);
     for (const file of conflictPaths) {
       if (target.get(file) === resolved.get(file)) resolvedPaths.add(file);
     }
   }
   for (const [index, task] of tasks.entries()) {
-    const prefix = index === 0 ? baseCommit : merges[index - 1].commit;
-    const merged = await maybe(git, ["merge-base", "--is-ancestor", task.resultCommit, prefix]) === null;
-    const actual = merged ? new Map(await entries(git, ["ls-tree", "-r", "-z",
-      (String(await git(["merge-tree", "--write-tree", "--name-only", "-z", prefix, task.resultCommit],
-        { acceptableExitCodes: [1] })).split("\0"))[0]])) : new Map();
-    const source = inherited.size
-      ? new Map(await entries(git, ["ls-tree", "-r", "-z", task.resultCommit])) : new Map();
     let replayBase = publishedBase || task.baseCommit || baseCommit;
     // The captured composition already owns its complete baseline tree. If
     // that exact baseline lies inside this selected history, replay only the
@@ -640,9 +711,24 @@ async function assertSelectedContent({ git, baseCommit, tasks, head, resolutions
       replayBefore, task.resultCommit], { acceptableExitCodes: [1] })).split("\0");
     const replayTree = replay.shift();
     if (!/^[a-f0-9]{40}$/u.test(replayTree)) throw failure("Selected Task content replay is unavailable");
+    // An exact complete tree proves the whole replay directly. The automatic
+    // inventories and conflict context are needed only to explain differences.
+    if (replayTree === tree) continue;
+    const prefix = index === 0 ? baseCommit : merges[index - 1].commit;
+    const merged = await maybe(git, ["merge-base", "--is-ancestor", task.resultCommit, prefix]) === null;
+    // A resolution verified within this same invocation already carries the
+    // independently computed automatic tree of these exact parents.
+    const verified = resolutions.find(item => item.commit === merges[index]?.commit
+      && item.binding.parents[0] === prefix && item.binding.parents[1] === task.resultCommit);
+    const actualTree = !merged ? null : verified?.binding.automaticTree
+      ?? (String(await git(["merge-tree", "--write-tree", "--name-only", "-z", prefix, task.resultCommit],
+        { acceptableExitCodes: [1] })).split("\0"))[0];
+    const actual = actualTree === null ? new Map() : await inventory(actualTree);
+    const source = inherited.size
+      ? new Map(await entries(git, ["ls-tree", "-r", "-z", task.resultCommit])) : new Map();
     const conflicts = new Set();
     for (const file of replay) { if (!file) break; conflicts.add(file); }
-    const expected = new Map(await entries(git, ["ls-tree", "-r", "-z", replayTree]));
+    const expected = await inventory(replayTree);
     const missing = [];
     for (const file of new Set([...expected.keys(), ...target.keys()])) {
       if (expected.get(file) === target.get(file) || resolvedPaths.has(file)
@@ -686,16 +772,19 @@ async function verifyMergeStep(git, before, result, target, { storedBinding = nu
   if (!/^[a-f0-9]{40}$/u.test(automaticTree)) throw failure("Native automatic tree unavailable");
   const conflicts = new Set();
   for (const file of output) { if (!file) break; conflicts.add(file); }
-  const automatic = new Map(await entries(git, ["ls-tree", "-r", "-z", automaticTree]));
   const tree = String(await git(["rev-parse", `${target}^{tree}`]));
-  const resolved = new Map(await entries(git, ["ls-tree", "-r", "-z", tree]));
   const extraPaths = [];
-  for (const file of new Set([...automatic.keys(), ...resolved.keys()])) {
-    if (automatic.get(file) === resolved.get(file)) continue;
-    if (!conflicts.has(file)
-        || await changesCleanConflictContext(git, automaticTree, target, file, before, result)) extraPaths.push(file);
+  let diff = Buffer.alloc(0);
+  if (automaticTree !== tree) {
+    const automatic = new Map(await entries(git, ["ls-tree", "-r", "-z", automaticTree]));
+    const resolved = new Map(await entries(git, ["ls-tree", "-r", "-z", tree]));
+    for (const file of new Set([...automatic.keys(), ...resolved.keys()])) {
+      if (automatic.get(file) === resolved.get(file)) continue;
+      if (!conflicts.has(file)
+          || await changesCleanConflictContext(git, automaticTree, target, file, before, result)) extraPaths.push(file);
+    }
+    diff = await git(["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree], { rawOutput: true });
   }
-  const diff = await git(["diff", "--binary", "--full-index", "--no-renames", automaticTree, tree], { rawOutput: true });
   const binding = { parents: [before, result], commit: target, tree, automaticTree,
     diffSha256: createHash("sha256").update(diff).digest("hex") };
   if (storedBinding && Object.keys(binding).some(key =>
@@ -751,7 +840,7 @@ export async function assertNativeMergeGraph({ git, baseCommit, tasks, merges, h
 export async function assertNativeMergedResults({ git, baseCommit, tasks, merges, head, tree,
   identity, manualCompatibilityReview = null, verifyManualReview = null, root = null }) {
   const resolutions = await assertNativeMergeGraph({ git, baseCommit, tasks, merges, head, tree, identity });
-  await assertSelectedContent({ git, baseCommit, tasks, head, resolutions, identity, merges,
+  await assertSelectedContent({ git, baseCommit, tasks, head, tree, resolutions, identity, merges,
     manualCompatibilityReview, verifyManualReview, root });
 }
 
@@ -875,11 +964,14 @@ export async function mergeSelectedResults({
     assertCurrentInputs();
   };
 
+  let currentPrefixProof = null;
+  let adoptedPrefixProof = null;
   if (reuse && state.reuseContext && taskGitIdentityHash(state.reuseContext) === taskGitIdentityHash(reuse)
       && state.next === 0 && !state.merging && !state.conflict && !state.reuseIntent) {
     const prefix = await verifiedNativePrefix({ root, repository, candidates, tasks, baseCommit, gitAt, beforeTransport,
       verify: (before, result, target, step) => verifyMergeStep(git, before, result, target, { storedBinding: step?.resolution?.binding ?? step?.reviewedResolution?.binding, baseCommit }) });
     if (prefix) {
+      currentPrefixProof = { hash: taskGitIdentityHash(prefix), resolutions: prefix.merges.map(step => step.resolution ?? null) };
       state.reuseIntent = prefix;
       await writeJson(stateFile, state);
     }
@@ -891,14 +983,22 @@ export async function mergeSelectedResults({
         || !state.reuseIntent.merges?.length || state.reuseIntent.merges.length > tasks.length) {
       throw failure("Native prefix reuse intent changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
     }
-    let before = baseCommit;
-    for (const [i, step] of state.reuseIntent.merges.entries()) {
-      if (step.taskId !== tasks[i].taskId || step.resultCommit !== tasks[i].resultCommit) {
-        throw failure("Native prefix reuse no longer has ordinary authority", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+    const fresh = currentPrefixProof?.hash === taskGitIdentityHash(state.reuseIntent) ? currentPrefixProof : null;
+    const { before, resolutions } = await measureTaskOperation("native:prefix-recheck", async () => {
+      let before = baseCommit;
+      const resolutions = [];
+      for (const [i, step] of state.reuseIntent.merges.entries()) {
+        if (step.taskId !== tasks[i].taskId || step.resultCommit !== tasks[i].resultCommit) {
+          throw failure("Native prefix reuse no longer has ordinary authority", "RELEASE_NATIVE_CHECKOUT_CHANGED");
+        }
+        // Only the live verifier just above can supply this proof. Reopening
+        // a persisted intent recomputes all its Git evidence before checkout.
+        resolutions.push(fresh ? fresh.resolutions[i] : await verifyMergeStep(git, before, step.resultCommit, step.commit,
+          { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding, baseCommit }));
+        before = step.commit;
       }
-      await verifyMergeStep(git, before, step.resultCommit, step.commit, { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding, baseCommit });
-      before = step.commit;
-    }
+      return { before, resolutions };
+    });
     if (before !== state.reuseIntent.head || String(await git(["rev-parse", `${before}^{tree}`])) !== state.reuseIntent.tree) {
       throw failure("Native reused prefix tree changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
     }
@@ -907,6 +1007,7 @@ export async function mergeSelectedResults({
     if (![baseCommit, before].includes(observed)) throw failure("Native reused prefix checkout changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
     if (observed !== before) await git(["checkout", "--detach", "--no-overwrite-ignore", before]);
     state.merges = state.reuseIntent.merges; state.next = state.merges.length; state.head = before;
+    adoptedPrefixProof = { mergesHash: taskGitIdentityHash(state.merges), resolutions };
     delete state.reuseIntent;
     await writeJson(stateFile, state);
   }
@@ -933,11 +1034,12 @@ export async function mergeSelectedResults({
   }
   let prefix = baseCommit;
   const resolutions = [];
+  const adopted = adoptedPrefixProof?.mergesHash === taskGitIdentityHash(state.merges) ? adoptedPrefixProof : null;
   for (const [index, step] of state.merges.entries()) {
     if (step.taskId !== tasks[index].taskId || step.resultCommit !== tasks[index].resultCommit) {
       throw failure("Native merge journal selection changed", "RELEASE_NATIVE_CHECKOUT_CHANGED");
     }
-    const resolution = await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
+    const resolution = adopted ? adopted.resolutions[index] : await verifyMergeStep(git, prefix, step.resultCommit, step.commit,
       { storedBinding: step.resolution?.binding ?? step.reviewedResolution?.binding, baseCommit });
     if (resolution) resolutions.push(resolution);
     prefix = step.commit;
@@ -1047,9 +1149,9 @@ export async function mergeSelectedResults({
     try {
       state.merging = true;
       await writeJson(stateFile, state);
-      await git(["-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
+      await measureTaskOperation("native:merge", () => git(["-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
         "-c", "core.hooksPath=", "-c", "rerere.enabled=false",
-        "merge", "--no-ff", "--no-edit", "--no-overwrite-ignore", task.resultCommit]);
+        "merge", "--no-ff", "--no-edit", "--no-overwrite-ignore", task.resultCommit]));
     } catch (error) {
       const stages = await entries(git, ["ls-files", "--stage", "-z"]);
       const paths = [...new Set(stages.filter(([, entry]) => !entry.endsWith(" 0")).map(([file]) => file))];
@@ -1075,8 +1177,9 @@ export async function mergeSelectedResults({
   await requireClean(git);
   if (String(await git(["rev-parse", "HEAD^{commit}"])) !== state.head) throw failure("Native final merge head changed");
   assertCurrentInputs();
-  await measureTaskOperation("native:selected-content", () => assertSelectedContent({ git, baseCommit, tasks, head: state.head, resolutions, identity, merges:state.merges,
+  const tree = String(await git(["rev-parse", `${state.head}^{tree}`]));
+  await measureTaskOperation("native:selected-content", () => assertSelectedContent({ git, baseCommit, tasks,
+    head: state.head, tree, resolutions, identity, merges: state.merges,
     manualCompatibilityReview: state.manualCompatibilityReview ?? null, verifyManualReview, root }));
-  return { root: repository, head: state.head,
-    tree: String(await git(["rev-parse", "HEAD^{tree}"])), merges: state.merges };
+  return { root: repository, head: state.head, tree, merges: state.merges };
 }

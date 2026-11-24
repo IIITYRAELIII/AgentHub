@@ -41,7 +41,8 @@ import { prepareTaskWorktreeDependencies } from "./task-worktree-dependencies.mj
 import { readClaimCustodyWip, copyClaimCustodyWip } from "./claim-source-custody.mjs";
 import { claimCustodyHash } from "../../domain/claim-forward-custody.mjs";
 import { readDirectTaskPublication } from "./direct-task-publication.mjs";
-import { withInterprocessLocks as acquireInterprocessLocks, interprocessLockAdmissionTimeoutPath } from "../process/interprocess-lock.mjs";
+import { withInterprocessLocks as acquireInterprocessLocks, assertInterprocessLeasesOwned,
+  interprocessLockAdmissionTimeoutPath } from "../process/interprocess-lock.mjs";
 import {
   measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming, withTaskOperationTiming,
 } from "../process/task-operation-timing.mjs";
@@ -343,10 +344,7 @@ function combinedLease(primary, secondary, { repositoryKey = null } = {}) {
     ownerId: `${primary.ownerId}|${secondary.ownerId}`,
     repositoryLockKeys,
     signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] ?? null,
-    async assertOwned() {
-      await primary.assertOwned();
-      await secondary.assertOwned();
-    },
+    assertOwned: () => assertInterprocessLeasesOwned(primary, secondary),
   };
 }
 
@@ -2427,14 +2425,17 @@ export class TaskGitWorkspaceService {
     return verified;
   }
 
-  async #recordedUpstreamAdoptionForSnapshot({ taskId, repoRoot, snapshotCommit, localMain, lease, publishedBaseCommit = null }) {
+  async #recordedUpstreamAdoptionForSnapshot({ taskId, repoRoot, snapshotCommit, localMain, lease,
+    publishedBaseCommit = null, currentRefs = null }) {
     const id = normalizedTaskId(taskId);
     const repoKey = taskRepositoryKey(repoRoot);
     const exactSnapshot = exactCommitId(snapshotCommit, "Task snapshot commit");
+    const prefixes = taskUpstreamAdoptionPrefixes(id, repoKey).map(prefix => `${prefix}${exactSnapshot}/`);
     const records = [];
-    for (const prefix of taskUpstreamAdoptionPrefixes(id, repoKey)) {
-      records.push(...String(await this.#runOwned([
-        "for-each-ref", "--format=%(refname)%00%(objectname)", `${prefix}${exactSnapshot}/`,
+    for (const prefix of prefixes) {
+      if (currentRefs !== null) records.push(...currentRefs.filter(row => row.startsWith(prefix)));
+      else records.push(...String(await this.#runOwned([
+        "for-each-ref", "--format=%(refname)%00%(objectname)", prefix,
       ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean));
     }
     if (!records.length) return null;
@@ -3091,9 +3092,14 @@ export class TaskGitWorkspaceService {
       if (dependencyMode !== "skip") {
         const lockfiles = await trackedNpmLockfiles(custody.namespace.root, workspace.projectRoot);
         if (lockfiles.length) await withInterprocessLocks([path.join(this.dataDir, "locks", `task-dependencies-${id}-${custody.namespace.epoch}`)], async dependencyLease => {
+          const taskDependencyLease = combinedLease(lease, dependencyLease);
           await this.prepareDependencies({ projectRoot: workspace.projectRoot, lockfiles,
-            verify: dependencyMode === "verify", lease: combinedLease(lease, dependencyLease),
-            sharedDependencies: this.#sharedDependencies(workspace.projectRoot, combinedLease(lease, dependencyLease)),
+            verify: dependencyMode === "verify", lease: taskDependencyLease,
+            directoryReuse: true,
+            resolveMainProjectRoot: async () => await gitMaybe(["symbolic-ref", "--quiet", "HEAD"], {
+              cwd: custody.source.repositoryRoot,
+            }) === "refs/heads/main" ? custody.source.projectRoot : null,
+            sharedDependencies: this.#sharedDependencies(workspace.projectRoot, taskDependencyLease),
             runNpm: (args, options) => this.#runOwnedNpm(args, options) });
         });
       }
@@ -3222,6 +3228,10 @@ export class TaskGitWorkspaceService {
             lockfiles,
             verify: dependencyMode === "verify",
             lease: taskDependencyLease,
+            directoryReuse: true,
+            resolveMainProjectRoot: async () => await gitMaybe(["symbolic-ref", "--quiet", "HEAD"], {
+              cwd: repoRoot,
+            }) === "refs/heads/main" ? path.join(repoRoot, selection.relativePath) : null,
             sharedDependencies: this.#sharedDependencies(workspace.projectRoot, taskDependencyLease),
             runNpm: (args, options) => this.#runOwnedNpm(args, options),
           });
@@ -5083,11 +5093,16 @@ export class TaskGitWorkspaceService {
       const localMain = await localMainCommit(repoRoot);
       // local main is the agreed branch baseline. Publication and observation
       // remain separate authorities and do not silently choose another base.
+      // Read the mutable receipt namespace once per fresh base check. The
+      // existing verifier still checks every selected receipt and its live refs.
+      const currentRefs = tasks.length ? String(await this.#runOwned([
+        "for-each-ref", "--format=%(refname)%00%(objectname)", TASK_UPSTREAM_ADOPTION_REF_PREFIX,
+      ], { cwd: repoRoot, lease: ownedLease })).split(/\r?\n/u).filter(Boolean) : [];
       const adoptions = [];
       for (const task of [...tasks].sort((a, b) => String(a.taskId).localeCompare(String(b.taskId)))) {
         const verified = await this.#recordedUpstreamAdoptionForSnapshot({ taskId: task.taskId,
           repoRoot, snapshotCommit: task.resultCommit, localMain, lease: ownedLease,
-          publishedBaseCommit: published });
+          publishedBaseCommit: published, currentRefs });
         if (!verified) continue;
         if (task.baseCommit != null && task.baseCommit !== verified.record.taskBaseCommit) {
           throw new Error("Selected Task adoption registered base changed");

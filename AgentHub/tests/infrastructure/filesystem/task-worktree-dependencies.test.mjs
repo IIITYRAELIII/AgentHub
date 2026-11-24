@@ -5,6 +5,7 @@ import {
   mkdtemp,
   open as fsOpen,
   readFile,
+  readdir,
   realpath,
   rename as fsRename,
   rm,
@@ -18,7 +19,7 @@ import test from "node:test";
 
 import { prepareTaskWorktreeDependencies } from "../../../src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 import { withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
-import { reuseTaskDependencyInputs } from "../../../src/infrastructure/filesystem/task-dependency-inputs.mjs";
+import { attachTaskDependencyDirectories, reuseTaskDependencyInputs } from "../../../src/infrastructure/filesystem/task-dependency-inputs.mjs";
 
 const NPM_CI_ARGS = ["ci", "--include=dev", "--include=optional", "--no-audit", "--no-fund"];
 
@@ -1010,6 +1011,179 @@ test("compatible Task dependency inputs install once and own local cache without
     compatibleInstalls: 1, copiedPackageBytes: 0, sharedPayloadLinks: 3, changedInputInstalls: 1 }));
 });
 
+test("ensure reuses installed main without npm and holds that version after main is replaced", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-main-deps-"));
+  context.after(() => rmTree(parent));
+  const main = path.join(parent, "main");
+  const task = path.join(parent, "task");
+  const project = {
+    dependencies: { tiny: "1.0.0" },
+    packageEntries: { "node_modules/tiny": { version: "1.0.0" } },
+  };
+  await writeNpmProject(main, project);
+  await writeNpmProject(task, project);
+  await materializeLockedState(main);
+  await mkdir(path.join(main, "node_modules/.cache"));
+  await writeFile(path.join(main, "node_modules/.cache/keep"), "main cache");
+  await writeFile(path.join(main, "node_modules/tiny/payload.bin"), "1.0.0");
+  const retainedPackage = path.join(main, "retained-packages", "tiny");
+  await mkdir(path.dirname(retainedPackage));
+  await fsRename(path.join(main, "node_modules/tiny"), retainedPackage);
+  await symlink(retainedPackage, path.join(main, "node_modules/tiny"), process.platform === "win32" ? "junction" : "dir");
+  const events = [];
+  const lease = { async assertOwned() {} };
+  const sharedDependencies = (key, run) => run({ root: path.join(parent, "inputs", key), lease, coveredLease: lease });
+  const inputs = { projectRoot: task, lockfiles: [path.join(task, "package-lock.json")], lease,
+    directoryReuse: true, verify: false, sharedDependencies,
+    resolveMainProjectRoot: async () => main,
+    runNpm: () => assert.fail("npm started despite the compatible installation in main") };
+  const ensure = () => withTaskOperationTiming({
+    operationId: "main-dependency-reuse", taskId: "task", record: event => events.push(event),
+  }, () => prepareTaskWorktreeDependencies(inputs));
+  const [first] = await ensure();
+  assert.equal(first.prepared, true);
+  assert.equal(events.filter(event => event.stage === "dependency-reuse-installed-main" && event.phase === "end").length, 1);
+  events.length = 0;
+  assert.equal((await ensure())[0].prepared, false);
+  assert.equal(events.filter(event => event.stage === "dependency-reuse-installed-main").length, 0);
+  assert.equal(events.filter(event => event.stage === "dependency-inventory").length, 0);
+  assert.equal((await lstat(path.join(task, "node_modules"))).isSymbolicLink(), false);
+  await fsRename(path.join(main, "node_modules"), path.join(main, "replaced"));
+  await writeNpmProject(main, {
+    dependencies: { tiny: "2.0.0" },
+    packageEntries: { "node_modules/tiny": { version: "2.0.0" } },
+  });
+  await materializeLockedState(main);
+  await writeFile(path.join(main, "node_modules/tiny/payload.bin"), "2.0.0");
+  assert.equal(await readFile(path.join(task, "node_modules/tiny/payload.bin"), "utf8"), "1.0.0");
+  await assert.rejects(readFile(path.join(task, "node_modules/.cache/keep")), { code: "ENOENT" });
+  await rmTree(path.join(task, "node_modules/tiny"));
+  assert.equal(await readFile(path.join(first.sharedStorage.modules, "tiny/payload.bin"), "utf8"), "1.0.0");
+  assert.equal((await ensure())[0].prepared, true);
+});
+
+test("shared attachment checks ownership after its last source read", async context => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-late-source-"));
+  context.after(() => rmTree(root));
+  const seed = path.join(root, "seed");
+  const task = path.join(root, "task");
+  const project = { dependencies: { tiny: "1.0.0" },
+    packageEntries: { "node_modules/tiny": { version: "1.0.0" } } };
+  await writeNpmProject(seed, project);
+  await writeNpmProject(task, project);
+  let active = true;
+  const lease = { async assertOwned() { if (!active) throw new Error("owner lost in source read"); } };
+  const withOwner = (key, run) => run({ root: path.join(root, "inputs", key), lease, coveredLease: lease });
+  const [installed] = await prepareTaskWorktreeDependencies({
+    projectRoot: seed, lockfiles: [path.join(seed, "package-lock.json")], lease, sharedDependencies: withOwner,
+    runNpm: async (_, { cwd }) => materializeLockedState(cwd),
+  });
+  await assert.rejects(reuseTaskDependencyInputs({
+    packageRoot: task, fingerprint: installed.fingerprint, lease, withOwner, directoryReuse: true, verify: false,
+    manifestContent: await readFile(path.join(task, "package.json")),
+    lockfileContent: await readFile(path.join(task, "package-lock.json")),
+    prepare: () => assert.fail("compatible input is already installed"),
+    assertSourceContext: async () => {
+      const retained = path.join(task, ".agent-hub-dependency-retained");
+      const entries = await readdir(retained).catch(error => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      if (entries.some(entry => entry.startsWith("attach-"))) active = false;
+    },
+  }), /owner lost in source read/u);
+  assert.equal(active, false);
+  await assert.rejects(lstat(path.join(task, "node_modules")), { code: "ENOENT" });
+});
+
+test("malformed optional main metadata cannot poison the compatible shared input", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-unusable-main-deps-"));
+  context.after(() => rmTree(parent));
+  const main = path.join(parent, "main");
+  const task = path.join(parent, "task");
+  const project = { dependencies: { tiny: "1.0.0" },
+    packageEntries: { "node_modules/tiny": { version: "1.0.0" } } };
+  await writeNpmProject(main, project);
+  await writeNpmProject(task, project);
+  await materializeLockedState(main);
+  const mainLock = path.join(main, "package-lock.json");
+  const validLock = await readFile(mainLock);
+  await writeFile(mainLock, "{");
+  const lease = { async assertOwned() {} };
+  let installs = 0;
+  const inputs = { projectRoot: task, lockfiles: [path.join(task, "package-lock.json")], lease,
+    directoryReuse: true, verify: false, resolveMainProjectRoot: async () => main,
+    sharedDependencies: (key, run) => run({ root: path.join(parent, "inputs", key), lease, coveredLease: lease }),
+    runNpm: async (_, { cwd }) => { installs++; await materializeLockedState(cwd); },
+  };
+  const [first] = await prepareTaskWorktreeDependencies(inputs);
+  assert.equal(first.prepared, true);
+  assert.equal(installs, 1);
+  await writeFile(mainLock, validLock);
+  assert.equal((await prepareTaskWorktreeDependencies(inputs))[0].prepared, false);
+  assert.equal(installs, 1);
+});
+
+test("an interrupted copy from main leaves the canonical shared input available for retry", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-main-copy-retry-"));
+  context.after(() => rmTree(parent));
+  const task = path.join(parent, "task");
+  await writeNpmProject(task);
+  const fingerprint = "a".repeat(64);
+  const root = path.join(parent, "inputs", fingerprint);
+  const lease = { async assertOwned() {} };
+  const input = {
+    packageRoot: task, fingerprint, lease, directoryReuse: true, verify: false,
+    limits: { maxEntriesPerDirectory: 100, maxTotalDirectoryEntries: 100 },
+    withOwner: (_, run) => run({ root, lease, coveredLease: lease }),
+    manifestContent: await readFile(path.join(task, "package.json")),
+    lockfileContent: await readFile(path.join(task, "package-lock.json")),
+    prepare: () => assert.fail("npm started while reusing main"),
+  };
+  await assert.rejects(reuseTaskDependencyInputs({ ...input, prepareFromMain: async stage => {
+    await mkdir(path.join(stage, "node_modules"));
+    throw new Error("installed main became unavailable during copy");
+  } }), /installed main became unavailable/u);
+  await assert.rejects(lstat(root), { code: "ENOENT" });
+  const result = await reuseTaskDependencyInputs({ ...input, prepareFromMain: async stage => {
+    await mkdir(path.join(stage, "node_modules"));
+    await writeFile(path.join(stage, "node_modules/.agent-hub-task-dependencies.json"), "{}");
+    return true;
+  } });
+  assert.equal(result.prepared, true);
+});
+
+test("shared directory references include in-tree package aliases", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-aliased-package-"));
+  context.after(() => rmTree(parent));
+  const packageRoot = path.join(parent, "task");
+  const modules = path.join(parent, "input", "node_modules");
+  const actual = path.join(modules, "packages", "tiny");
+  await mkdir(actual, { recursive: true });
+  await mkdir(packageRoot);
+  await writeFile(path.join(actual, "package.json"), '{"name":"tiny"}');
+  await symlink(actual, path.join(modules, "tiny"), process.platform === "win32" ? "junction" : "dir");
+  await attachTaskDependencyDirectories({
+    packageRoot, modules, fingerprint: "a".repeat(64), assertCurrent: async () => {},
+  });
+  assert.equal(await readFile(path.join(packageRoot, "node_modules/tiny/package.json"), "utf8"), '{"name":"tiny"}');
+});
+
+test("dependency directory references are never published after owner loss", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-directory-owner-"));
+  context.after(() => rmTree(parent));
+  const packageRoot = path.join(parent, "task");
+  const modules = path.join(parent, "main", "node_modules");
+  await mkdir(packageRoot);
+  await mkdir(path.join(modules, "tiny"), { recursive: true });
+  await assert.rejects(attachTaskDependencyDirectories({
+    packageRoot, modules, fingerprint: "a".repeat(64),
+    assertCurrent: async () => { throw new Error("owner lost before publication"); },
+  }), /owner lost before publication/u);
+  await assert.rejects(lstat(path.join(packageRoot, "node_modules")), { code: "ENOENT" });
+  assert.equal((await lstat(path.join(modules, "tiny"))).isDirectory(), true);
+});
+
 test("shared dependency proof reads each unchanged physical payload once per lease and rechecks later changes", async context => {
   const parent = await mkdtemp(path.join(os.tmpdir(), "hub-shared-proof-"));
   context.after(() => rmTree(parent));
@@ -1087,4 +1261,48 @@ test("shared owner delegates only its exact already-combined lease and preserves
     root: sharedRoot(key), lease: sharedLease, coveredLease: lease,
   }) }), /shared lease lost/u);
   assert.equal((await lstat(path.join(root, "node_modules"))).isDirectory(), true);
+});
+
+test("shared aliases keep an incomplete stamp and stop at the next alias after ownership loss", async context => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "hub-deps-batch-"));
+  context.after(() => rmTree(parent));
+  const roots = ["seed", "complete", "interrupted"].map(name => path.join(parent, name));
+  for (const root of roots) await writeNpmProject(root, { dependencies: { tiny: "1.0.0" },
+    packageEntries: { "node_modules/tiny": { version: "1.0.0", resolved: "https://registry.example.invalid/tiny.tgz", integrity: "sha512-fixture" } } });
+  const names = Array.from({ length: 34 }, (_, index) => `part-${String(index).padStart(2, "0")}.bin`);
+  const lease = { async assertOwned() {} };
+  const sharedRoot = key => path.join(parent, "inputs", key);
+  const [seed] = await prepareTaskWorktreeDependencies({
+    projectRoot: roots[0], lockfiles: [path.join(roots[0], "package-lock.json")], lease,
+    sharedDependencies: (key, operation) => operation({ root: sharedRoot(key), lease, coveredLease: lease }),
+    runNpm: async (_args, { cwd }) => {
+      await materializeLockedState(cwd);
+      for (const name of names) await writeFile(path.join(cwd, "node_modules/tiny", name), name);
+    },
+  });
+  async function attach(root, assertOwned) {
+    return reuseTaskDependencyInputs({
+      packageRoot: root, fingerprint: seed.fingerprint, lease,
+      manifestContent: await readFile(path.join(root, "package.json")),
+      lockfileContent: await readFile(path.join(root, "package-lock.json")),
+      limits: { maxEntriesPerDirectory: 100, maxTotalDirectoryEntries: 200 },
+      withOwner: (key, operation) => operation({
+        root: sharedRoot(key), lease: { assertOwned }, coveredLease: lease,
+      }),
+      prepare: () => assert.fail("existing input must not reinstall"),
+    });
+  }
+  await attach(roots[1], async () => {});
+  assert.equal(await readFile(path.join(roots[1], "node_modules/tiny", names.at(-1)), "utf8"), names.at(-1));
+  const interruptedPath = path.join(roots[2], "node_modules");
+  const ownerLost = new Error("original shared owner lost");
+  await assert.rejects(attach(roots[2], async () => {
+    try { await lstat(path.join(interruptedPath, "tiny", names[0])); }
+    catch (error) { if (error.code === "ENOENT") return; throw error; }
+    throw ownerLost;
+  }), error => error === ownerLost);
+  assert.equal((await lstat(path.join(interruptedPath, "tiny", names[0]))).isFile(), true);
+  await assert.rejects(lstat(path.join(interruptedPath, "tiny", names[1])), { code: "ENOENT" });
+  const stamp = JSON.parse(await readFile(path.join(interruptedPath, ".agent-hub-task-dependencies.json"), "utf8"));
+  assert.equal(stamp.attaching, true);
 });

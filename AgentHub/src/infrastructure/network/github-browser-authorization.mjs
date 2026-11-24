@@ -1,6 +1,7 @@
 import {
   GITHUB_OAUTH_CALLBACK, GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_LIFETIME_MS, GITHUB_OAUTH_ORIGIN, GITHUB_OAUTH_POLL_MS,
-  GITHUB_OAUTH_SCOPES, githubOAuthChallenge, githubOAuthOpaque, githubOAuthRandom, githubOAuthToken, readGitHubOAuthJson,
+  GITHUB_OAUTH_SCOPES, githubOAuthChallenge, githubOAuthExpiry, githubOAuthOpaque, githubOAuthRandom,
+  githubOAuthRefreshPair, githubOAuthToken, readGitHubOAuthJson, unsealGitHubRefreshResult,
 } from "./github-oauth-protocol.mjs";
 
 export class GitHubBrowserAuthorization {
@@ -9,10 +10,10 @@ export class GitHubBrowserAuthorization {
     this.now = now;
   }
 
-  async #post(path, values) {
+  async #post(path, values, signal) {
     try {
       const response = await this.fetch(GITHUB_OAUTH_ORIGIN + path, {
-        method: "POST", redirect: "error", signal: AbortSignal.timeout(20_000),
+        method: "POST", redirect: "error", signal: signal ?? AbortSignal.timeout(20_000),
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify(values),
       });
@@ -39,7 +40,7 @@ export class GitHubBrowserAuthorization {
   async poll(flow) {
     if (this.now() >= flow.expiresAt) return { status: "expired", message: "Время входа истекло. Войди через GitHub ещё раз." };
     if (this.now() < flow.nextPollAt) return { status: "pending", waitMs: flow.nextPollAt - this.now() };
-    const result = await this.#post("/github/poll", { state: flow.state, verifier: flow.verifier });
+    const result = await this.#post("/github/poll", { state: flow.state, verifier: flow.verifier, refresh: true });
     if (result.status === "pending") {
       flow.nextPollAt = this.now() + flow.intervalMs;
       return { status: "pending", waitMs: flow.intervalMs };
@@ -47,9 +48,26 @@ export class GitHubBrowserAuthorization {
     if (result.status === "denied") return { status: "denied", message: "Вход отменён на GitHub." };
     if (result.status === "expired") return { status: "expired", message: "Время входа истекло. Войди через GitHub ещё раз." };
     if (result.status !== "authorized" || !githubOAuthToken(result.token)
-        || result.expiresAt !== null && (!Number.isSafeInteger(result.expiresAt) || result.expiresAt <= this.now())) {
+        || result.expiresAt !== null && (!githubOAuthExpiry(result.expiresAt) || result.expiresAt <= this.now())
+        || result.refreshToken != null && !githubOAuthRefreshPair(result)) {
       throw new Error("GitHub не подтвердил вход. Повтори вход.");
     }
-    return { status: "authorized", token: result.token, expiresAt: result.expiresAt };
+    return { status: "authorized", token: result.token, expiresAt: result.expiresAt,
+      ...(result.refreshToken != null && { refreshToken: result.refreshToken, refreshExpiresAt: result.refreshExpiresAt }) };
+  }
+
+  async refresh({ refreshToken, verifier, deadline }, { signal } = {}) {
+    try {
+      const bounded = AbortSignal.timeout(20_000);
+      const response = await this.#post("/github/refresh", { refreshToken, verifier, deadline },
+        signal ? AbortSignal.any([bounded, signal]) : bounded);
+      if (["pending", "reconnect", "unknown"].includes(response.status)) return { status: response.status };
+      if (response.status === "refreshed") {
+        const pair = await unsealGitHubRefreshResult(response.result, verifier);
+        if (githubOAuthToken(pair.token) && githubOAuthRefreshPair(pair)
+            && pair.expiresAt > this.now() && pair.refreshExpiresAt > this.now()) return { status: "refreshed", ...pair };
+      }
+    } catch { /* The caller preserves the exact durable attempt after transport failure. */ }
+    return { status: "unavailable" };
   }
 }

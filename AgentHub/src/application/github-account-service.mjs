@@ -61,8 +61,7 @@ export class GitHubAccountService {
   async #snapshot() {
     const row = await this.vault.read();
     const account = row ? { id: row.account.id, login: row.account.login, name: row.account.name, email: row.account.email } : null;
-    return { status: !row ? "disconnected" : await this.vault.rejected(row.id)
-      || row.expiresAt != null && Date.now() >= row.expiresAt ? "expired" : "connected", account };
+    return { status: !row ? "disconnected" : await this.vault.needsReconnect(row) ? "expired" : "connected", account };
   }
   startLogin() { return this.#admit(async () => {
     const revision = ++this.#revision;
@@ -89,7 +88,8 @@ export class GitHubAccountService {
           return { githubAccount: await this.snapshot(), login: { status: "pending", waitMs: result.waitMs } };
         }
         if (result.status === "authorized") {
-          await this.#connect(result.token, { revision: login.revision, expiresAt: result.expiresAt });
+          await this.#connect(result.token, { revision: login.revision, expiresAt: result.expiresAt,
+            refreshToken: result.refreshToken, refreshExpiresAt: result.refreshExpiresAt });
           return { githubAccount: await this.snapshot(), login: { status: "connected" } };
         }
         return { githubAccount: await this.snapshot(), login: { status: result.status, message: result.message } };
@@ -139,7 +139,7 @@ export class GitHubAccountService {
     } catch { throw new Error("GitHub returned an unreadable account response"); }
   }
   connect(token) { return this.#admit(() => this.#connect(token)); }
-  async #connect(token, { revision = null, expiresAt = null } = {}) {
+  async #connect(token, { revision = null, expiresAt = null, refreshToken, refreshExpiresAt } = {}) {
     if (typeof token !== "string" || !/^[A-Za-z0-9_]{20,255}$/u.test(token)) throw new Error("Укажите GitHub personal access token");
     revision ??= ++this.#revision;
     const user = await this.#json("/user", token);
@@ -162,7 +162,7 @@ export class GitHubAccountService {
       const previous = await this.vault.selection();
       if (revision !== this.#revision) throw new Error("Подключение GitHub заменено более новым действием");
       const id = randomUUID();
-      await this.vault.save({ id, account, token, expiresAt });
+      await this.vault.save({ id, account, token, expiresAt, refreshToken, refreshExpiresAt });
       try {
         if (revision !== this.#revision) throw new Error("Подключение GitHub заменено более новым действием");
         // Cancellation/replacement replies join this existing serialized
@@ -194,7 +194,8 @@ export class GitHubAccountService {
   async request(pathname, options = {}) {
     const row = await this.vault.read();
     if (!row) throw new Error("Подключите GitHub-аккаунт");
-    try { return await this.#request(pathname, await this.vault.token(row), options); }
-    catch (error) { if (error.status === 401) await this.vault.reject(row.id); throw error; }
+    const credential = await this.#admit(() => this.vault.access(row));
+    try { return await this.#request(pathname, credential.token, options); }
+    catch (error) { if (error.status === 401) await this.vault.reject(credential.row); throw error; }
   }
 }

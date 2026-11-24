@@ -499,6 +499,13 @@ html[data-view="chat"][data-surface][data-theme] {
 .activity-stream-list .activity-stream-item {
   --shell-stream-tab-min-width: 0;
   overflow: hidden;
+
+  /* The running stroke straddles the padding edge. Clip at the rounded
+     border box so the full stroke remains visible on both sides. */
+  &[data-running] {
+    overflow: clip;
+    overflow-clip-margin: border-box;
+  }
 }
 
 .activity-stream-list :is(.stream-tab-card) {
@@ -1741,7 +1748,7 @@ html[data-view="chat"][data-surface][data-theme] {
   align-items: center;
   display: grid;
   gap: 8px 2px;
-  grid-template-columns: 28px 28px 26px minmax(0, 1fr) auto auto auto;
+  grid-template-columns: 28px 28px 26px minmax(28px, 1fr) auto auto auto;
   grid-template-rows: auto 30px;
 }
 
