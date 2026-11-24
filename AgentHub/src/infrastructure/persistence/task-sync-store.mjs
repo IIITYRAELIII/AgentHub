@@ -1232,7 +1232,7 @@ function historyPageQuery(references, {
   `;
   const cte = `WITH selected_threads(provider, thread_id, source_order) AS (
     VALUES ${referenceSql}
-  ), base_turns AS (
+  ), base_turns AS MATERIALIZED (
     SELECT turns.provider, turns.thread_id, turns.position, selected_threads.source_order,
       COALESCE(
         julianday(turns.started_at),
@@ -2633,41 +2633,34 @@ export class LocalTaskSyncStore {
     }
     const safeLimit = Math.max(1, Math.min(Math.floor(Number(limit) || 10), 20));
     const query = historyPageQuery(normalizedReferences, visibility);
-    const aggregate = this.#database.prepare(`${query.cte}
-      SELECT COUNT(*) AS total, COALESCE(SUM(message_count), 0) AS message_total
-      FROM base_turns
-    `).get(...query.params);
-    const total = Number(aggregate?.total) || 0;
     const requestedEnd = Number(before);
-    const end = Number.isSafeInteger(requestedEnd)
-      ? Math.max(0, Math.min(requestedEnd, total))
-      : total;
-    const start = Math.max(0, end - safeLimit);
-    if (start === end) {
-      return {
-        total,
-        messageTotal: Number(aggregate?.message_total) || 0,
-        start,
-        end,
-        items: [],
-      };
-    }
-    const rows = this.#database.prepare(`${query.cte}, selected_page AS (
+    const beforePosition = Number.isSafeInteger(requestedEnd) ? Math.max(0, requestedEnd) : null;
+    // Share the narrow per-turn counts and chronology between totals and page selection.
+    const rows = this.#database.prepare(`${query.cte}, totals AS (
+      SELECT COUNT(*) AS total, COALESCE(SUM(message_count), 0) AS message_total FROM base_turns
+    ), bounds AS (
+      SELECT total, message_total, MIN(COALESCE(?, total), total) AS page_end FROM totals
+    ), selected_page AS (
       SELECT provider, thread_id, position, chronology_anchor, source_order
       FROM visible_turns
       ORDER BY chronology_anchor, source_order, position
-      LIMIT ? OFFSET ?
+      LIMIT (SELECT MIN(page_end, ?) FROM bounds)
+      OFFSET (SELECT MAX(0, page_end - ?) FROM bounds)
     )
-      SELECT turns.* FROM selected_page
-      JOIN task_read_model_turns turns
+      SELECT bounds.*, turns.* FROM bounds
+      LEFT JOIN selected_page ON 1
+      LEFT JOIN task_read_model_turns turns
         ON turns.provider = selected_page.provider AND turns.thread_id = selected_page.thread_id
         AND turns.position = selected_page.position
       ORDER BY selected_page.chronology_anchor, selected_page.source_order, selected_page.position
-    `).all(...query.params, end - start, start);
+    `).all(...query.params, beforePosition, safeLimit, safeLimit);
+    const { total, message_total: messageTotal, page_end: end } = rows[0];
+    const start = Math.max(0, end - safeLimit);
+    if (start === end) return { total, messageTotal, start, end, items: [] };
     const history = this.#hydrateHistoryRows(rows);
     return {
       total,
-      messageTotal: Number(aggregate?.message_total) || 0,
+      messageTotal,
       start,
       end,
       items: history.map((turn, index) => ({

@@ -2580,6 +2580,13 @@ test("task sync pages multiple Thread histories directly in SQLite", async () =>
     { provider: "claude", threadId: "thread-current", id: "thread-current-turn-1" },
     { provider: "claude", threadId: "thread-current", id: "thread-current-turn-2" },
   ]);
+  const firstPageBoundary = store.historyPage(references, {
+    before: 0, hiddenProvider: "codex", hiddenTurnIdPrefixes: ["auto-compact-"],
+  });
+  assert.deepEqual(firstPageBoundary, { total: 8, messageTotal: 16, start: 0, end: 0, items: [] });
+  assert.deepEqual(store.historyPage([{ provider: "codex", threadId: "absent" }]), {
+    total: 0, messageTotal: 0, start: 0, end: 0, items: [],
+  });
 });
 
 test("task sync store preserves source occurrence identity across restart", async () => {
