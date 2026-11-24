@@ -210,6 +210,13 @@ async function verifyColdHistory(newerRequests = "none") {
           loopActiveWindowMs: metadata?.loopActiveWindowMs, browserBeforeRequestMs: metadata?.browserBeforeRequestMs,
           browserRequestToHeadersMs: metadata?.browserRequestToHeadersMs,
           browserBodyTransferMs: metadata?.browserBodyTransferMs, encodedBodyBytes: metadata?.encodedBodyBytes }));
+    const sqlSelection = phaseTrace.filter(span => span.outcome === "succeeded"
+      && ["history-indexed-range", "history-indexed-chronology"].includes(span.stage));
+    assert.ok(sqlSelection.length > 0, "the cold page used the order index");
+    for (const stage of ["history-thread-totals", "history-hydrate-rows", "history-merge-visible-turns"]) {
+      assert.ok(phaseTrace.some(span => span.stage === stage && span.outcome === "succeeded"
+        && span.monotonicDurationMs >= 0), stage);
+    }
     const parsedResponse = phaseTrace.find(span => span.action === "http-history-json-parse" && span.outcome === "succeeded");
     const resource = phaseTrace.find(span => span.action === "http-history-resource");
     assert.ok(parsedResponse);

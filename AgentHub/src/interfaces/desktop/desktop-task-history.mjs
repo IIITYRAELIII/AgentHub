@@ -600,19 +600,21 @@ export function createDesktopTaskHistoryFactory({
       }))
       : null;
     if (pagedHistory) {
-      for (const source of pagedHistory.items) {
-        const key = `${source.provider}:${source.threadId}`;
-        const id = String(source.turn?.id ?? "").trim();
-        const providerTurn = readCachedTurn(providerHistories, key, id);
-        const item = mergeCachedTaskHistory(
-          providerTurn ? [providerTurn] : [],
-          [source.turn],
-        )[0];
-        if (!(await visibleProviderHistory(source.provider, [item],
-          (turn) => noteLegacyProbe(source, turn))).length) continue;
-        history.push(item);
-        historySources.set(item, { key, provider: source.provider, threadId: source.threadId });
-      }
+      await measure("history-merge-visible-turns", async () => {
+        for (const source of pagedHistory.items) {
+          const key = `${source.provider}:${source.threadId}`;
+          const id = String(source.turn?.id ?? "").trim();
+          const providerTurn = readCachedTurn(providerHistories, key, id);
+          const item = mergeCachedTaskHistory(
+            providerTurn ? [providerTurn] : [],
+            [source.turn],
+          )[0];
+          if (!(await visibleProviderHistory(source.provider, [item],
+            (turn) => noteLegacyProbe(source, turn))).length) continue;
+          history.push(item);
+          historySources.set(item, { key, provider: source.provider, threadId: source.threadId });
+        }
+      });
       if (!deferProviderRefresh) scheduleRefresh(currentThreadBinding);
     } else for (const threadBinding of threadBindings) {
       const key = `${threadBinding.provider}:${threadBinding.threadId}`;

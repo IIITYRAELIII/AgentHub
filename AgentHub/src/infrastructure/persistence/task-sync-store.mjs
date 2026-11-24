@@ -1327,15 +1327,15 @@ function configureHistoryOrder(database) {
   }
 }
 
-function indexedChatPage(database, references, before, limit) {
+function indexedChatPage(database, references, before, limit, measure) {
   const selected = refs => refs.map(() => "(?, ?, ?)").join(", ");
   const bindings = refs => refs.flatMap(ref => [ref.provider, ref.threadId, ref.sourceOrder]);
-  const summaries = database.prepare(`WITH refs(provider,thread_id,n) AS (VALUES ${selected(references)})
+  const summaries = measure("history-thread-totals", () => database.prepare(`WITH refs(provider,thread_id,n) AS (VALUES ${selected(references)})
     SELECT refs.provider,refs.thread_id AS threadId,n AS sourceOrder,s.turns,s.messages,
       s.earliest,s.latest,s.undated,s.first_time,s.last_time,
       s.turns IS NULL AND EXISTS (SELECT 1 FROM task_read_model_turns t WHERE t.provider=refs.provider
         AND t.thread_id=refs.thread_id) AS dirty
-    FROM refs LEFT JOIN chat_thread_totals s USING(provider,thread_id) ORDER BY n`).all(...bindings(references));
+    FROM refs LEFT JOIN chat_thread_totals s USING(provider,thread_id) ORDER BY n`).all(...bindings(references)));
   if (summaries.some(s => s.dirty)) return null;
   const threads = summaries.filter(s => s.turns > 0);
   const total = threads.reduce((sum, s) => sum + s.turns, 0);
@@ -1382,10 +1382,11 @@ function indexedChatPage(database, references, before, limit) {
     args = bindings(sources);
   }
   const skippedNewer = bounded ? newer.reduce((sum, s) => sum + s.turns, 0) : 0;
-  result.rows = database.prepare(`WITH picked AS MATERIALIZED (${sql})
+  const selectionStage = bounded ? "history-indexed-range" : "history-indexed-chronology";
+  result.rows = measure(selectionStage, () => database.prepare(`WITH picked AS MATERIALIZED (${sql})
     SELECT t.* FROM picked LEFT JOIN task_read_model_turns t USING(provider,thread_id,position)
     ORDER BY picked.chronology_anchor,picked.source_order,picked.position`)
-    .all(...args, end - start, total - end - skippedNewer);
+    .all(...args, end - start, total - end - skippedNewer));
   return result;
 }
 
@@ -2762,7 +2763,8 @@ export class LocalTaskSyncStore {
     return row ? this.#hydrateHistoryRows([row])[0] ?? null : null;
   }
 
-  async readHistoryPage(references, { timing, ...options } = {}) {
+  async readHistoryPage(references, options = {}) {
+    const { timing } = options;
     const read = () => this.historyPage(references, options);
     const page = timing ? timing.sync("history-sqlite-page", read) : read();
     const candidates = page.items.filter(({ turn }) => (
@@ -2784,8 +2786,11 @@ export class LocalTaskSyncStore {
   historyPage(references, {
     before,
     limit = 10,
+    timing,
     ...visibility
   } = {}) {
+    const measure = (stage, operation) => timing ? timing.sync(stage, operation) : operation();
+    const pageItems = rows => measure("history-hydrate-rows", () => this.#pageItems(rows));
     const normalizedReferences = normalizedHistoryReferences(references);
     if (!normalizedReferences.length) {
       return { total: 0, messageTotal: 0, start: 0, end: 0, items: [] };
@@ -2800,10 +2805,10 @@ export class LocalTaskSyncStore {
       && Object.keys(visibility).length === 3) {
       this.#database.exec("SAVEPOINT chat_history_page");
       try {
-        const page = indexedChatPage(this.#database, normalizedReferences, beforePosition, safeLimit);
+        const page = indexedChatPage(this.#database, normalizedReferences, beforePosition, safeLimit, measure);
         if (page) {
           const { rows, ...bounds } = page;
-          return { ...bounds, items: this.#pageItems(rows) };
+          return { ...bounds, items: pageItems(rows) };
         }
         this.#scheduleOrderBackfill();
       } finally {
@@ -2812,7 +2817,7 @@ export class LocalTaskSyncStore {
     }
     const query = historyPageQuery(normalizedReferences, visibility);
     // Share the narrow per-turn counts and chronology between totals and page selection.
-    const rows = this.#database.prepare(`${query.cte}, totals AS (
+    const rows = measure("history-fallback-query", () => this.#database.prepare(`${query.cte}, totals AS (
       SELECT COUNT(*) AS total, COALESCE(SUM(message_count), 0) AS message_total FROM base_turns
     ), bounds AS (
       SELECT total, message_total, MIN(COALESCE(?, total), total) AS page_end FROM totals
@@ -2829,11 +2834,11 @@ export class LocalTaskSyncStore {
         ON turns.provider = selected_page.provider AND turns.thread_id = selected_page.thread_id
         AND turns.position = selected_page.position
       ORDER BY selected_page.chronology_anchor, selected_page.source_order, selected_page.position
-    `).all(...query.params, beforePosition, safeLimit, safeLimit);
+    `).all(...query.params, beforePosition, safeLimit, safeLimit));
     const { total, message_total: messageTotal, page_end: end } = rows[0];
     const start = Math.max(0, end - safeLimit);
     if (start === end) return { total, messageTotal, start, end, items: [] };
-    return { total, messageTotal, start, end, items: this.#pageItems(rows) };
+    return { total, messageTotal, start, end, items: pageItems(rows) };
   }
 
   #pageItems(rows) {
