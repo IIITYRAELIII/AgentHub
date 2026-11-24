@@ -273,8 +273,8 @@ export class FileTransferStore {
         const placeholders = aliases.map(() => "?").join(",");
         const reusable = db.prepare(`SELECT * FROM transfer_artifacts
           WHERE owner=? AND source_key IN (${placeholders}) AND source_identity_json=? AND name=? AND size=?
-            AND state IN ('preparing','publishing','ready') ORDER BY created_at DESC LIMIT 1`)
-          .get(owner, ...aliases, sourceIdentityValue, name, size);
+            AND state IN ('preparing','publishing','ready') AND expires_at>? ORDER BY created_at DESC LIMIT 1`)
+          .get(owner, ...aliases, sourceIdentityValue, name, size, now);
         if (reusable) return artifactView(reusable);
       }
       const total = db.prepare("SELECT coalesce(sum(size),0) bytes,count(*) count FROM transfer_artifacts WHERE state!='deleted'").get();
@@ -396,7 +396,7 @@ export class FileTransferStore {
     });
   }
   create({ owner, artifactId, requestId, kid, secretHash, ttlMs,
-    sourceAliases = null, sourceIdentity = null }) {
+    sourceAliases = null, sourceIdentity = null, replayOnly = false }) {
     return this.#tx((db, now) => {
       if (!TRANSFER_TTLS.includes(ttlMs)) throw transferError("transfer-invalid-expiry", 400);
       const aliases = sourceAliases === null ? null : sourceAliases.map(String);
@@ -425,6 +425,7 @@ export class FileTransferStore {
         this.#expire(db, now, old);
         return persistedView(old.id);
       }
+      if (replayOnly) throw transferError("transfer-client-refresh-required", 409);
       const artifact = db.prepare("SELECT * FROM transfer_artifacts WHERE id=? AND owner=? AND state IN ('preparing','publishing','ready') AND expires_at>?").get(artifactId, owner, now);
       if (!artifact) throw transferError("transfer-artifact-unavailable", 409);
       if (aliases && (!aliases.some((alias) => exactText(alias, artifact.source_key))

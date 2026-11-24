@@ -72,11 +72,15 @@ for (const samePath of [false, true]) for (const action of ['status', 'create', 
           await close(page);
           await page.evaluate(() => {
             window.preparing = false;
+            window.holdPrepare = true;
             const handler = async (act, args) => {
               window.calls.push({ action: act, args });
               if (act === 'status') return { ...window.snapshot(window.next), artifact: window.next === 'A' ? null : window.snapshot('B').artifact };
               if (act === 'prepare') {
-                if (window.next === 'A') return new Promise(resolve => { window.releaseOld = () => resolve({ artifact: { id: 'A', state: 'preparing', size: 10 } }); });
+                if (window.next === 'A' && window.holdPrepare) {
+                  window.holdPrepare = false;
+                  return new Promise(resolve => { window.releaseOld = () => resolve({ artifact: { id: 'A', state: 'preparing', size: 10 } }); });
+                }
                 return { artifact: window.snapshot('B').artifact };
               }
               if (act === 'create') return { share: window.share(args.artifactId) };

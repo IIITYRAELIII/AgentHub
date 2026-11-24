@@ -408,6 +408,60 @@ test("same-path same-size replacement creates one new snapshot while the old sha
   assert.equal(createHash("sha256").update(downloadedB).digest("hex"), shareB.sha256);
 });
 
+test("expired ready snapshot is not reused before GC while its prepare receipt still replays", async (t) => {
+  let now = Date.now();
+  const value = await fixture({ now: () => now });
+  t.after(async () => { await value.service.close(); await rm(value.root, { recursive: true, force: true }); });
+  const owner = "device:expired-snapshot";
+  const source = path.join(value.workspace, "expires.bin");
+  const bytes = Buffer.alloc(64 * 1024, 0x65);
+  await writeFile(source, bytes);
+
+  const first = await value.service.prepare({ owner, sourcePath: source, requestId: "expires:prepare:old" });
+  await value.service.waitForPreparation(first.id);
+  const ready = await value.service.status(owner, first.id);
+  assert.equal(ready.state, "ready");
+
+  now = ready.expiresAt + 1;
+  const replacement = await value.service.prepare({ owner, sourcePath: source, requestId: "expires:prepare:new" });
+  assert.notEqual(replacement.id, first.id, "a new request must not reuse an expired ready snapshot");
+  await value.service.waitForPreparation(replacement.id);
+  assert.equal((await value.service.status(owner, replacement.id)).sha256,
+    createHash("sha256").update(bytes).digest("hex"));
+
+  const replay = await value.service.prepare({ owner, sourcePath: source, requestId: "expires:prepare:old" });
+  assert.equal(replay.id, first.id, "the original request id must retain its exact durable receipt");
+  assert.equal(replay.expiresAt, ready.expiresAt);
+  assert.deepEqual(await readFile(value.service.artifactPath(first.id)), bytes,
+    "creating the replacement must not mutate or delete the old managed bytes before GC");
+});
+
+test("pathless owner create permits only exact replay and cannot issue stale bytes", async (t) => {
+  const value = await fixture();
+  t.after(async () => { await value.service.close(); await rm(value.root, { recursive: true, force: true }); });
+  const owner = "device:legacy-owner";
+  const source = path.join(value.workspace, "legacy-owner.bin");
+  const oldBytes = Buffer.alloc(64 * 1024, 0x31);
+  const newBytes = Buffer.alloc(oldBytes.length, 0x32);
+  await writeFile(source, oldBytes);
+  const artifact = await value.service.prepare({ owner, sourcePath: source, requestId: "legacy:prepare" });
+  await value.service.waitForPreparation(artifact.id);
+  const issued = await value.service.createShare({ owner, sourcePath: source, artifactId: artifact.id,
+    requestId: "legacy:share", ttlMs: 3_600_000 });
+
+  const replay = await value.service.createShare({ owner, artifactId: artifact.id,
+    requestId: "legacy:share", ttlMs: 3_600_000, replayOnly: true });
+  assert.deepEqual(replay, issued, "a lost response from the old client must recover the persisted share");
+
+  await writeFile(source, newBytes);
+  await assert.rejects(value.service.createShare({ owner, artifactId: artifact.id,
+    requestId: "legacy:new-share", ttlMs: 3_600_000, replayOnly: true }),
+  (error) => error?.code === "transfer-client-refresh-required" && error?.statusCode === 409,
+  "a pathless new request must fail closed instead of issuing the old artifact");
+  assert.deepEqual(await downloadIssuedShare(value.service, issued), oldBytes,
+    "the replayed old capability remains bound to its original immutable bytes");
+});
+
 test("same-size replacement during preparation fails closed without publishing mixed bytes", async (t) => {
   const value = await fixture();
   t.after(async () => { await value.service.close(); await rm(value.root, { recursive: true, force: true }); });

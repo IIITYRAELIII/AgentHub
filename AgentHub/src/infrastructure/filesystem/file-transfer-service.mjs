@@ -431,7 +431,7 @@ export class FileTransferService {
     return this.#store.cancelPreparation(String(owner), String(artifactId));
   }
 
-  async createShare({ owner, artifactId, requestId, ttlMs, sourcePath = null }) {
+  async createShare({ owner, artifactId, requestId, ttlMs, sourcePath = null, replayOnly = false }) {
     const ownerId = String(owner), artifactKey = String(artifactId), requestKey = String(requestId);
     const issuanceKid = this.#keyring.currentKid;
     const issuanceKey = this.#keyring.keys.get(issuanceKid);
@@ -447,7 +447,8 @@ export class FileTransferService {
       sourceBinding = { sourceAliases: this.#sourceAliases(target), sourceIdentity: sourceIdentity(info) };
     }
     const share = await this.#store.create({ owner: ownerId, artifactId: artifactKey,
-      requestId: requestKey, kid: issuanceKid, secretHash, ttlMs, ...sourceBinding });
+      requestId: requestKey, kid: issuanceKid, secretHash, ttlMs, replayOnly: replayOnly === true,
+      ...sourceBinding });
     const persistedKey = this.#keyring.keys.get(share.kid);
     if (!persistedKey) throw transferError("transfer-unavailable", 410);
     const secret = derivedSecret(persistedKey, "share", ownerId, artifactKey, requestKey, ttlMs);

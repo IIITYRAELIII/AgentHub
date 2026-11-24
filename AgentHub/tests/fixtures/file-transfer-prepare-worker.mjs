@@ -63,6 +63,8 @@ try {
   const state = await status.json();
   assert.equal(state.artifact, null, "changed source identity must not project the failed old artifact");
   assert.equal(state.share, null);
+  assert.equal((await service.status("local", artifact.id)).state, "failed",
+    "the original preparation receipt must retain its durable terminal state");
   const share = await fetch(`${origin}/api/file-transfer/owner/create`, { method: "POST", headers,
     body: JSON.stringify({ path: source, artifactId: artifact.id, requestId: randomUUID(), ttlMs: 3_600_000 }) });
   assert.equal(share.status, 409);
