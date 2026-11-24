@@ -32,12 +32,18 @@ function createRolloutWorkerClient(admission = false) {
     activeWorker.on("message", (message) => {
       const requestId = Number(message?.requestId);
       if (message?.ok) {
-        settlePending(requestId, (request, result) => request.resolve(result),
+        settlePending(requestId, (request, result) => {
+          try { request.timing?.(message.timing, "succeeded"); } catch { /* Diagnostics only. */ }
+          request.resolve(result);
+        },
             admission ? { activity: message.result, timing: message.timing } : message.result);
       } else {
         settlePending(
           requestId,
-          (request, error) => request.reject(error),
+          (request, error) => {
+            try { request.timing?.(message.timing, "failed"); } catch { /* Diagnostics only. */ }
+            request.reject(error);
+          },
           Object.assign(new Error(message?.error?.message || "Codex rollout activity worker failed"), {
             ...(message?.timing ? { timing: message.timing } : {}),
           }),
@@ -56,16 +62,16 @@ function createRolloutWorkerClient(admission = false) {
     return activeWorker;
   }
 
-  function requestWorker(operation, payload) {
+  function requestWorker(operation, payload, timing) {
     const activeWorker = ensureWorker();
     const requestId = ++nextRequestId;
     activeWorker.ref();
     return new Promise((resolve, reject) => {
-      pending.set(requestId, { resolve, reject });
+      pending.set(requestId, { resolve, reject, timing });
       try {
         activeWorker.postMessage({
           requestId, operation, ...payload,
-          ...(admission ? { sentAt: performance.timeOrigin + performance.now() } : {}),
+          ...(admission || timing ? { sentAt: performance.timeOrigin + performance.now() } : {}),
         });
       } catch (error) {
         settlePending(requestId, (request, reason) => request.reject(reason), error);
@@ -77,6 +83,8 @@ function createRolloutWorkerClient(admission = false) {
 
 const requestWorker = createRolloutWorkerClient();
 const requestAdmissionWorker = createRolloutWorkerClient(true);
+// Interactive exact reads cannot wait behind background rollout scans or page browsing.
+const requestExactTraceWorker = createRolloutWorkerClient();
 
 const MAX_ADMISSION_READS = 8;
 const admissionReads = new Map();
@@ -110,6 +118,7 @@ export function recoverCodexRolloutSubagents(rolloutPath, candidates) {
   return requestWorker("recover-subagents", { rolloutPath, candidates });
 }
 
-export function readCodexTracePageInWorker(rolloutPath, options) {
-  return requestWorker("trace-page", { rolloutPath, options });
+export function readCodexTracePageInWorker(rolloutPath, options, timing) {
+  const request = options?.groupId ? requestExactTraceWorker : requestWorker;
+  return request("trace-page", { rolloutPath, options }, timing);
 }

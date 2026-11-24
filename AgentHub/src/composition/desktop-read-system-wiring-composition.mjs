@@ -203,6 +203,7 @@ export function createDesktopReadSystemWiring({
       },
       interstreamOriginForClientMessage: services.interstreamOriginForClientMessage,
       attachmentImporter: services.attachmentImporter,
+      commandTrace: services.commandTrace,
       responseBudget: {
         fit: fitTaskHistoryPayload,
       },

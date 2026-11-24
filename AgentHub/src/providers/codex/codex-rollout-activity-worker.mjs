@@ -31,7 +31,7 @@ async function execute(message) {
 
 async function respond(message) {
   const startedAt = performance.timeOrigin + performance.now();
-  const timing = () => workerData?.admission ? {
+  const timing = () => Number.isFinite(message.sentAt) ? {
     queueWaitMs: Math.max(0, startedAt - message.sentAt),
     readMs: performance.timeOrigin + performance.now() - startedAt,
   } : null;

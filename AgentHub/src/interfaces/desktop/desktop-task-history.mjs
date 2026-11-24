@@ -381,6 +381,7 @@ export function createDesktopTaskHistoryFactory({
   interstreamOriginForClientMessage = () => null,
   attachmentImporter = async () => [],
   responseBudget,
+  commandTrace,
   warn = () => {},
 }) {
   const refreshes = new Map();
@@ -510,7 +511,8 @@ export function createDesktopTaskHistoryFactory({
       .finally(() => { catalogRefresh = null; });
   }
 
-  return async function desktopTaskHistory(params) {
+  return async function desktopTaskHistory(params, context) {
+    const exactTraceStarted = params.tracePage?.groupId ? performance.now() : null;
     const provider = String(params.provider ?? selection.activeProvider()).trim();
     const selectedStreamId = String(params.streamId ?? "").trim();
     const selectedThreadId = String(params.threadId ?? selection.threadId() ?? "").trim();
@@ -566,9 +568,22 @@ export function createDesktopTaskHistoryFactory({
       const source = threadBindings.find((thread) => thread.provider === provider
         && thread.threadId === selectedThreadId);
       if (!source) throw new Error("Trace Thread does not belong to the Stream");
-      const tracePage = await historyReader.refresh(source, { tracePage: params.tracePage });
-      return { provider, threadId: selectedThreadId,
-        tracePage: { ...tracePage, groups: tracePage.groups.map(assistantTraceAnnotationPresentation) } };
+      const commandId = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u.test(params.clientTraceId ?? "")
+        ? params.clientTraceId : context?.commandId;
+      const traceTiming = exactTraceStarted !== null && commandId && commandTrace
+        ? (stage, outcome, monotonicDurationMs) => commandTrace.recordBestEffort({
+          commandId, transport: context?.source ?? "desktop-control",
+          stage, outcome, monotonicDurationMs, metadata: { action: "task-history" },
+        })
+        : undefined;
+      traceTiming?.("trace-history-binding", "succeeded", performance.now() - exactTraceStarted);
+      const tracePage = await historyReader.refresh(source, {
+        tracePage: params.tracePage, ...(traceTiming ? { traceTiming } : {}),
+      });
+      const presentationStarted = performance.now();
+      const groups = tracePage.groups.map(assistantTraceAnnotationPresentation);
+      traceTiming?.("trace-history-presentation", "succeeded", performance.now() - presentationStarted);
+      return { provider, threadId: selectedThreadId, tracePage: { ...tracePage, groups } };
     }
     const history = [];
     let sourceRefreshFailed = false;
