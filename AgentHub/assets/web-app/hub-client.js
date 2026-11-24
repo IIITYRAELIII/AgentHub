@@ -3556,15 +3556,8 @@ agentHub.on("task:select", ({ id }) => {
       const stillOpening = () => navigationIntents.current(generation) && sameIdentity(taskIdentity(id), identity);
       const [selection, history] = await Promise.allSettled([
         control("select-task", taskOpenParams(identity, { clientTraceId: traceId, deferSnapshot: true })),
-        control("task-history", { ...identity, limit: 2, coldHistory: true, clientTraceId: traceId }).then(async (history) => {
+        control("task-history", { ...identity, limit: 30, coldHistory: true, clientTraceId: traceId }).then((history) => {
           verifiedTaskHistory(history, identity);
-          const current = snapshotTask(lastSnapshot, id);
-          if (stillOpening() && history.nextBefore != null && (history.transportTruncated === true
-            || !historyContainsLatestAnswer(history, current, { expectedTurnId: current?.latestFinal?.turnId }))) {
-            history = verifiedTaskHistory(await control("task-history", {
-              ...identity, limit: 20, coldHistory: true, clientTraceId: traceId,
-            }), identity);
-          }
           if (stillOpening()) {
             const opened = bindSnapshotBaseline(commandTrace.associate({ history, snapshot: null }, traceId),
               responseSnapshotBaselines.get(history));
@@ -3580,7 +3573,7 @@ agentHub.on("task:select", ({ id }) => {
             const settle = () => {
               if (historyPageByTask.get(id) !== paintedPage || paintedPage?.version !== history.version) return;
               // Automatic older-page loading must not start during the first
-              // paint just because a two-turn viewport is underfilled.
+              // paint just because the initial viewport is underfilled.
               if (paintedPage.loading) {
                 paintedPage.loading = false;
                 syncHistoryPagination(id);
@@ -3681,7 +3674,7 @@ function enqueueTaskHistoryLoad(id, identity, {
             return control("task-history", {
               ...pending.identity,
               clientTraceId: pending.traceId,
-              limit: 20,
+              limit: 30,
               includeActive: true,
               refreshSource: pending.refreshSource,
               knownVersion: historyPageByTask.get(id)?.version ?? "",
@@ -3838,7 +3831,7 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
     const history = verifiedTaskHistory(await control("task-history", {
       ...identity,
       before: requestedBefore,
-      limit: 20,
+      limit: 30,
     }), identity);
     if (!currentHistoryRequest(request) || !sameIdentity(historyRequestIdentity(id), history)) {
       page.loading = false;
@@ -4153,7 +4146,7 @@ function sendUserMessage(request, frozenParams = null) {
           provider: result?.provider ?? identity?.provider,
           threadId: result.threadId,
         };
-        const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
+        const opened = await control("open-task", taskOpenParams(identity, { limit: 30 }));
         applyOpened(opened);
         const route = window.AgentHubNavigationTabs.resolvedChatRoute(
           { history: identity },
@@ -5807,7 +5800,7 @@ document.addEventListener("click", (event) => {
       ?? openTask.closest("[data-work-log-thread-id]")?.dataset.workLogThreadId;
     void runNavigation(
       { provider, threadId },
-      () => control("open-task", taskOpenParams({ provider, threadId }, { limit: 20 })),
+      () => control("open-task", taskOpenParams({ provider, threadId }, { limit: 30 })),
       (opened) => {
         applyOpened(opened);
         document.querySelector("[data-view-button='chat']")?.click();
@@ -5880,7 +5873,7 @@ async function openRoute() {
       };
       const opened = await runNavigation(
         identity,
-        () => control("open-task", taskOpenParams(identity, { limit: 20 })),
+        () => control("open-task", taskOpenParams(identity, { limit: 30 })),
         applyOpened,
       );
       return Boolean(opened);
@@ -5922,7 +5915,7 @@ async function openRoute() {
     };
     const opened = await runNavigation(
       identity,
-      () => control("open-task", taskOpenParams(identity, { limit: 20 })),
+      () => control("open-task", taskOpenParams(identity, { limit: 30 })),
       applyOpened,
     );
     if (!opened) return false;
@@ -6111,7 +6104,7 @@ void runAction(async () => {
     if (identity) {
       await runNavigation(
         identity,
-        () => control("open-task", taskOpenParams(identity, { limit: 20 })),
+        () => control("open-task", taskOpenParams(identity, { limit: 30 })),
         applyOpened,
       );
     }

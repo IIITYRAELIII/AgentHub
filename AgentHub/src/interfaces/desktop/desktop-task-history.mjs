@@ -2,7 +2,6 @@ import { receiptUserDisplay, userDisplayText } from "../../domain/user-message-d
 import { createHash } from "node:crypto";
 import {
   displayUserPrompt,
-  EMPTY_TURN_COMPLETION_TEXT,
   exactTurnReceiptBindings,
   isEmptyTurnCompletionPlaceholder,
   responseAnnotationDetails,
@@ -19,7 +18,6 @@ import {
   userMessageSnapshotAuthority,
 } from "../../domain/canonical-user-messages.mjs";
 import {
-  CODEX_AUTO_COMPACTION_TURN_ID_PREFIX,
   isCodexAutoCompactionTurnId,
 } from "../../domain/codex-internal-turn.mjs";
 import {
@@ -32,6 +30,7 @@ import {
   trustedInterstreamMessageDetails,
 } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
+import { CHAT_HISTORY_VISIBILITY } from "../../domain/history-page-visibility.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 import { isLegacyCodexContextProbeTurn } from "../../domain/legacy-codex-context-probe.mjs";
 import { withDurableMessageMetadata } from "../../domain/stream-message-pin.mjs";
@@ -520,7 +519,7 @@ export function createDesktopTaskHistoryFactory({
     if (!["codex", "claude"].includes(provider) || !selectedThreadId) {
       throw new Error("Укажите корректный поток");
     }
-    const limit = Math.max(1, Math.min(Number(params.limit) || 10, 20));
+    const limit = Math.max(1, Math.min(Number(params.limit) || 10, 30));
 
     // Opening a chat must be a local operation. App Server discovery can take
     // tens of seconds when a provider is stuck, while SQLite/taskCatalog is
@@ -593,9 +592,7 @@ export function createDesktopTaskHistoryFactory({
         timing,
         before: params.before,
         limit,
-        hiddenProvider: "codex",
-        hiddenTurnIdPrefixes: [CODEX_AUTO_COMPACTION_TURN_ID_PREFIX],
-        emptyCompletionText: EMPTY_TURN_COMPLETION_TEXT,
+        ...CHAT_HISTORY_VISIBILITY,
       }))
       : null;
     if (pagedHistory) {
@@ -1076,6 +1073,7 @@ export function createDesktopTaskHistoryFactory({
       }),
     }));
     const fitted = sync("history-fit-page", () => responseBudget.fit(payload, {
+      ...(deferProviderRefresh ? { preferCompleteTail: true } : {}),
       maxBytes: Math.min(
         Math.max(Number(params.maxResponseBytes) || 3_500_000, 64 * 1_024),
         3_500_000,

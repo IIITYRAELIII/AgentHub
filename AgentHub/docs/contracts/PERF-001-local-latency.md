@@ -746,7 +746,7 @@ skipped fail-closed: they cannot rewrite message identities and remain available
 to their owning terminal store. No SQL window, payload-length expression or
 temporary result materializes/sorts the payloads for all 200 candidates.
 
-Opening a history page reuses terminal-identity recovery for at most its 20
+Opening a history page reuses terminal-identity recovery for at most its 30
 exact terminal identities, including those older than the startup window.
 It retains the same per-payload and aggregate byte bounds. Primary-key terminal
 lookups and indexed exact-turn read-model queries never hydrate the rest of a
@@ -1181,7 +1181,8 @@ phases. The browser measures request-to-headers, body transfer and JSON
 parsing separately when its resource timing includes the matching HTTP
 request. Node response finish describes handoff to the OS, and a gzip callback
 interval can include native-worker queue and event-loop scheduling. Neither
-is exclusive network time. A cold two-turn page of up to 128 KiB can use
-identity encoding when accepted, allowing the complete latest exchange to
-paint independently of the shared gzip pool. Wider reads and all trace-page
-requests retain ordinary compression. See ADR-HUB-517.
+is exclusive network time. A cold chat page requests up to 30 turns. The
+first page on loopback uses identity encoding when accepted. Remote first pages
+up to 128 KiB can also bypass the shared gzip pool. Larger remote responses,
+ordinary background reads and trace pages retain negotiated compression.
+See ADR-HUB-517 and ADR-HUB-536.

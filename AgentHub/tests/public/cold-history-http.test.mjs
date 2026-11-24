@@ -30,9 +30,9 @@ function turn(id, historyBody = "", position = 0) {
   };
 }
 
-test("real HTTP cold history paints the full latest exchange before wider history",
+test("real HTTP cold history paints thirty turns before the background refresh",
   { timeout: 45_000 }, () => verifyColdHistory(false));
-test("cold HTTP history reads wider when the known final is outside the first tail",
+test("cold HTTP history includes the known final behind two newer requests in the first page",
   { timeout: 45_000 }, () => verifyColdHistory(true));
 
 async function verifyColdHistory(latestOutsideTail) {
@@ -54,6 +54,8 @@ async function verifyColdHistory(latestOutsideTail) {
   let server;
   let releaseFollowup;
   const followup = new Promise(resolve => { releaseFollowup = resolve; });
+  let finishRefresh;
+  const refreshed = new Promise(resolve => { finishRefresh = resolve; });
   let releaseSelect;
   const select = new Promise(resolve => { releaseSelect = resolve; });
   let widerFinished = false;
@@ -65,7 +67,7 @@ async function verifyColdHistory(latestOutsideTail) {
     }
     await store.recordHistory(taskA, [turn("retained-a")], {});
     const old = Array.from({ length: 19 }, (_, index) => turn("old-b-" + index,
-      randomBytes(index === 18 ? 4_000 : 25_000).toString("base64"), 900 + index));
+      randomBytes(latestOutsideTail && index < 18 ? 25_000 : 4_000).toString("base64"), 900 + index));
     const userOnly = [1001, 1002].map(position => {
       const value = turn("user-only-" + position, "", position);
       return { ...value, answer: "", messages: value.messages.slice(0, 1) };
@@ -98,8 +100,7 @@ async function verifyColdHistory(latestOutsideTail) {
           if (params.streamId !== taskB.streamId) return readHistory(params, context);
           const study = { id: params.clientTraceId, limit: params.limit, startedAt: performance.now() };
           studies.push(study);
-          const beforePaint = studies.length === 1
-            || (latestOutsideTail && studies.length === 2 && params.refreshSource !== true);
+          const beforePaint = studies.length === 1;
           if (!beforePaint) await followup;
           const result = await readHistory(params, context);
           if (studies.length === 1 && process.env.AGENT_HUB_TEST_HISTORY_POOL_LOAD === "1") {
@@ -108,7 +109,10 @@ async function verifyColdHistory(latestOutsideTail) {
           Object.assign(study, { storageAndProjectionMs: performance.now() - study.startedAt,
             jsonBytes: Buffer.byteLength(JSON.stringify(result)), start: result.start, end: result.end,
             total: result.total, notModified: result.notModified === true });
-          if (!beforePaint) widerFinished = true;
+          if (!beforePaint) {
+            widerFinished = true;
+            if (params.refreshSource) finishRefresh();
+          }
           return result;
         },
       },
@@ -198,18 +202,15 @@ async function verifyColdHistory(latestOutsideTail) {
     await page.locator('[data-chat-pane] [data-role="agent"][data-turn-id="old-b-14"]').first().waitFor({ state: "attached" });
     assert.match(await final.textContent(), /End latest-b/u);
     assert.deepEqual(errors, []);
-    assert.ok(refreshedThreads.includes(taskB.threadId), "the existing follow-up refresh still runs");
+    await refreshed;
+    assert.ok(refreshedThreads.includes(taskB.threadId));
     console.log("retained-history-measurements", JSON.stringify({ retainedPaint, requests: studies }));
-    assert.equal(studies[0].limit, 2, "cold selection must ask only for the initial tail");
-    assert.ok(studies[0].start > studies[0].total - 20);
-    if (latestOutsideTail) {
-      assert.ok(studies[1].limit > 2);
-      assert.equal(studies[1].id, studies[0].id, "full exact fallback belongs to the same navigation");
-    } else {
-      assert.equal((await response.allHeaders())["content-encoding"], undefined);
-      assert.ok(studies.some(study => study.limit > 2 && study.id !== studies[0].id),
-        "ordinary wider page must use the existing background request");
-    }
+    assert.equal(studies[0].limit, 30);
+    assert.equal((await response.allHeaders())["content-encoding"], undefined);
+    const visibleTurns = studies[0].total - studies[0].start;
+    if (latestOutsideTail) assert.ok(visibleTurns >= 3 && visibleTurns < 30, "heavy page fits the transport budget");
+    else assert.equal(visibleTurns, 30);
+    assert.equal(studies.filter(study => study.id === studies[0].id).length, 1);
   } finally {
     releaseFollowup();
     releaseSelect();

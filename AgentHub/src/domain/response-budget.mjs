@@ -50,6 +50,7 @@ function textSlots(payload) {
 export function fitTaskHistoryPayload(payload, {
   maxBytes,
   minimumTextBytes = 1_024,
+  preferCompleteTail = false,
 } = {}) {
   const budget = Math.max(64 * 1_024, Math.trunc(Number(maxBytes) || 0));
   const result = structuredClone(payload);
@@ -57,6 +58,13 @@ export function fitTaskHistoryPayload(payload, {
   const encodedSize = () => utf8ByteLength(JSON.stringify(result));
 
   while (encodedSize() > budget) {
+    if (preferCompleteTail && result.items?.length > 1) {
+      result.items.shift();
+      result.start += 1;
+      result.nextBefore = result.start;
+      truncated = true;
+      continue;
+    }
     const largest = textSlots(result)
       .map((slot) => ({ slot, bytes: utf8ByteLength(slot.read()) }))
       .filter((entry) => entry.bytes > minimumTextBytes)

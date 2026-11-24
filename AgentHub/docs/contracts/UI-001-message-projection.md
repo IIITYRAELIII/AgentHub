@@ -1065,11 +1065,11 @@ command. Other callers receive the ordinary selection snapshot.
 
 Canonical history supplies the complete last request and final response. Existing
 history pages, older-page cursors, retained windows and exact navigation provide
-the rest of the conversation. The cold tab starts with the latest two turns
-from that owner, with the ordinary wider read under the same navigation identity
-if this tail misses the known complete exchange. Selection, identity, exact
-final revision and freshness guards still apply. After the first paint, the
-existing refresh path widens the page while retaining its scroll and cursor.
+the rest of the conversation. The cold tab requests the latest 30 visible turns
+from the canonical chat history. The page cursor includes older turns omitted
+to fit the transport budget. Selection, identity, exact final revision and
+freshness guards still apply. After the first paint, the existing refresh
+path retains the page's scroll and cursor. See ADR-HUB-536.
 The same rendered-final and durable read-cursor owner clears Ready on both
 tabs and activity cards. See ADR-HUB-427 and ADR-HUB-517.
 ## Task attachment and retired Spark actions (ADR-HUB-434)
