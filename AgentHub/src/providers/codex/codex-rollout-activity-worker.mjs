@@ -20,7 +20,7 @@ async function execute(message) {
     const readPlain = async () => {
       const activity = await readCodexRolloutActivityOnCurrentThread(rolloutPath, { activityOnly: true });
       const { running, activeTurnIds, activeVscodeTurnIds, lastActivityAtMs, sourceUnavailable, scanBytes } = activity;
-      return { sourceKind: "plain", running, activeTurnIds, activeVscodeTurnIds, lastActivityAtMs, sourceUnavailable, scanBytes };
+      return { sourceKind: "plain", rolloutPath, running, activeTurnIds, activeVscodeTurnIds, lastActivityAtMs, sourceUnavailable, scanBytes };
     };
     const plain = await readPlain();
     if (!plain.sourceUnavailable || !message.threadId || !/\.jsonl$/iu.test(rolloutPath)) return plain;

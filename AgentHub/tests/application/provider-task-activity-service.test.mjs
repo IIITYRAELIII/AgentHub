@@ -273,3 +273,27 @@ test("admission reads back an exact corrupt archive when thread/read cannot retu
   service.readCodexThread = async () => { throw failure("other-thread"); };
   await assert.rejects(service.readCodex({ threadId: expected }, { admissionTrace }), { code: -32603 });
 });
+
+
+test("initial discovery of a materialized Codex path checks the new native owner", async () => {
+  const archivePath = "C:/rollout.jsonl.zst", plainPath = "C:/rollout.jsonl";
+  const { service } = fixture({ rolloutPath: archivePath });
+  service.readCodexThread = async (id) => ({ thread: { id, path: plainPath, status: { type: "notLoaded" } } });
+  const reads = [];
+  service.readAdmissionRolloutActivity = async (path) => {
+    reads.push(path);
+    return { activity: path === archivePath
+      ? { sourceKind: "compressed", sourceGeneration: "one", archivePath, rolloutPath: plainPath }
+      : { sourceKind: "plain", rolloutPath: plainPath, running: false } };
+  };
+  const read = () => service.readCodex({ threadId: "fixture" }, { admissionTrace: (_stage, operation) => operation() });
+  for (const state of ["active", "unknown"]) {
+    service.resolveActivity = (_source, options) => {
+      assert.equal(options.forceFresh, true);
+      assert.equal(options.rolloutPath, plainPath);
+      return { state, executionOwner: "external" };
+    };
+    assert.equal((await read()).state, state);
+  }
+  assert.deepEqual(reads, [archivePath, plainPath, archivePath, plainPath]);
+});

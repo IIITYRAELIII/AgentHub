@@ -108,13 +108,26 @@ export class ProviderTaskActivityService {
       : { sourceUnavailable: true, sourceIssue };
     let activity = admission ? await readAdmission(rolloutPath) : await this.readRolloutActivity(rolloutPath);
     const unknown = { state: "unknown", executionOwner: TASK_EXECUTION_OWNERS.EXTERNAL };
-    if (admission && (activity.sourceUnavailable || activity.sourceKind === "compressed") && !discovered) {
+    const active = { ...unknown, state: "active" };
+    const resolveMaterializedRollout = (plain) => {
+      if (threadStatus?.type === "active" || plain.running) return active;
+      if (!["idle", "notLoaded"].includes(threadStatus?.type)) return unknown;
+      return step("deferred-runtime-owner", () => this.resolveActivity({ threadStatus, activity: plain }, {
+        rolloutPath: plain.rolloutPath ?? rolloutPath, agentHubPid: this.codexPid(), forceFresh: true,
+      }), (result) => ({ activityState: result.state }));
+    };
+    // Discovery can replace a compressed spelling with a newly materialized plain path.
+    const observedArchive = activity.sourceKind === "compressed" || /\.jsonl\.zst$/iu.test(rolloutPath);
+    if (admission && (activity.sourceUnavailable || observedArchive) && !discovered) {
       const previousPath = rolloutPath;
       await discover();
       if (rolloutPath !== previousPath) activity = await readAdmission(rolloutPath);
     }
+    if (admission && observedArchive && activity.sourceKind === "plain" && !activity.sourceUnavailable) {
+      return resolveMaterializedRollout(activity);
+    }
     if (admission && (activity.sourceUnavailable || activity.sourceKind === "compressed")) {
-      if (threadStatus?.type === "active") return { ...unknown, state: "active" };
+      if (threadStatus?.type === "active") return active;
       if (activity.sourceUnavailable) {
         const waitReason = ROLLOUT_PAUSE_REASONS[activity.sourceIssue];
         return waitReason ? { ...unknown, waitReason } : unknown;
@@ -135,11 +148,9 @@ export class ProviderTaskActivityService {
       if (current.sourceUnavailable || current.sourceKind !== "plain") return unknown;
       const previousPath = rolloutPath;
       await discover();
-      if (threadStatus?.type === "active" || current.running) return { ...unknown, state: "active" };
-      if (rolloutPath !== previousPath || !["idle", "notLoaded"].includes(threadStatus?.type)) return unknown;
-      return step("deferred-runtime-owner", () => this.resolveActivity({ threadStatus, activity: current }, {
-        rolloutPath: activity.rolloutPath, agentHubPid: this.codexPid(), forceFresh: true,
-      }), (resolved) => ({ activityState: resolved.state }));
+      if (threadStatus?.type === "active") return active;
+      const plain = rolloutPath === previousPath ? current : await readAdmission(rolloutPath);
+      return !plain.sourceUnavailable && plain.sourceKind === "plain" ? resolveMaterializedRollout(plain) : unknown;
     }
     const activeTurnId = this.selectActiveTurnId(activity);
     return step("deferred-runtime-owner", () => this.resolveActivity({ threadStatus, activity }, {
