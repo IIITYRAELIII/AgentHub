@@ -63,4 +63,3 @@ test("a synchronous post-infrastructure fault persists one terminal startup span
     await reader.close();
   }
 });
-
