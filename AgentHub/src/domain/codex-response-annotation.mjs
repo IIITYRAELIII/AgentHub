@@ -91,6 +91,11 @@ function annotationLocatorKey(target) {
 
 export function retainedResponseAnnotationTarget(references, reference) {
   const matches = references.filter(candidate => candidate.index === reference.index);
+  const sameOccurrence = reference.position && matches.filter(candidate =>
+    candidate.position?.start === reference.position.start && candidate.position?.end === reference.position.end);
+  if (sameOccurrence?.length === 1 && sameOccurrence[0].target?.origin === "native-item") {
+    return sameOccurrence[0].target;
+  }
   const key = annotationLocatorKey(reference.target);
   const exact = key ? matches.find(candidate => annotationLocatorKey(candidate.target) === key) : null;
   if (exact) return exact.target;
@@ -139,7 +144,8 @@ export function normalizedCodexResponseAnnotationReferences(references) {
     const candidates = !entry.target && addressed.get(entry.index);
     if (!candidates?.length) continue;
     const exact = entry.position && candidates.filter(candidate => candidate.position?.start === entry.position.start);
-    const match = exact?.length === 1 ? exact[0] : candidates.length === 1 ? candidates[0] : null;
+    const single = candidates.length === 1 ? candidates[0] : null;
+    const match = exact?.length === 1 ? exact[0] : single && (!entry.position || !single.position) ? single : null;
     if (match) {
       entry.target = match.target;
       entry.position ??= match.position;
@@ -155,11 +161,42 @@ export function codexAssistantResponseProjection(value, references = []) {
   if (!text.includes(":codex") && !text.includes(":agent")) {
     return { text, responseAnnotationReferences: normalizedCodexResponseAnnotationReferences(references) };
   }
-  const newline = text.includes("\r\n") ? "\r\n" : "\n";
+  const outputNewline = text.includes("\r\n") ? "\r\n" : "\n";
+  const newline = "\n";
   let fence = "";
   let inlineTicks = 0;
   const responseAnnotationReferences = [];
   const referencedIndices = new Set();
+  const referencedAddresses = new Set();
+  const supplied = normalizedCodexResponseAnnotationReferences(references);
+  const suppliedAt = new Map();
+  const suppliedCounts = new Map();
+  for (const reference of supplied) {
+    suppliedCounts.set(reference.index, (suppliedCounts.get(reference.index) ?? 0) + 1);
+    if (!reference.position || !reference.target) continue;
+    const key = `${reference.index}:${reference.position.start}`;
+    // Two addresses at one source coordinate are ambiguous.
+    suppliedAt.set(key, suppliedAt.has(key) ? null : reference.target);
+  }
+  let firstVisible = null;
+  const rememberText = (value, start) => {
+    if (firstVisible !== null) return;
+    const offset = value.search(/\S/u);
+    if (offset >= 0) firstVisible = start + offset;
+  };
+  const addReference = (index, start) => {
+    const target = suppliedAt.get(`${index}:${start - (firstVisible ?? start)}`);
+    const locator = !target?.unresolved && annotationLocatorKey(target);
+    const address = locator && `${index}\u001f${locator}`;
+    if (address ? referencedAddresses.has(address) : referencedIndices.has(index)) return false;
+    if (address) referencedAddresses.add(address);
+    referencedIndices.add(index);
+    firstVisible ??= start;
+    responseAnnotationReferences.push({
+      index, position: { start, end: start + `Цитата ${index}`.length }, ...(target ? { target } : {}),
+    });
+    return true;
+  };
   const escapedAt = (value, offset) => {
     let slashes = 0;
     while (offset > 0 && value[--offset] === "\\") slashes++;
@@ -177,15 +214,13 @@ export function codexAssistantResponseProjection(value, references = []) {
       if (escapedAt(segment, offset)) return marker;
       const index = DECIMAL_INDEX.test(raw) ? Number(raw) : Number.NaN;
       const valid = Number.isSafeInteger(index) && index >= 1 && index <= MAX_CODEX_RESPONSE_ANNOTATION_INDEX;
-      if (valid && referencedIndices.has(index)) { difference -= marker.length; return ""; }
       const before = !listLine && segmentOffset + offset > 0 ? newline : "";
       const after = offset + marker.length < segment.length ? (listLine ? " " : newline) : "";
       const label = valid ? `Цитата ${index}` : "Цитата";
-      if (valid) {
-        referencedIndices.add(index);
-        const start = outputOffset + offset + difference + before.length;
-        responseAnnotationReferences.push({ index, position: { start, end: start + label.length } });
-      }
+      const start = outputOffset + offset + difference + before.length;
+      rememberText(segment.slice(0, offset), outputOffset);
+      if (valid && !addReference(index, start)) { difference -= marker.length; return ""; }
+      rememberText(label, start);
       const replacement = `${before}${label}${after}`;
       difference += replacement.length - marker.length;
       return replacement;
@@ -215,6 +250,7 @@ export function codexAssistantResponseProjection(value, references = []) {
       const segment = line.slice(offset, match.index);
       result += inlineTicks ? segment : inlinePlain(segment, offset, outputOffset + result.length, Boolean(listPrefix));
       result += match[0];
+      rememberText(result, outputOffset);
       let slashes = 0;
       for (let index = match.index - 1; index >= 0 && line[index] === "\\"; index--) slashes++;
       const openingLength = match[0].length - slashes % 2;
@@ -246,33 +282,33 @@ export function codexAssistantResponseProjection(value, references = []) {
       const index = DECIMAL_INDEX.test(complete[2]) ? Number(complete[2]) : Number.NaN;
       const valid = Number.isSafeInteger(index) && index >= 1
         && index <= MAX_CODEX_RESPONSE_ANNOTATION_INDEX;
-      if (valid && referencedIndices.has(index)) {
+      if (valid && !addReference(index, outputOffset + complete[1].length)) {
         return complete[3] ? `${complete[1]}${inlineProjection(complete[3], textOffset + line.length - complete[3].length, outputOffset + complete[1].length)}` : complete[1];
       }
-      if (valid) referencedIndices.add(index);
       const label = valid ? `${complete[1]}Цитата ${index}` : `${complete[1]}Цитата`;
-      if (valid) responseAnnotationReferences.push({ index, position: {
-        start: outputOffset + complete[1].length, end: outputOffset + label.length,
-      } });
+      rememberText(label, outputOffset);
       return complete[3] ? `${label}${newline}${complete[1]}${inlineProjection(complete[3], textOffset + line.length - complete[3].length, outputOffset + label.length + newline.length + complete[1].length)}` : label;
     }
     return inlineProjection(line, textOffset, outputOffset);
   };
   const visible = text.split(/\r?\n/u).map((line) => {
     const result = projectLine(line);
+    rememberText(result, outputOffset);
     outputOffset += result.length + newline.length;
     return result;
   }).join(newline);
   // Coordinates belong to this exact projected assistant text, normalized to LF
   // and trimmed at its boundary like the existing live/history consumers.
-  const leading = visible.replace(/\r\n?/gu, "\n").length - visible.replace(/\r\n?/gu, "\n").trimStart().length;
   for (const reference of responseAnnotationReferences) {
-    const start = visible.slice(0, reference.position.start).replace(/\r\n?/gu, "\n").length - leading;
-    reference.position = { start, end: start + `Цитата ${reference.index}`.length };
+    reference.position.start -= firstVisible;
+    reference.position.end -= firstVisible;
   }
-  return { text: visible, responseAnnotationReferences: normalizedCodexResponseAnnotationReferences([
-    ...responseAnnotationReferences, ...(Array.isArray(references) ? references : []),
-  ]) };
+  const legacy = supplied.filter(reference => !referencedIndices.has(reference.index)
+    || (!reference.position && suppliedCounts.get(reference.index) === 1));
+  return {
+    text: outputNewline === newline ? visible : visible.replace(/\n/gu, outputNewline),
+    responseAnnotationReferences: normalizedCodexResponseAnnotationReferences([...responseAnnotationReferences, ...legacy]),
+  };
 }
 
 /**

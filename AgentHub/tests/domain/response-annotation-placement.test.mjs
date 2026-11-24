@@ -29,6 +29,22 @@ test("same-index references deduplicate only within their addressed batch", () =
   assert.deepEqual(project("Цитата 1\nЦитата 1", [first, second]).responseAnnotationReferences, [first, second]);
 });
 
+test("raw reprojection keeps two addressed list markers and never invents a second address", () => {
+  const raw = '- :agent-annotation{index="1"} First\n- :agent-annotation{index="1"} Second';
+  const expected = "- Цитата 1 First\n- Цитата 1 Second";
+  const references = ["first", "second"].map((itemId, offset) => {
+    const start = offset ? expected.lastIndexOf("Цитата 1") : expected.indexOf("Цитата 1");
+    return { index: 1, target: { itemId, batchScoped: true }, position: { start, end: start + 8 } };
+  });
+  assert.deepEqual(project(raw, references), { text: expected, responseAnnotationReferences: references });
+  assert.deepEqual(project(" \r\n" + raw.replaceAll("\n", "\r\n"), references).responseAnnotationReferences, references);
+  assert.equal(project(raw).responseAnnotationReferences.length, 1);
+  const misplaced = [{ ...references[1], position: { start: 1, end: 9 } }];
+  const unsafe = project(raw, misplaced);
+  assert.equal(unsafe.responseAnnotationReferences.length, 1);
+  assert.equal(unsafe.responseAnnotationReferences[0].target, undefined);
+});
+
 export const fourAnswers = '# Зачем нужна история Git\n\nИстория Git сохраняет изменения. 🦊 :agent-annotation{index="2"}\n\nЗависимости можно переиспользовать. :codex-annotation{index="1"}\n\nВременные копии удаляются после проверки. :agent-annotation{index="3"}\n\nМедиа принадлежит открытой задаче. :codex-annotation{index="4"}';
 
 test('annotation positions preserve exact nonsorted marker coordinates across aliases and reprojection', () => {

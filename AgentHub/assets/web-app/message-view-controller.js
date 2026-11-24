@@ -90,11 +90,15 @@
       ? normalizedResponseAnnotationReferences(message.responseAnnotationReferences)
       : [];
     if (!references.length) return [];
-    const scoped = Boolean(message.provider && message.threadId && message.turnId);
+    const scopeFields = ["provider", "threadId", "turnId"];
+    const scoped = scopeFields.every(field => Boolean(message[field]));
+    const anonymous = scopeFields.every(field => !message[field]);
+    const sameScope = candidate => scoped
+      ? scopeFields.every(field => candidate[field] === message[field])
+      : anonymous && scopeFields.every(field => !candidate[field]);
     const batches = values.slice(0, messageIndex).flatMap((candidate, offset) => (
       candidate?.role === "user" && Array.isArray(candidate.responseAnnotations) && candidate.responseAnnotations.length
-        && (!scoped || (candidate.provider === message.provider && candidate.threadId === message.threadId
-          && candidate.turnId === message.turnId))
+        && sameScope(candidate)
         ? [{ candidate, offset }] : []
     ));
     const getAnnotation = (batch, index) => batch?.candidate.responseAnnotations[index - 1];
@@ -133,8 +137,7 @@
           else if (legacyBlanket) target = unique;
           else if (eligible[0] === exact) target = exact;
         }
-      } else if (scoped) target = unique;
-      else if (visibleAnnotation(batches.at(-1), index)) target = batches.at(-1);
+      } else target = unique;
 
       const annotation = getAnnotation(target, index);
       const interactive = Boolean(target && annotation);

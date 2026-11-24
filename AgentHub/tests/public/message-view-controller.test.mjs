@@ -547,6 +547,8 @@ test("explicit citation targets refuse foreign, missing and ambiguous users inst
   const bare = { ...response, responseAnnotationReferences: [{ index: 1 }] };
   assert.equal(citation([a, b, bare]).interactive, false, "ambiguous legacy indices do not choose the latest batch");
   assert.equal(citation([a, bare]).targetMessageKey, "client\u001fclient-A");
+  assert.equal(citation([a, { ...b, threadId: "foreign" }, { ...bare, turnId: undefined }]).interactive, false);
+  assert.equal(citation([a, { ...bare, turnId: undefined }]).interactive, false);
   assert.equal(citation([a, b, { ...bare, responseAnnotationReferences: [{
     index: 1, target: { clientUserMessageId: "client-B", batchScoped: true },
   }] }]).targetMessageKey, "client\u001fclient-B", "modern exact metadata can name either batch");

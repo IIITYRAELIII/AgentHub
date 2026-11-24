@@ -100,12 +100,24 @@ test("SQLite retains native capture over late history and accepts stronger nativ
     await store.recordHistory(task, captured);
     await store.recordHistory(task, inferred);
     const partial = structuredClone(inferred);
-    partial[0].messages.find(value => value.itemId === "answer-B").responseAnnotationReferences[0].target = { itemId: "user-B" };
+    const projectedFinal = partial[0].messages.find(value => value.itemId === "answer-B");
+    projectedFinal.responseAnnotationReferences[0].target = { itemId: "user-B", batchScoped: true };
+    assert.deepEqual(projectedFinal.responseAnnotationReferences[0].position, run.responseAnnotationReferences[0].position);
     await store.recordHistory(task, partial);
     store.close(); store = new LocalTaskSyncStore({ filePath }); await store.load();
     const saved = store.history(task)[0];
     assert.equal(saved.activityGroups[0].responseAnnotationTarget.clientUserMessageId, "client-A");
-    assert.equal(saved.messages.find(value => value.itemId === "answer-B").responseAnnotationReferences[0].target.clientUserMessageId, "client-A");
+    const [capturedRef] = saved.messages.find(value => value.itemId === "answer-B").responseAnnotationReferences;
+    assert.equal(capturedRef.target.clientUserMessageId, "client-A");
+    const distinctStart = projectedFinal.text.length + 1;
+    projectedFinal.text += "\nЦитата 1";
+    projectedFinal.responseAnnotationReferences = [capturedRef, {
+      index: 1, target: { itemId: "user-B", batchScoped: true },
+      position: { start: distinctStart, end: distinctStart + 8 },
+    }];
+    await store.recordHistory(task, partial);
+    assert.deepEqual(store.history(task)[0].messages.find(value => value.itemId === "answer-B")
+      .responseAnnotationReferences.map(reference => reference.target.itemId), ["user-A", "user-B"]);
     const foreign = { ...task, threadId: "foreign-thread" };
     await store.recordHistory(foreign, inferred);
     assert.equal(responseAnnotationTargetAtIndex(store.history(foreign)[0].activityGroups[0].responseAnnotationTarget, 1).unresolved, true);
