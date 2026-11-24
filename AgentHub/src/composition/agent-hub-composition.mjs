@@ -29,7 +29,8 @@ import { createExecutionBootstrapPhase } from "./execution-bootstrap-phase-compo
 import { HubSessionState } from "../runtime/hub-session-state.mjs";
 if (process.platform === "win32") dns.setDefaultResultOrder("ipv4first");
 const agentHubDeferred = createAgentHubDeferredPorts();
-const { value: config, record: recordConfiguration } = await measureStartupBeforeTrace("configuration", loadConfig);
+const startupTraceId = randomUUID();
+const { value: config, record: recordConfiguration } = await measureStartupBeforeTrace("configuration", loadConfig, { startupTraceId });
 const serverStartedAt = new Date().toISOString();
 const serverInstanceId = randomUUID();
 const serverReleaseId = path.basename(AGENT_HUB_ROOT);
@@ -100,7 +101,7 @@ const { value: {
   config,
   agentHubRoot: AGENT_HUB_ROOT,
   runtimeCommandRoot, localWebSecret,
-  serverInstanceId, serverReleaseId,
+  serverInstanceId, serverReleaseId, startupTraceId,
   journalDatabaseFile,
   legacyWorkLogLedgerFile,
   legacyWorkLogFile,
@@ -116,8 +117,23 @@ const { value: {
   reconcileRuntimeCommand: agentHubDeferred.api.reconcileRuntimeCommand,
   handleRuntimeCommand: agentHubDeferred.api.handleRuntimeCommand,
   stopProcessTree,
-}));
+}), { startupTraceId });
+const preWebComposition = commandTraceService.startBestEffortSpan({
+  commandId: `startup:${startupTraceId}`, stage: "startup-pre-web-composition", transport: "server-runtime",
+  metadata: { startupTraceId, operationId: "pre-web-composition" }, recordStarted: true,
+});
 for (const record of [recordConfiguration, recordInfrastructure]) record(commandTraceService);
+async function measureComposition(stage, operation) {
+  try {
+    return await commandTraceService.measureBestEffort({
+      commandId: `startup:${startupTraceId}`, stage: `startup-${stage}`, transport: "server-runtime",
+      metadata: { startupTraceId, operationId: "pre-web-composition" },
+    }, operation);
+  } catch (error) {
+    preWebComposition.finish({ outcome: "failed" });
+    throw error;
+  }
+}
 const initialProvider = config.provider === "codex" ? "codex" : "claude";
 const token = config.token;
 const { taskMetadata, selectionStore, agentPreferences } = createStateComposition({
@@ -238,7 +254,7 @@ const {
   updateDeferredDesktopReceipt, wakeDeferredInputs,
   },
 } = agentHubDeferred;
-const providerApplication = await createProviderApplicationComposition({
+const providerApplication = await measureComposition("pre-web-provider-composition", () => createProviderApplicationComposition({
   config,
   constants: {
     projects: PROJECTS,
@@ -365,7 +381,7 @@ const providerApplication = await createProviderApplicationComposition({
   ports: {
     providerStartup: providerStartupPort,
   },
-});
+}));
 miniAppServer?.setUsageSyncService?.(providerApplication.usageSyncAuto);
 publicMiniAppServer?.setUsageSyncService?.(providerApplication.usageSyncAuto);
 const {
@@ -403,7 +419,7 @@ const {
   taskCatalog,
   providerStartup,
 } = providerApplication;
-const clientRuntime = await createClientRuntimeComposition({
+const clientRuntime = await measureComposition("pre-web-client-composition", () => createClientRuntimeComposition({
   config,
   constants: {
     token,
@@ -530,7 +546,7 @@ const clientRuntime = await createClientRuntimeComposition({
     codexTaskSettings: codexTaskSettingsPort,
     runtimeCommand: runtimeCommandPort,
   },
-});
+}));
 const {
   telegram,
   sendMessageTo,
@@ -640,7 +656,7 @@ const executionBootstrap = createExecutionBootstrapPhase({
     githubAccount,
     runtimeStateStore, taskReadStateStore,
     workLogUsageStore, rateLimitHistoryStore, providerTurnTelemetryStore, taskBoard, hubMcpServer, hubMcpService, sqliteRecovery, acknowledgeSqliteRecovery,
-    preTurnInstructions, commandTrace, commandTraceService,
+    preTurnInstructions, commandTrace, commandTraceService, startupTraceId,
   },
   provider: providerApplication,
   clients: clientRuntime,
@@ -654,5 +670,6 @@ const {
   startAgentHub,
   shutdownAgentHub,
 } = executionBootstrap;
+preWebComposition.finish({ outcome: "succeeded" });
 
 export { startAgentHub, shutdownAgentHub };

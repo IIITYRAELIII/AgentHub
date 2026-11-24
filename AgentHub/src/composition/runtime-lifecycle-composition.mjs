@@ -31,6 +31,7 @@ export function createRuntimeLifecycleComposition({
   sqliteRecovery,
   acknowledgeSqliteRecovery,
   commandTrace = null,
+  startupTraceId,
 }) {
   if (telegramEnabled) {
     runtimeResources.register("quiesce", {
@@ -76,6 +77,7 @@ export function createRuntimeLifecycleComposition({
     sqliteRecovery,
     acknowledgeSqliteRecovery,
     commandTrace,
+    startupTraceId,
   });
   runtimeResources.register("quiesce", {
     name: "optional provider metadata backfill",

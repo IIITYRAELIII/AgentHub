@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setImmediate } from "node:timers/promises";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { CommandTraceService } from "../../src/application/command-trace-service.mjs";
 import { AgentHubStartupCoordinator } from "../../src/application/agent-hub-startup-coordinator.mjs";
 import { createRuntimeHealth } from "../../src/application/runtime-health.mjs";
+import { CommandTraceWorkerStore } from "../../src/infrastructure/persistence/command-trace-worker-store.mjs";
+import { DesktopControlServer } from "../../src/infrastructure/process/desktop-control.mjs";
 
 function coordinator(overrides = {}) {
   const calls = [];
@@ -360,4 +365,70 @@ test("Ready and existing startup trace do not depend on a never-resolving old-ru
   assert.equal(health.snapshot().ready, true);
   assert.equal(records.some(record => record.stage === "startup-runs"), false);
   assert.ok(records.some(record => record.stage === "startup-readiness" && record.outcome === "succeeded"));
+});
+
+test("Desktop Control boot traces file, ACL, pipe and publish phases under the same startup ID", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "hub-desktop-startup-trace-"));
+  const databaseFile = path.join(root, "traces.sqlite");
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const failing of [false, true]) {
+    await t.test(failing ? "publication failure is retained" : "fresh startup reaches Ready", async () => {
+      const startupTraceId = failing ? "desktop-failed" : "desktop-success";
+      const startupId = `startup:${startupTraceId}`;
+      let aclCalls = 0;
+      const error = new Error("fixture-private-acl-message");
+      const control = new DesktopControlServer({
+        runtimeRoot: path.join(root, startupTraceId),
+        handler: async () => ({}),
+        protectSecret: async () => {
+          if (++aclCalls === 2 && failing) throw error;
+        },
+      });
+      const store = new CommandTraceWorkerStore({ databaseFile });
+      try {
+        await store.initialize();
+        const { service, health } = coordinator({
+          commandTrace: new CommandTraceService({ store }), startupTraceId,
+          startDesktopControl: measurePhase => control.start(measurePhase),
+        });
+        if (failing) {
+          await assert.rejects(service.start(), cause => cause === error);
+        } else {
+          await service.start();
+          await service.waitForBackgroundWork();
+        }
+        assert.equal(health.snapshot().ready, !failing);
+      } finally {
+        await control.close();
+        await store.close();
+      }
+
+      const reader = new CommandTraceWorkerStore({ databaseFile });
+      let rows;
+      try {
+        await reader.initialize();
+        rows = await reader.readCommandTimeline(startupId);
+      } finally {
+        await reader.close();
+      }
+      const desktop = rows.filter(row => row.stage.startsWith("startup-desktop-control"));
+      assert.ok(desktop.every(row => row.commandId === startupId && row.metadata.startupTraceId === startupTraceId));
+      assert.doesNotMatch(JSON.stringify(desktop), /fixture-private-acl-message|hub-desktop-startup-trace/u);
+      const phases = desktop.filter(row => row.outcome !== "started").map(row =>
+        [row.stage.replace("startup-desktop-control", "").replace(/^-/, ""), row.outcome]);
+      const prefix = ["secret-read", "secret-write", "secret-acl", "secret-readback", "pipe-listen",
+        "endpoint-directory", "endpoint-write"].map(name => [name, "succeeded"]);
+      assert.deepEqual(phases, [...prefix, ["endpoint-temp-acl", failing ? "failed" : "succeeded"],
+        ...(failing ? [["endpoint-cleanup", "succeeded"], ["pipe-close-after-failure", "succeeded"]]
+          : [["endpoint-rename", "succeeded"], ["endpoint-acl", "succeeded"], ["endpoint-cleanup", "succeeded"]]),
+        ["", failing ? "failed" : "succeeded"]]);
+      const starts = desktop.filter(row => row.outcome === "started");
+      assert.equal(starts.length, phases.length);
+      for (const row of desktop.filter(row => row.outcome !== "started")) {
+        assert.ok(Number.isFinite(row.monotonicDurationMs));
+        assert.ok(starts.some(start => start.stage === row.stage
+          && start.metadata.operationSpanId === row.metadata.operationSpanId));
+      }
+    });
+  }
 });

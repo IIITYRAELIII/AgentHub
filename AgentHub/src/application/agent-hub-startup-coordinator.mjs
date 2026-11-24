@@ -125,10 +125,13 @@ export class AgentHubStartupCoordinator {
     ]) {
       const operation = this[name];
       if (commandTrace?.measureBestEffort && typeof operation === "function") {
-        this[name] = (...args) => commandTrace.measureBestEffort({
-          commandId: `startup:${startupTraceId}`, stage: `startup-${stage}`,
+        const measure = (source, run) => commandTrace.measureBestEffort({
+          commandId: `startup:${startupTraceId}`, stage: `startup-${source}`,
           transport: "server-runtime", metadata: { startupTraceId, operationId: stage },
-        }, () => operation(...args));
+        }, run);
+        this[name] = (...args) => measure(stage, () => name === "startDesktopControl"
+          ? operation((phase, run) => measure(`${stage}-${phase}`, run))
+          : operation(...args));
       }
     }
   }
