@@ -204,6 +204,7 @@ const DEVICE_SESSION_COOKIE = "agent_hub_device";
 const DEVICE_SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const VSCODE_WEBVIEW_ORIGIN = /^(?:vscode-webview:\/\/[a-z0-9-]+|https:\/\/[a-z0-9-]+\.vscode-cdn\.net)$/iu;
 const JSON_GZIP_MIN_BYTES = 16 * 1_024;
+const COLD_HISTORY_IDENTITY_MAX_BYTES = 128 * 1_024;
 
 function safeEqualText(left, right) {
   const leftBytes = Buffer.from(String(left ?? ""), "utf8");
@@ -395,7 +396,7 @@ function send(response, statusCode, contentType, body, method = "GET", options =
   response.end(method === "HEAD" ? "" : body);
 }
 
-function acceptedEncodingQuality(value, encoding) {
+function acceptedEncodingQuality(value, encoding, defaultQuality = 0) {
   const qualities = new Map();
   for (const entry of String(value ?? "").toLowerCase().split(",")) {
     const [name, ...parameters] = entry.trim().split(";").map((item) => item.trim());
@@ -404,7 +405,7 @@ function acceptedEncodingQuality(value, encoding) {
     const quality = qualityParameter ? Number(qualityParameter.slice(2)) : 1;
     qualities.set(name, Number.isFinite(quality) ? quality : 0);
   }
-  return qualities.get(encoding) ?? qualities.get("*") ?? 0;
+  return qualities.get(encoding) ?? qualities.get("*") ?? defaultQuality;
 }
 
 function varyHeader(...values) {
@@ -418,19 +419,26 @@ function varyHeader(...values) {
 export function createJsonResponder({ compress = gzip, maxConcurrentCompressions = 2 } = {}) {
   let activeCompressions = 0;
   return function json(response, statusCode, value, method = "GET", options = {}) {
-    const { acceptEncoding = "", headers = {}, timing = null, ...sendOptions } = options;
+    const { acceptEncoding = "", headers = {}, timing = null, coldHistory = false, ...sendOptions } = options;
     const encode = () => Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
     const body = timing ? timing.sync("http-json-encode", encode) : encode();
-    const wantsGzip = body.length >= JSON_GZIP_MIN_BYTES
-      && acceptedEncodingQuality(acceptEncoding, "gzip") > 0;
-    const deliver = (responseBody, compressed) => {
+    const identityAllowed = !coldHistory || acceptedEncodingQuality(acceptEncoding, "identity", 1) > 0;
+    const wantsGzip = acceptedEncodingQuality(acceptEncoding, "gzip") > 0
+      && (body.length >= JSON_GZIP_MIN_BYTES || !identityAllowed);
+    const deliver = (responseBody, compressed, status = statusCode) => {
       if (response.destroyed || response.writableEnded) return;
-      send(response, statusCode, "application/json; charset=utf-8", responseBody, method, {
+      timing?.responseBody?.({
+        jsonBytes: body.length,
+        responseBytes: responseBody.length,
+        compression: compressed ? "gzip" : "identity",
+        socketPendingBytes: response.socket?.writableLength ?? 0,
+      });
+      send(response, status, "application/json; charset=utf-8", responseBody, method, {
         ...sendOptions,
         headers: {
           ...headers,
           "Content-Length": String(responseBody.length),
-          ...(wantsGzip ? {
+          ...(wantsGzip || coldHistory ? {
             Vary: varyHeader(response.getHeader("Vary"), headers.Vary, "Accept-Encoding"),
           } : {}),
           ...(compressed ? {
@@ -439,7 +447,16 @@ export function createJsonResponder({ compress = gzip, maxConcurrentCompressions
         },
       });
     };
-    if (!wantsGzip || activeCompressions >= maxConcurrentCompressions) {
+    // A small first page can reach the browser while background native work
+    // occupies the gzip pool. Preserve compression for larger responses.
+    const sendColdHistoryDirectly = coldHistory && identityAllowed && body.length <= COLD_HISTORY_IDENTITY_MAX_BYTES;
+    const compressionAtCapacity = activeCompressions >= maxConcurrentCompressions;
+    if (!identityAllowed && (!wantsGzip || compressionAtCapacity)) {
+      // No accepted body is available. Do not send identity or grow the gzip queue.
+      deliver(Buffer.alloc(0), false, wantsGzip ? 503 : 406);
+      return;
+    }
+    if (!wantsGzip || sendColdHistoryDirectly || compressionAtCapacity) {
       // HTTP permits an uncompressed representation even when gzip is accepted.
       // Do not queue more whole snapshot buffers behind the compression workers.
       deliver(body, false);
@@ -454,7 +471,8 @@ export function createJsonResponder({ compress = gzip, maxConcurrentCompressions
       activeCompressions -= 1;
       compressionFinished?.(error ? "failed" : "succeeded");
       try {
-        deliver(error ? body : compressedBody, !error);
+        if (error && !identityAllowed) deliver(Buffer.alloc(0), false, 503);
+        else deliver(error ? body : compressedBody, !error);
       } catch {
         // The compression callback runs outside the route's synchronous catch.
         // A broken/disconnected socket must not take down the Hub process.
@@ -1252,6 +1270,7 @@ export class MiniAppServer {
         json(response, 503, { error: "Управление Agent Hub недоступно." }, method);
         return;
       }
+      let timing = null;
       try {
         const body = await readJsonBody(request);
         const action = String(body.action ?? "").trim();
@@ -1266,24 +1285,34 @@ export class MiniAppServer {
         if (commandId && !CONTROL_COMMAND_ID_PATTERN.test(commandId)) {
           throw new Error("Некорректный идентификатор команды");
         }
+        timing = action === "task-history" ? createHttpReadTiming({
+          commandId: params.clientTraceId, route: action, response,
+          record: this.#recordCommandTrace, receivedAtMs: transportReceivedAtMs,
+        }) : null;
+        const result = await this.#controlHandler({
+          action,
+          params,
+          context: {
+            ...authorization,
+            ...(commandId ? { commandId, transportReceivedAtMs } : {}),
+            ...(timing ? { historyTiming: timing } : {}),
+          },
+        });
         json(response, 200, {
           ok: true,
-          result: await this.#controlHandler({
-            action,
-            params,
-            context: {
-              ...authorization,
-              ...(commandId ? { commandId, transportReceivedAtMs } : {}),
-            },
-          }),
+          result,
           ...(commandId ? { receiptId: commandId } : {}),
         }, method, {
           acceptEncoding: request.headers["accept-encoding"],
+          timing,
+          ...(timing && commandId ? { headers: { "Server-Timing": `hub-history;desc="${commandId}"` } } : {}),
+          coldHistory: action === "task-history" && params.coldHistory === true
+            && params.limit === 2 && params.before == null && params.refreshSource !== true && !params.tracePage,
         });
       } catch (error) {
         const statusCode = Number(error?.statusCode) === 409 ? 409 : 400;
         if (statusCode !== 409) this.#reportUnexpected(error, "control");
-        json(response, statusCode, { ok: false, error: String(error?.message ?? error) }, method);
+        json(response, statusCode, { ok: false, error: String(error?.message ?? error) }, method, { timing });
       }
       return;
     }
