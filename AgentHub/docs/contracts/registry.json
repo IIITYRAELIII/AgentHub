@@ -216,6 +216,9 @@
       "title": "Restart and maintenance recovery",
       "document": "RST-001-restart-recovery.md",
       "paths": [
+        "docs/decisions/ADR-HUB-524-windows-task-git-job-recovery.md",
+        "src/infrastructure/process/windows-task-process-owner.mjs",
+        "tests/infrastructure/filesystem/task-git-owned-windows-process.test.mjs",
         "src/application/stream-context-maintenance-service.mjs",
         "tests/application/stream-context-maintenance-service.test.mjs",
         "tests/providers/shared/provider-turn-services.test.mjs",
@@ -350,6 +353,10 @@
       "title": "Local command latency",
       "document": "PERF-001-local-latency.md",
       "paths": [
+        "docs/decisions/ADR-HUB-524-windows-task-git-job-recovery.md",
+        "src/infrastructure/process/windows-task-process-owner.mjs",
+        "src/infrastructure/process/release-lock-publisher.cs",
+        "tests/infrastructure/filesystem/task-git-owned-windows-process.test.mjs",
         "src/infrastructure/filesystem/task-dependency-inputs.mjs",
         "src/infrastructure/filesystem/task-worktree-dependencies.mjs",
         "src/infrastructure/filesystem/task-git-workspace.mjs",
@@ -457,6 +464,10 @@
       "title": "Task Git integration",
       "document": "REL-001-task-backed-release.md",
       "paths": [
+        "docs/decisions/ADR-HUB-524-windows-task-git-job-recovery.md",
+        "src/infrastructure/process/windows-task-process-owner.mjs",
+        "src/infrastructure/process/release-lock-publisher.cs",
+        "tests/infrastructure/filesystem/task-git-owned-windows-process.test.mjs",
         "docs/decisions/ADR-HUB-254-github-account.md",
         "docs/decisions/ADR-HUB-511-github-token-refresh.md",
         "src/application/github-account-service.mjs",
@@ -727,6 +738,10 @@
       "title": "Bounded Agent Hub tool bridge",
       "document": "MCP-001-bounded-hub-tool-bridge.md",
       "paths": [
+        "docs/decisions/ADR-HUB-524-windows-task-git-job-recovery.md",
+        "src/infrastructure/process/windows-task-process-owner.mjs",
+        "src/infrastructure/process/release-lock-publisher.cs",
+        "tests/infrastructure/filesystem/task-git-owned-windows-process.test.mjs",
         "desktop-control.mjs",
         "src/infrastructure/process/desktop-control.mjs",
         "src/interfaces/mcp/hub-mcp-server.mjs",

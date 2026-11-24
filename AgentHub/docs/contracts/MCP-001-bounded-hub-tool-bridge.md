@@ -1070,3 +1070,14 @@ Special UNKNOWN confirmations, admitted, changed, foreign or unproven originals 
 Downstream message/code lookalikes retain ordinary UNKNOWN semantics. Public
 submission waits for this addressed recovery's result rather than returning the
 old compacted success as if the recovery had finished. See ADR-HUB-434.
+
+## Requested Git cancellation after service exit (HUB-524)
+
+The existing cancellation owner can continue the original requested cancellation
+after service exit using matching Windows Git Job retirement evidence. Release
+Manager reconciliation accepts this original even while its workflow receipt is
+pending. The exact Task, arguments hash and current Task revision remain
+required. Without proof, the stop remains requested. With proof, it retains the
+original cancellation and observed Git effects and stops the original execution
+without repeating it. Historical guards without Job evidence require the
+existing exact positive recovery path. See ADR-HUB-524.

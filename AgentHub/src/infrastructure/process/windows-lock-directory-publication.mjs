@@ -130,6 +130,11 @@ async function prepare() {
   return {
     provenance: structuredClone(provenance),
     shutdown,
+    async ownedTaskProcessExecutable() {
+      if (closed) throw failure("Windows process owner is closed", "WINDOWS_LOCK_PUBLISHER_CLOSED");
+      await verifyBinary();
+      return binary;
+    },
     async inspectProcess(processId) {
       if (closed || !Number.isSafeInteger(processId) || processId < 1) return null;
       const operation = (async () => {

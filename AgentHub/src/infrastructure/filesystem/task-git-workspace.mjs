@@ -44,12 +44,16 @@ import { readDirectTaskPublication } from "./direct-task-publication.mjs";
 import { withInterprocessLocks as acquireInterprocessLocks, assertInterprocessLeasesOwned,
   interprocessLockAdmissionTimeoutPath } from "../process/interprocess-lock.mjs";
 import {
-  measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming, withTaskOperationTiming,
+  measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming, taskOperationTimingIdentity, withTaskOperationTiming,
 } from "../process/task-operation-timing.mjs";
 import {
   isTrustedWindowsPowerShellPath,
   readTrustedSystemBootIdentity,
 } from "../process/system-boot-identity.mjs";
+import {
+  discardOwnedWindowsTaskProcessProof, ownsWindowsTaskProcessProof, prepareOwnedWindowsTaskProcess, readOwnedWindowsTaskProcessProof,
+  requestOwnedWindowsTaskProcessStop,
+} from "../process/windows-task-process-owner.mjs";
 import { publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
 import { verifyManualDevResolutionReview } from "../persistence/manual-dev-resolution-review.mjs";
 import { parseGitHubRemote, sourceOnlyGitPublication } from "../persistence/github-publication-baseline.mjs";
@@ -229,20 +233,29 @@ export function runTaskGitCommand(args, options = {}) {
   });
 }
 
-function runTaskGitCommandUntraced(args, {
+async function runTaskGitCommandUntraced(args, {
   cwd, timeoutMs = 60_000, executable = "git", spawnProcess = spawn, signal = taskOperationExecution()?.signal ?? null, input = null,
   commandLabel = "git", env = null, rawOutput = false, acceptableExitCodes = [],
-  stdoutFd = null,
+  stdoutFd = null, nativeJob = null, assertOwned = null,
 } = {}) {
   assertTaskOperationExecuting();
   if (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 3)) throw new TypeError("Invalid owned Git output descriptor");
+  const commandArgs = ownedGitArguments(args, { executable });
+  const launch = nativeJob
+    ? await prepareOwnedWindowsTaskProcess(nativeJob, executable, commandArgs, { timeoutMs, env })
+    : { executable, args: commandArgs };
+  if (nativeJob) await assertOwned();
+  assertTaskOperationExecuting();
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason instanceof Error ? signal.reason : new Error("Task Git lease ownership was lost"));
       return;
     }
-    const child = spawnProcess(executable, ownedGitArguments(args, { executable }), {
+    const child = spawnProcess(launch.executable, launch.args, {
       cwd,
+      // libuv's ordinary child Job ends when Node ends. The native witness
+      // must survive that boundary and independently retire its own Job.
+      detached: Boolean(nativeJob),
       windowsHide: true,
       stdio: [input == null ? "ignore" : "pipe", stdoutFd ?? "pipe", "pipe"],
       ...(env ? { env: { ...process.env, ...env } } : {}),
@@ -263,6 +276,12 @@ function runTaskGitCommandUntraced(args, {
     const terminate = (cause) => {
       if (termination) return;
       termination = cause;
+      if (nativeJob) {
+        // The supervisor retains the exact kernel handles and drains the Job.
+        // Never fall back to terminating its numeric PID.
+        try { requestOwnedWindowsTaskProcessStop(nativeJob); } catch { /* Native timeout and proof still apply. */ }
+        return;
+      }
       void stopTaskProcessTree(child, { spawnProcess }).then((stopped) => {
         terminationOutcome = stopped;
         if (!stopped) {
@@ -282,7 +301,7 @@ function runTaskGitCommandUntraced(args, {
     };
     const abort = () => terminate("was fenced");
     signal?.addEventListener?.("abort", abort, { once: true });
-    const timer = timeoutMs == null ? null : setTimeout(() => terminate("timed out"), timeoutMs);
+    const timer = nativeJob || timeoutMs == null ? null : setTimeout(() => terminate("timed out"), timeoutMs);
     child.on("spawn", () => recordTaskOperationTiming("child-spawn", {
       processId: Number.isSafeInteger(child.pid) ? child.pid : null,
       command: gitCommandKind(args, commandLabel),
@@ -292,6 +311,7 @@ function runTaskGitCommandUntraced(args, {
     child.on("error", (error) => {
       clearTimeout(timer);
       if (stopTimer) clearTimeout(stopTimer);
+      if (nativeJob && child.pid) return; // After creation, only the joined native proof settles the tree.
       settle(() => reject(error));
     });
     child.on("close", (code) => {
@@ -306,6 +326,23 @@ function runTaskGitCommandUntraced(args, {
       const stdoutBytes = Buffer.concat(stdout);
       const output = rawOutput ? stdoutBytes : stdoutBytes.toString("utf8").trim();
       const errorText = Buffer.concat(stderr).toString("utf8").trim();
+      if (nativeJob) {
+        settle(() => {
+          void readOwnedWindowsTaskProcessProof(nativeJob).then(proof => {
+            if (!proof) throw taskGitTerminationError(args, timeoutMs, false, "ended without Job proof", commandLabel);
+            recordTaskOperationTiming("child-job-retired", {
+              processId: proof.rootPid, outcome: proof.reason, exitCode: proof.exitCode,
+            }, { detail: true });
+            if (termination || signal?.aborted || proof.reason !== "completed") {
+              const reason = termination ?? (proof.reason === "timed-out" ? "timed out" : "was fenced");
+              throw taskGitTerminationError(args, timeoutMs, true, reason, commandLabel);
+            }
+            if (proof.exitCode === 0 || acceptableExitCodes.includes(proof.exitCode)) resolve(output);
+            else reject(new Error(errorText || (commandLabel + " exited with " + proof.exitCode)));
+          }, () => { throw taskGitTerminationError(args, timeoutMs, false, "ended without Job proof", commandLabel); }).catch(reject);
+        });
+        return;
+      }
       if (termination && terminationOutcome == null) return;
       if (termination) settle(() => reject(
         taskGitTerminationError(args, timeoutMs, terminationOutcome, termination, commandLabel),
@@ -316,7 +353,12 @@ function runTaskGitCommandUntraced(args, {
         settle(() => reject(new Error(errorText || `${command} exited with ${code}`)));
       }
     });
-    if (input != null) child.stdin.end(input);
+    if (input != null) {
+      // A child may legitimately stop without consuming all pipe input.
+      child.stdin.on("error", () => {});
+      child.stdin.end(input);
+    }
+    if (signal?.aborted) abort();
   });
 }
 
@@ -351,9 +393,11 @@ function combinedLease(primary, secondary, { repositoryKey = null } = {}) {
 export async function runOwnedGit(args, { lease = null, ...options } = {}) {
   const owner = interruptibleTaskLease(requiredGuardLease(lease));
   await owner.assertOwned();
-  const guard = await owner.beginProcessTreeGuard({ args, cwd: options.cwd });
+  const guard = await owner.beginProcessTreeGuard({ args, cwd: options.cwd,
+    native: process.platform === "win32" && !options.spawnProcess });
   try {
-    const result = await runGit(args, { ...options, signal: owner.signal ?? null });
+    const result = await runGit(args, { ...options, signal: owner.signal ?? null,
+      nativeJob: guard.nativeJob, assertOwned: () => owner.assertOwned() });
     await guard.clear({ proof: "natural-process-tree-completion" });
     await owner.assertOwned();
     return result;
@@ -745,9 +789,12 @@ export class TaskGitWorkspaceService {
     const owner = interruptibleTaskLease(requiredGuardLease(lease));
     await owner.assertOwned();
     const guard = await owner.beginProcessTreeGuard({ args: guardCommand ?? args, cwd: options.cwd,
-      scope: guardScope, repositoryRoot: guardRepositoryRoot });
+      scope: guardScope, repositoryRoot: guardRepositoryRoot,
+      native: process.platform === "win32" && this.runCommand === runTaskGitCommand
+        && (options.commandLabel ?? "git") === "git" && !options.spawnProcess });
     try {
-      const result = await this.runCommand(args, { ...options, signal: owner.signal ?? null });
+      const result = await this.runCommand(args, { ...options, signal: owner.signal ?? null,
+        nativeJob: guard.nativeJob, assertOwned: () => owner.assertOwned() });
       await guard.clear({ proof: "natural-process-tree-completion" });
       await owner.assertOwned();
       return result;
@@ -1350,7 +1397,7 @@ export class TaskGitWorkspaceService {
     }
   }
 
-  async #beginProcessTreeGuard(taskId, lease, { args, cwd, scope = "repository", repositoryRoot: guardRepositoryRoot } = {}, state) {
+  async #beginProcessTreeGuard(taskId, lease, { args, cwd, scope = "repository", repositoryRoot: guardRepositoryRoot, native = false } = {}, state) {
     if (typeof lease?.assertOwned !== "function") throw new Error("Task Git guard owner lease is required");
     await measureTaskOperationAwait("process-guard-lease-await", () => lease.assertOwned());
     if (state.unresolved) throw state.unresolved;
@@ -1363,12 +1410,17 @@ export class TaskGitWorkspaceService {
     );
     await measureTaskOperationAwait("process-guard-mkdir-await",
       () => mkdir(path.dirname(file), { recursive: true }));
+    const nativeJob = native ? this.#nativeProcessJob(taskId, guardId) : null;
+    if (nativeJob) await mkdir(path.dirname(nativeJob.recordBase), { recursive: true });
+    const execution = taskOperationExecution() ?? taskOperationTimingIdentity();
     const record = {
-      version: 1,
+      version: nativeJob ? 2 : 1,
+      ...(nativeJob ? { operationId: execution?.operationId ?? null, operationTaskId: execution?.taskId || null } : {}),
       taskId: normalizedTaskId(taskId),
       guardId,
       ownerId: String(lease.ownerId ?? "unknown"),
-      command: Array.isArray(args) ? args.map(String) : [],
+      command: nativeJob ? [gitCommandKind(args, args?.[0] === "npm" ? "npm" : "git")]
+        : Array.isArray(args) ? args.map(String) : [],
       scope,
       cwd: canonicalPath(cwd),
       repositoryRoot,
@@ -1376,9 +1428,8 @@ export class TaskGitWorkspaceService {
     };
     try {
       await measureTaskOperationAwait("process-guard-write-await",
-        () => writeFile(file, `${JSON.stringify(record, null, 2)}\n`, {
-          encoding: "utf8", flag: "wx", mode: 0o600,
-        }));
+        () => nativeJob ? writeSelectedRecord(file, record)
+          : writeFile(file, JSON.stringify(record, null, 2) + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 }));
     } catch (error) {
       if (error?.code === "EEXIST") {
         throw new Error(`Task Git admission blocked: unresolved process-tree guard requires operator proof (${file})`);
@@ -1387,6 +1438,7 @@ export class TaskGitWorkspaceService {
     }
     let cleared = false;
     return {
+      nativeJob,
       clear: async ({ proof } = {}) => {
         if (cleared) return;
         const current = await measureTaskOperationAwait("process-guard-clear-read-await",
@@ -1397,6 +1449,7 @@ export class TaskGitWorkspaceService {
         }
         await measureTaskOperationAwait("process-guard-clear-unlink-await", () => unlink(file));
         cleared = true;
+        if (nativeJob) await discardOwnedWindowsTaskProcessProof(nativeJob);
         state.active = null;
         state.lastProof = String(proof ?? "");
       },
@@ -1625,18 +1678,76 @@ export class TaskGitWorkspaceService {
     };
   }
 
+  #nativeProcessJob(taskId, guardId) {
+    return { guardId, recordBase: this.#processRecoveryFile(taskId, "native-" + guardId) };
+  }
+
+  async recoverCancelledProcessTreeGuardsOwned(taskId, { operationId, lease } = {}) {
+    await requiredGuardLease(lease).assertOwned();
+    const directories = await readdir(path.join(this.dataDir, "task-process-tree-guards"), { withFileTypes: true })
+      .catch(error => { if (error.code === "ENOENT") return []; throw error; });
+    const id = normalizedTaskId(taskId);
+    const receipts = [];
+    for (const directory of directories.filter(entry => entry.isDirectory())) {
+      for (const file of await this.#processGuards(directory.name)) {
+        const guard = await readFile(file, "utf8").then(JSON.parse).catch(error => {
+          if (error.code === "ENOENT" || (directory.name !== id && error instanceof SyntaxError)) return null;
+          throw error;
+        });
+        if (guard?.version !== 2 || guard.operationId !== operationId || !guard.repositoryRoot
+          || (directory.name !== id && guard.operationTaskId !== id)) continue;
+        receipts.push(await this.recoverProcessTreeGuard(taskId, {
+          repositoryRoot: guard.repositoryRoot, guardId: guard.guardId, operationId,
+          guardOwner: directory.name, lease,
+        }));
+      }
+    }
+    return receipts;
+  }
+
+  async readCancelledNativeTestOwned(taskId, { projectRoot, operationId, lease } = {}) {
+    const root = await repositoryRoot(projectRoot).catch(error => {
+      if (/not a git repository/iu.test(String(error.message))) return null;
+      throw error;
+    });
+    if (!root) return null;
+    return this.#withDevLock(root, lease, async owned => {
+      const intent = await this.pendingNativeIntegrationOwned({ taskId, projectRoot: root, operationId, lease: owned });
+      if (!intent?.target) return null;
+      const resultRef = this.#custodyResultRef(taskId, taskRepositoryKey(root));
+      const [dev, result] = await Promise.all([
+        gitMaybe(["rev-parse", "--verify", "refs/heads/" + this.devBranch + "^{commit}"], { cwd: root }),
+        gitMaybe(["rev-parse", "--verify", resultRef + "^{commit}"], { cwd: root }),
+      ]);
+      await owned.assertOwned();
+      return { operationId, dev, result, expectedDev: intent.target, expectedResult: intent.snapshot.headCommit,
+        matchesIntent: dev === intent.target && result === intent.snapshot.headCommit };
+    });
+  }
+
   async recoverProcessTreeGuard(taskId, {
-    repositoryRoot: root, guardId, proof, lease = null,
+    repositoryRoot: root, guardId, proof, operationId = null, guardOwner = normalizedTaskId(taskId), lease = null,
   } = {}) {
     this.#assertAvailable("recoverProcessTreeGuard");
     const repositoryRoot = canonicalPath(root);
-    const recover = async (ownedLease) => this.#withDevLock(repositoryRoot, ownedLease, async (combined) => {
+    const scopeNeedsOperation = guardOwner !== normalizedTaskId(taskId);
+    if (scopeNeedsOperation && !operationId) throw new Error("Task Git recovery requires exact original operation");
+    const withScope = (devLease, operation) => {
+      if (!scopeNeedsOperation || guardOwner === "repository-" + taskRepositoryKey(repositoryRoot)) return operation(devLease);
+      const nativeRepository = /^repository-native-([a-f0-9]+)$/u.exec(guardOwner);
+      const scopeLock = guardOwner === "repository-native-object-store-sha1" ? path.join(this.dataDir, "native-git-objects")
+        : nativeRepository ? path.join(this.dataDir, "locks", "native-repository-" + nativeRepository[1]) : null;
+      if (!scopeLock) throw new Error("Task Git recovery has no exact guarded scope owner");
+      return withInterprocessLocks([scopeLock], owner => operation(combinedLease(devLease, owner)));
+    };
+    const recover = async (ownedLease) => this.#withDevLock(repositoryRoot, ownedLease, devLease =>
+      withScope(devLease, async (combined) => {
       await combined.assertOwned();
       const file = path.join(
-        this.#processGuardDirectory(taskId),
+        this.#processGuardDirectory(guardOwner),
         `${taskRepositoryKey(repositoryRoot)}.json`,
       );
-      const recoveryFile = this.#processRecoveryFile(taskId, guardId);
+      const recoveryFile = this.#processRecoveryFile(guardOwner, guardId);
       const guard = await readFile(file, "utf8").then(JSON.parse, (error) => {
         if (error?.code === "ENOENT") return null;
         throw error;
@@ -1679,8 +1790,20 @@ export class TaskGitWorkspaceService {
           guard: recovery.guard,
           proof: recovery.proof,
       });
+      const nativeGuardIdentity = (value) => value?.version === 2
+        && value.taskId === guardOwner && samePath(value.repositoryRoot, repositoryRoot)
+        && (!scopeNeedsOperation || value.operationTaskId === normalizedTaskId(taskId))
+        && typeof guardId === "string" && /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/iu.test(guardId)
+        && value.guardId === guardId && (!operationId || value.operationId === operationId);
+      const exactNativeRecovery = priorRecovery?.version === 2
+        && nativeGuardIdentity(priorRecovery.guard)
+        && (!guard || JSON.stringify(guard) === JSON.stringify(priorRecovery.guard))
+        && priorRecovery.taskId === guardOwner && priorRecovery.guardId === guardId
+        && samePath(priorRecovery.repositoryRoot, repositoryRoot)
+        && priorRecovery.proof?.kind === "windows-owned-job-retired"
+        && ownsWindowsTaskProcessProof(guardId, priorRecovery.proof.completion);
       if (!guard) {
-        if (!exactPriorRecovery()) {
+        if (!exactPriorRecovery() && !exactNativeRecovery) {
           throw new Error("Task Git process-tree recovery evidence does not match the recovery request");
         }
         return finish(priorRecovery, true);
@@ -1688,18 +1811,34 @@ export class TaskGitWorkspaceService {
       if (
         !guard?.guardId
         || guard.guardId !== String(guardId ?? "").trim()
-        || guard.taskId !== normalizedTaskId(taskId)
+        || guard.taskId !== guardOwner
         || !samePath(guard.repositoryRoot, repositoryRoot)
       ) {
         throw new Error("Task Git process-tree guard identity does not match the recovery request");
       }
       if (priorRecovery) {
-        if (!exactPriorRecovery()) {
+        if (!exactPriorRecovery() && !exactNativeRecovery) {
           throw new Error("Task Git process-tree recovery evidence identity changed");
         }
         await combined.assertOwned();
         await this.removeProcessGuard(file);
         return finish(priorRecovery, true);
+      }
+      if (nativeGuardIdentity(guard) && proof?.kind !== "system-restart-after-guard") {
+        const job = this.#nativeProcessJob(guardOwner, guardId);
+        const completion = await readOwnedWindowsTaskProcessProof(job);
+        if (!completion) throw Object.assign(new Error(
+          "Task Git guard retained: exact Windows Job retirement evidence is missing or incomplete"), {
+          code: "TASK_GIT_WINDOWS_JOB_RETIREMENT_PENDING",
+        });
+        const recovery = { version: 2, taskId: guard.taskId, guardId, repositoryRoot, guard,
+          proof: { kind: "windows-owned-job-retired", completion, verifiedAt: new Date().toISOString() } };
+        await combined.assertOwned();
+        await writeSelectedRecord(recoveryFile, recovery);
+        await combined.assertOwned();
+        await this.removeProcessGuard(file);
+        await discardOwnedWindowsTaskProcessProof(job);
+        return finish(recovery, false);
       }
       if (proof?.kind !== "system-restart-after-guard" || proof?.confirmed !== true) {
         throw new Error("Task Git guard recovery requires a trusted system restart after guard creation");
@@ -1755,7 +1894,7 @@ export class TaskGitWorkspaceService {
       await combined.assertOwned();
       await this.removeProcessGuard(file);
       return finish(recovery, false);
-    });
+    }));
     return lease
       ? recover(lease)
       : this.withTaskRecoveryLock(taskId, recover);

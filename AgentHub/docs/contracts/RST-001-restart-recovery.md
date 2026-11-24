@@ -990,3 +990,12 @@ the existing installation custody and exact per-generation lease with bounded
 The existing canonical readGeneration port passes through the same native owner
 registry. No public tool argument, release receipt, publication identity or
 runtime manifest is rewritten. See ADR-HUB-385-retired-generation-source-custody.
+
+## Task Git retirement evidence (HUB-524)
+
+An individual Hub exit leaves the Windows Job witness able to retire its own
+Git tree and publish matching admission and completion records. The existing
+Task and Git owners validate the evidence and persist recovery before removing
+the guard. A missing or damaged receipt cannot be replaced with PID absence.
+A generation without Job evidence keeps the existing after-guard boot-proof
+route. See ADR-HUB-524.

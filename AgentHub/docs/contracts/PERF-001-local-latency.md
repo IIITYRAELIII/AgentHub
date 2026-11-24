@@ -1173,3 +1173,11 @@ script work, heap/long tasks and separately qualified test-process CPU/I/O count
 Fixture delays and renderer counters have their own attribution. Natural loaded
 runtime observations and source/fixture AFTER are distinct acceptance evidence.
 The existing bounded recorder owns these measurements. See ADR-HUB-427.
+
+## Windows guarded Git timing (HUB-524)
+
+Guarded Windows Git timing includes starting the native Job owner and sealing
+retirement. The diagnostic retirement checkpoint records the process identity,
+exit code and reason, with no arguments or repository content. Cancellation
+recovery events use the original operation ID. A Git ref read cannot stand in
+for the Job retirement checkpoint. See ADR-HUB-524.

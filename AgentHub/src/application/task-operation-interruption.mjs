@@ -2,6 +2,7 @@ import { taskOperationExecutionStorage as execution, taskOperationInterrupted } 
 export { taskOperationInterrupted } from "../ports/task-operation-execution-context.mjs";
 import { randomUUID } from "node:crypto";
 import { mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
+import { taskProjectRoot } from "../domain/task-project-root.mjs";
 
 export const INTERRUPTIBLE_TASK_TOOLS = new Set(["hub_task_claim", "hub_task_status_update"]);
 function publicCancellation(value) {
@@ -39,7 +40,7 @@ export class TaskOperationInterruption {
       throw new Error("Committed claim readback execution identity differs");
     }
     if (!committedClaimReadback) await this.catalog.bindTaskOperationExecution(receipt.requestId, this.binding(args));
-    const current = { signal: controller.signal, assertExecuting: () => {
+    const current = { operationId: receipt.requestId, taskId: args.task_id, signal: controller.signal, assertExecuting: () => {
       if (controller.signal.aborted || this.catalog.mcpOperation(receipt.requestId)?.taskExecution?.cancellation) {
         throw taskOperationInterrupted();
       }
@@ -96,7 +97,7 @@ export class TaskOperationInterruption {
     }));
   }
   async cancel({ actor, taskId, operationRequestId, originalArguments = null,
-    expectedArgumentsHash, expectedTaskRevision, cancellationRequestId, runtimeWitness = null }) {
+    expectedArgumentsHash, expectedTaskRevision, cancellationRequestId, runtimeWitness = null, guardRecovery = null }) {
     const original = this.catalog.mcpOperation(operationRequestId);
     const task = this.tasks.task(taskId);
     if (!original || !task || !INTERRUPTIBLE_TASK_TOOLS.has(original.toolName)
@@ -144,11 +145,41 @@ export class TaskOperationInterruption {
     }
     const finalize = async lease => {
       await lease.assertOwned();
+      let jobRecoveries;
+      try {
+        if (guardRecovery) {
+          if (!actor.releaseManager || !old?.cancellation) throw new Error("Only Release Manager can recover the exact requested cancellation");
+          await this.taskGit.recoverProcessTreeGuard(taskId, { ...guardRecovery, operationId: operationRequestId, lease });
+        }
+        jobRecoveries = await this.taskGit.recoverCancelledProcessTreeGuardsOwned?.(taskId, {
+          operationId: operationRequestId, lease,
+        });
+      } catch (error) {
+        if (error?.code !== "TASK_GIT_WINDOWS_JOB_RETIREMENT_PENDING") throw error;
+        return publicCancellation({ ...cancellation, waitingFor: "windows-owned-job-retirement" });
+      }
       await this.taskGit.assertNoProcessTreeGuardOwned(taskId, { lease });
+      if (jobRecoveries?.length) {
+        try { this.record({ commandId: operationRequestId, stage: "task-operation-cancel-job-proof",
+          outcome: "retired", count: jobRecoveries.length }); } catch {}
+      }
+      const root = args.status === "testing" ? guardRecovery?.repositoryRoot
+        ?? jobRecoveries?.find(item => item.guard.taskId === taskId)?.guard.repositoryRoot
+        ?? taskProjectRoot({
+          workspace: task.workspaceId ? this.catalog.workspace?.(task.workspaceId) : null,
+          stream: task.streamId ? this.catalog.stream?.(task.streamId) : null,
+        }) : null;
+      const gitReadback = root ? await this.taskGit.readCancelledNativeTestOwned?.(taskId, {
+        operationId: operationRequestId, projectRoot: root, lease,
+      }) : null;
       // Failure of this existing transition does not roll back Git or replace
       // a committed lifecycle outcome. Its original evidence stays retained.
       await this.tasks.failLifecycleTransition(operationRequestId, taskOperationInterrupted());
-      const result = await this.catalog.finishTaskOperationInterruption(operationRequestId, retirement);
+      const result = await this.catalog.finishTaskOperationInterruption(operationRequestId, {
+        ...retirement,
+        ...(jobRecoveries?.length ? { retiredWindowsGuardIds: jobRecoveries.map(item => item.guard.guardId) } : {}),
+        ...(gitReadback ? { gitReadback } : {}),
+      });
       try { this.record({ commandId: operationRequestId, stage: "task-operation-cancel-stopped", outcome: "stopped",
         durationMs: result.stoppedAtMs - result.requestedAtMs }); } catch {}
       return publicCancellation(result);
