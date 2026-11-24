@@ -1,4 +1,6 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { stat } from "node:fs/promises";
+import { plainCodexAdmissionPath, readCodexArchiveAdmission } from "./codex-rollout-archive-admission.mjs";
 import { readCodexTracePage } from "./codex-trace-page.mjs";
 import { readCodexVisualization } from "./codex-visualization.mjs";
 import { recoverCodexRolloutSubagentsOnCurrentThread } from "./codex-rollout-subagent-recovery.mjs";
@@ -15,15 +17,23 @@ async function execute(message) {
     return recoverCodexRolloutSubagentsOnCurrentThread(message.rolloutPath, message.candidates);
   }
   if (message.operation === "read") {
-    const activity = await readCodexRolloutActivityOnCurrentThread(message.rolloutPath, {
-      ...message.options,
-      activityOnly: workerData?.admission === true,
+    if (!workerData?.admission) return readCodexRolloutActivityOnCurrentThread(message.rolloutPath, message.options);
+    const rolloutPath = plainCodexAdmissionPath(message.rolloutPath);
+    const readPlain = async () => {
+      const activity = await readCodexRolloutActivityOnCurrentThread(rolloutPath, { activityOnly: true });
+      const { running, activeTurnIds, activeVscodeTurnIds, lastActivityAtMs, sourceUnavailable, scanBytes } = activity;
+      return { sourceKind: "plain", rolloutPath, running, activeTurnIds, activeVscodeTurnIds, lastActivityAtMs, sourceUnavailable, scanBytes };
+    };
+    const plain = await readPlain();
+    if (!plain.sourceUnavailable || !message.threadId || !/\.jsonl$/iu.test(rolloutPath)) return plain;
+    // An existing empty plain file may belong to a writer. Only absence permits a companion lookup.
+    const plainExists = async () => stat(rolloutPath).then(() => true, (error) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
     });
-    if (!workerData?.admission) return activity;
-    const {
-      running, activeTurnIds, activeVscodeTurnIds, lastActivityAtMs, sourceUnavailable, scanBytes,
-    } = activity;
-    return { running, activeTurnIds, activeVscodeTurnIds, lastActivityAtMs, sourceUnavailable, scanBytes };
+    if (await plainExists()) return plain;
+    const archived = await readCodexArchiveAdmission(rolloutPath, message.threadId, message.deadlineAt);
+    return await plainExists() ? readPlain() : archived;
   }
   if (message.operation === "pin-cache") {
     return pinCodexRolloutActivityCache(message.rolloutPath);
@@ -50,7 +60,7 @@ async function respond(message) {
       requestId: message.requestId,
       ok: false,
       timing: timing(),
-      error: { message: String(error?.message ?? error) },
+      error: { message: String(error?.message ?? error), code: error?.code },
     });
   }
 }
