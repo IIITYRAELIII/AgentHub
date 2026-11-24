@@ -21,14 +21,14 @@ async function setting(page, key, value) {
   await frames(page);
 }
 
-async function publish(page, { tick = 0, running = true, unread = false, revision = 0, interstreamCompaction = false, interstreamRun = false } = {}) {
-  await page.evaluate(({ tick, running, unread, revision, interstreamCompaction, interstreamRun }) => {
+async function publish(page, { tick = 0, running = true, otherRunning = false, unread = false, revision = 0, interstreamCompaction = false, interstreamRun = false } = {}) {
+  await page.evaluate(({ tick, running, otherRunning, unread, revision, interstreamCompaction, interstreamRun }) => {
     window.AgentHub.setWorkspaces([{ id: "workspace-0", name: "Workspace", settings: {} }], ["workspace:workspace-0", "notes"]);
     window.AgentHub.setTasks([0, 1].map((index) => ({
       id: `task-${index}`, provider: "codex", agentLabel: "Codex",
       workspaceId: "workspace-0", workspaceName: "Workspace", streamId: `stream-${index}`,
       streamName: index ? "Idle" : "Active", streamOrdinal: index + 1, selected: index === 0,
-      status: index || !running ? "ready" : "running", running: index === 0 && running,
+      status: (index ? otherRunning : running) ? "running" : "ready", running: index ? otherRunning : running,
       unread: index === 0 && unread, openQuestion: index === 0 && unread,
       interstreamRun: index === 0 && interstreamRun,
       streamSettings: {}, progressStage: `stage-${tick}`,
@@ -36,7 +36,7 @@ async function publish(page, { tick = 0, running = true, unread = false, revisio
       context: index === 0 && interstreamCompaction ? { compaction: { status: "running" } } : undefined,
       latestFinal: index === 0 && revision ? { provider: "codex", threadId: "thread-0", turnId: "turn-0", revision, interstreamOnly: interstreamCompaction } : null,
     })));
-  }, { tick, running, unread, revision, interstreamCompaction, interstreamRun });
+  }, { tick, running, otherRunning, unread, revision, interstreamCompaction, interstreamRun });
   await frames(page);
 }
 
@@ -107,6 +107,41 @@ async function evidence(name, bytes) {
   const directory = process.env.AGENT_HUB_TEST_EVIDENCE_DIR;
   if (directory) { await mkdir(directory, { recursive: true }); await writeFile(join(directory, name), bytes); }
 }
+
+test("The inner rail frame follows the selected stream when both streams are running", async () => {
+  const browser = await launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await open(page);
+    await page.locator("[data-theme-select]").selectOption("nexus", { force: true });
+    await publish(page, { otherRunning: true });
+    const cards = [page.locator(RAIL), page.locator('.activity-stream-item[data-activity-task-id="task-1"]')];
+    for (const selected of [0, 1, 0]) {
+      await cards[selected].click();
+      await frames(page);
+      for (const [index, card] of cards.entries()) {
+        assert.equal(await card.locator(".activity-run-frame-inner").isVisible(), index === selected);
+        assert.equal(await card.getAttribute("aria-pressed"), String(index === selected));
+        assert.ok(await card.locator(".stream-run-track").isVisible());
+      }
+    }
+    await publish(page, { running: false, otherRunning: true });
+    assert.ok(await cards[0].locator(".activity-run-frame-inner").isVisible());
+    assert.equal(await cards[0].locator(".stream-run-track").isVisible(), false);
+    await page.evaluate(() => {
+      const stream = { workspaceId: "workspace-0", streamId: "stream-0", provider: "codex" };
+      window.AgentHub.setTasks([
+        { ...stream, id: "live", threadId: "current-thread", status: "running", running: true, selected: true },
+        { ...stream, id: "history", threadId: "older-thread", status: "ready" },
+      ]);
+      window.AgentHub.selectTask("history");
+    });
+    await frames(page);
+    const representative = page.locator('.activity-stream-item[data-activity-task-id="live"]');
+    assert.ok(await representative.locator(".activity-run-frame-inner").isVisible());
+    assert.equal(await representative.getAttribute("aria-pressed"), "true");
+  } finally { await browser.close(); }
+});
 
 test("Nexus: both outer rail edges stay visible beside the elapsed time", async () => {
   const browser = await launch();

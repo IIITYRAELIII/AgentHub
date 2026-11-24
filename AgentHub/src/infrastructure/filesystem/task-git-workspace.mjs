@@ -2425,14 +2425,17 @@ export class TaskGitWorkspaceService {
     return verified;
   }
 
-  async #recordedUpstreamAdoptionForSnapshot({ taskId, repoRoot, snapshotCommit, localMain, lease, publishedBaseCommit = null }) {
+  async #recordedUpstreamAdoptionForSnapshot({ taskId, repoRoot, snapshotCommit, localMain, lease,
+    publishedBaseCommit = null, currentRefs = null }) {
     const id = normalizedTaskId(taskId);
     const repoKey = taskRepositoryKey(repoRoot);
     const exactSnapshot = exactCommitId(snapshotCommit, "Task snapshot commit");
+    const prefixes = taskUpstreamAdoptionPrefixes(id, repoKey).map(prefix => `${prefix}${exactSnapshot}/`);
     const records = [];
-    for (const prefix of taskUpstreamAdoptionPrefixes(id, repoKey)) {
-      records.push(...String(await this.#runOwned([
-        "for-each-ref", "--format=%(refname)%00%(objectname)", `${prefix}${exactSnapshot}/`,
+    for (const prefix of prefixes) {
+      if (currentRefs !== null) records.push(...currentRefs.filter(row => row.startsWith(prefix)));
+      else records.push(...String(await this.#runOwned([
+        "for-each-ref", "--format=%(refname)%00%(objectname)", prefix,
       ], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean));
     }
     if (!records.length) return null;
@@ -5090,11 +5093,16 @@ export class TaskGitWorkspaceService {
       const localMain = await localMainCommit(repoRoot);
       // local main is the agreed branch baseline. Publication and observation
       // remain separate authorities and do not silently choose another base.
+      // Read the mutable receipt namespace once per fresh base check. The
+      // existing verifier still checks every selected receipt and its live refs.
+      const currentRefs = tasks.length ? String(await this.#runOwned([
+        "for-each-ref", "--format=%(refname)%00%(objectname)", TASK_UPSTREAM_ADOPTION_REF_PREFIX,
+      ], { cwd: repoRoot, lease: ownedLease })).split(/\r?\n/u).filter(Boolean) : [];
       const adoptions = [];
       for (const task of [...tasks].sort((a, b) => String(a.taskId).localeCompare(String(b.taskId)))) {
         const verified = await this.#recordedUpstreamAdoptionForSnapshot({ taskId: task.taskId,
           repoRoot, snapshotCommit: task.resultCommit, localMain, lease: ownedLease,
-          publishedBaseCommit: published });
+          publishedBaseCommit: published, currentRefs });
         if (!verified) continue;
         if (task.baseCommit != null && task.baseCommit !== verified.record.taskBaseCommit) {
           throw new Error("Selected Task adoption registered base changed");

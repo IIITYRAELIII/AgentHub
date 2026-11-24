@@ -1748,7 +1748,7 @@ html[data-view="chat"][data-surface][data-theme] {
   align-items: center;
   display: grid;
   gap: 8px 2px;
-  grid-template-columns: 28px 28px 26px minmax(0, 1fr) auto auto auto;
+  grid-template-columns: 28px 28px 26px minmax(28px, 1fr) auto auto auto;
   grid-template-rows: auto 30px;
 }
 

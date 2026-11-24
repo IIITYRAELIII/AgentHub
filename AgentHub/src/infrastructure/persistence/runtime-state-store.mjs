@@ -1,4 +1,5 @@
 import { observeRuntimeWorkerMemory } from "../../domain/runtime-worker-memory.mjs";
+import { serializableTaskRun } from "../../domain/task-runs.mjs";
 import { renameSync } from "node:fs";
 import { copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
@@ -280,6 +281,7 @@ async function archiveLegacyFiles(dataDir, files, label) {
 export class RuntimeStateStore {
   #database;
   #messageCommands;
+  #scopedDeferredRuns = new WeakSet();
   #messageCommandExpiry = null;
   #writer;
   #dataDir;
@@ -388,6 +390,43 @@ export class RuntimeStateStore {
       span?.finish({ outcome: "failed", metadata: { errorCode: error?.code ?? null } });
       throw error;
     }
+  }
+
+  reserveDeferredDispatch(item, receipt) {
+    const timing = {};
+    let span;
+    try {
+      span = this.#commandTrace?.startBestEffortSpan?.({
+        commandId: String(item?.clientUserMessageId ?? ""),
+        stage: "deferred-dispatch-ledger",
+        transport: String(item?.clientSource ?? "desktop-control").trim().toLowerCase() || "desktop-control",
+      });
+    } catch { /* Tracing has no dispatch authority. */ }
+    const finish = (outcome, metadata) => {
+      try { span?.finish({ outcome, metadata }); } catch { /* Tracing is best-effort. */ }
+    };
+    try {
+      const owned = this.#messageCommands.reserveDispatch(item, receipt, timing);
+      finish("succeeded", { ...timing, owned });
+      return owned;
+    } catch (error) {
+      const code = String(error?.code ?? "");
+      finish("failed", {
+        ...timing, errorCode: /^[A-Z0-9_]{1,64}$/u.test(code) ? code : "ERR_DEFERRED_DISPATCH",
+      });
+      throw error;
+    }
+  }
+
+  checkpointDeferredRun(run, deferredInput = null) {
+    if (!deferredInput && !this.#scopedDeferredRuns.has(run)) return false;
+    const saved = this.#messageCommands.checkpointDispatchRun(serializableTaskRun(run), deferredInput);
+    if (saved && deferredInput) this.#scopedDeferredRuns.add(run);
+    return saved;
+  }
+
+  revokeUnrequestedDeferredRun(run) {
+    return this.#messageCommands.revokeUnrequestedDispatchRun(run);
   }
 
   transitionMessageCommand(transition) {

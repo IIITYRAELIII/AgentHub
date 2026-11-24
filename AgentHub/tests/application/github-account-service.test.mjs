@@ -330,8 +330,8 @@ test("late rejected old credential cannot clear a newer connection's rejection",
   const first = await f.vault.read();
   await f.service.connect(token);
   const second = await f.vault.read();
-  await f.vault.reject(second.id);
-  await f.vault.reject(first.id);
+  await f.vault.reject(second);
+  await f.vault.reject(first);
   assert.equal((await f.service.snapshot()).status, "expired");
   await f.service.connect(token);
   assert.equal((await f.service.snapshot()).status, "connected");

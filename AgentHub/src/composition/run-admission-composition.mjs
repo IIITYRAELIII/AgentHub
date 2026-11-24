@@ -396,9 +396,11 @@ export function createRunAdmissionComposition({
         throw error;
       }
     },
-    isBlocked: async (item) => {
+    isBlocked: async (item, trace) => {
       const target = deferredTarget(item);
-      const occupancy = await runCoordinator.deferredOccupancy(target);
+      const beforeRead = runCoordinator.admissionBarrier(target);
+      if (beforeRead) { item.waitReason = beforeRead; return true; }
+      const occupancy = await runCoordinator.deferredOccupancy(target, trace);
       const barrier = runCoordinator.admissionBarrier(target);
       if (barrier) { item.waitReason = barrier; return true; }
       if (occupancy.occupied) {
@@ -409,7 +411,7 @@ export function createRunAdmissionComposition({
       delete item.waitReason;
       return false;
     },
-    occupancy: (item) => runCoordinator.deferredOccupancy(deferredTarget(item)),
+    occupancy: (item, trace) => runCoordinator.deferredOccupancy(deferredTarget(item), trace),
     laneKey: (item) => runCoordinator.taskLane(
       streamMessageDelivery(item) && !item.dispatchingAt
         && item.lastErrorCode !== "ERR_PROVIDER_STEER_UNCONFIRMED"
@@ -420,6 +422,12 @@ export function createRunAdmissionComposition({
     start: (item) => runCoordinator.startDeferred(item),
     onStateChange: updateDeferredDesktopReceipt,
     persist: () => saveState(),
+    persistDispatch: (item) => {
+      const receipt = deferredInputPresentation.receipts?.get(item) ?? null;
+      if (runtimeStateStore?.reserveDeferredDispatch?.(item, receipt) === true) return;
+      // A genuinely unowned legacy item is still restored from the snapshot.
+      return saveState();
+    },
     updateMessage: updateDeferredMessage,
     pendingKeyboard: (item) => pendingInputKeyboard(item.id, { allowForce: item.allowForce === true }),
     notifyReturned: (item) => item.telegramDeliveryRequested

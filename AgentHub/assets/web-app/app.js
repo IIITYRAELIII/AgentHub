@@ -213,6 +213,10 @@ const composer = document.querySelector("[data-composer]");
 const composerGrow = document.querySelector("[data-composer-grow]");
 const composerInput = document.querySelector("[data-composer-input]");
 const composerSend = document.querySelector("[data-composer-send]");
+const composerEmojiPicker = window.AgentHubComposerEmojiPicker?.create(composer, {
+  onOpen: closeSlashMenu,
+  onSelect: (emoji) => insertTextAtCaret(composerInput, emoji),
+});
 const composerQuickMessages = document.querySelector("[data-composer-quick-messages]");
 const connectionQualityIndicator = document.querySelector("[data-connection-quality]");
 const annotationsBox = document.querySelector("[data-annotations]");
@@ -4298,6 +4302,8 @@ function renderActivityRail() {
       || `Поток ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
     const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
     const activityTitle = `${workspaceName} — ${streamName}`;
+    const isCurrentStream = selectedTask !== null && workspaceKey(task) === workspaceKey(selectedTask)
+      && streamKey(task) === streamKey(selectedTask);
     const provider = String(task?.provider ?? "none");
     const providerModelTitle = streamProviderModelTitle({
       provider,
@@ -4313,14 +4319,14 @@ function renderActivityRail() {
       "data-stream-provider-label": presentation.agentLabel,
       "data-stream-model": task?.modelLabel ?? "",
       "data-stream-title": title,
-      "data-current": task.id === state.selectedId ? "" : null,
+      "data-current": isCurrentStream ? "" : null,
       "data-running": presentation.running ? "" : null,
       ...streamEffectAttributes([task]),
       "data-answer-ready": presentation.answerReady ? "" : null,
       "data-answer-arrived": transientAnswerArrivalTaskIds.has(task.id) ? "" : null,
       "data-recent": streamAttentionKind(task) === "recent" ? "" : null,
       "data-maintenance": streamMaintenanceKind(task) || null,
-      "aria-pressed": String(task.id === state.selectedId),
+      "aria-pressed": String(isCurrentStream),
       "aria-label": [workspaceName, streamName, presentation.agentLabel, presentation.statusLabel]
         .filter(Boolean).join(". "),
       title,
@@ -5769,8 +5775,10 @@ function selectTaskFromUi(id, {
   }
   ensureTaskStreamVisible(currentTask());
   persistOpenStreams();
-  if (preserveTaskList) syncTaskListSelection();
-  else renderTasks();
+  if (preserveTaskList) {
+    syncTaskListSelection();
+    renderActivityRail();
+  } else renderTasks();
   renderChat({ preserveStreamTabs });
   if (!preservePane) setPane("chat");
   emit("task:select", { id });
@@ -10164,6 +10172,7 @@ function prepareForRuntimeReload() {
 }
 
 function restoreDraft() {
+  composerEmojiPicker?.close();
   const draft = drafts.get(state.selectedId) ?? {
     text: "", attachments: [], taskReferences: [], annotations: [],
   };
@@ -18515,7 +18524,7 @@ mobileDialogs = window.AgentHubMobileDialogs.create({
   isMobile: () => surface === "mobile" && !vscodeMode,
   openSettings: openPanel,
   transientLayers: [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
-    annotationContextMenu, resourceContextMenu, dialog, settingsPanel, workspaceMessageSearch],
+    annotationContextMenu, resourceContextMenu, composerEmojiPicker?.layer, dialog, settingsPanel, workspaceMessageSearch],
   openWorkspaceCard, workspaceDialog: workspaceCardModal, renameWorkspaceFolder,
   textDialog: dialog, cancelTextDialog: () => closeDialog(null),
   createStream: (workspaceId) => emit("stream:new", { workspaceId }),
@@ -18526,6 +18535,7 @@ mobileDialogs = window.AgentHubMobileDialogs.create({
     return false;
   },
   closeTransient: () => {
+    if (composerEmojiPicker?.dismiss()) return true;
     const menus = [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
       annotationContextMenu, resourceContextMenu];
     const shown = menus.find((menu) => menu && !menu.hidden);
