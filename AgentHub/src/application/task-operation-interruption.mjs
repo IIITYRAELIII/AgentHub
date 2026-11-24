@@ -159,9 +159,11 @@ export class TaskOperationInterruption {
         return publicCancellation({ ...cancellation, waitingFor: "windows-owned-job-retirement" });
       }
       await this.taskGit.assertNoProcessTreeGuardOwned(taskId, { lease });
-      if (jobRecoveries?.length) {
-        try { this.record({ commandId: operationRequestId, stage: "task-operation-cancel-job-proof",
-          outcome: "retired", count: jobRecoveries.length }); } catch {}
+      const retiredJobs = jobRecoveries?.filter(item => item.proof.kind === "windows-owned-job-retired") ?? [];
+      const fencedJobs = jobRecoveries?.filter(item => item.proof.kind === "windows-owned-job-fenced-before-execution") ?? [];
+      for (const [outcome, jobs] of [["retired", retiredJobs], ["fenced-before-execution", fencedJobs]]) {
+        if (jobs.length) try { this.record({ commandId: operationRequestId, stage: "task-operation-cancel-job-proof",
+          outcome, count: jobs.length }); } catch {}
       }
       const root = args.status === "testing" ? guardRecovery?.repositoryRoot
         ?? jobRecoveries?.find(item => item.guard.taskId === taskId)?.guard.repositoryRoot
@@ -177,7 +179,8 @@ export class TaskOperationInterruption {
       await this.tasks.failLifecycleTransition(operationRequestId, taskOperationInterrupted());
       const result = await this.catalog.finishTaskOperationInterruption(operationRequestId, {
         ...retirement,
-        ...(jobRecoveries?.length ? { retiredWindowsGuardIds: jobRecoveries.map(item => item.guard.guardId) } : {}),
+        ...(retiredJobs.length ? { retiredWindowsGuardIds: retiredJobs.map(item => item.guard.guardId) } : {}),
+        ...(fencedJobs.length ? { fencedWindowsGuardIds: fencedJobs.map(item => item.guard.guardId) } : {}),
         ...(gitReadback ? { gitReadback } : {}),
       });
       try { this.record({ commandId: operationRequestId, stage: "task-operation-cancel-stopped", outcome: "stopped",

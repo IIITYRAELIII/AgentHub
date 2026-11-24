@@ -51,8 +51,8 @@ import {
   readTrustedSystemBootIdentity,
 } from "../process/system-boot-identity.mjs";
 import {
-  discardOwnedWindowsTaskProcessProof, ownsWindowsTaskProcessProof, prepareOwnedWindowsTaskProcess, readOwnedWindowsTaskProcessProof,
-  requestOwnedWindowsTaskProcessStop,
+  discardOwnedWindowsTaskProcessProof, fenceOwnedWindowsTaskLaunch, ownsWindowsTaskLaunchPermit,
+  ownsWindowsTaskProcessProof, prepareOwnedWindowsTaskProcess, readOwnedWindowsTaskProcessProof, requestOwnedWindowsTaskProcessStop,
 } from "../process/windows-task-process-owner.mjs";
 import { publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
 import { verifyManualDevResolutionReview } from "../persistence/manual-dev-resolution-review.mjs";
@@ -1411,7 +1411,10 @@ export class TaskGitWorkspaceService {
     await measureTaskOperationAwait("process-guard-mkdir-await",
       () => mkdir(path.dirname(file), { recursive: true }));
     const nativeJob = native ? this.#nativeProcessJob(taskId, guardId) : null;
-    if (nativeJob) await mkdir(path.dirname(nativeJob.recordBase), { recursive: true });
+    if (nativeJob) {
+      await mkdir(path.dirname(nativeJob.recordBase), { recursive: true });
+      await writeSelectedRecord(nativeJob.recordBase + ".permit", { version: 1, guardId });
+    }
     const execution = taskOperationExecution() ?? taskOperationTimingIdentity();
     const record = {
       version: nativeJob ? 2 : 1,
@@ -1431,6 +1434,7 @@ export class TaskGitWorkspaceService {
         () => nativeJob ? writeSelectedRecord(file, record)
           : writeFile(file, JSON.stringify(record, null, 2) + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 }));
     } catch (error) {
+      if (nativeJob) await discardOwnedWindowsTaskProcessProof(nativeJob);
       if (error?.code === "EEXIST") {
         throw new Error(`Task Git admission blocked: unresolved process-tree guard requires operator proof (${file})`);
       }
@@ -1800,8 +1804,10 @@ export class TaskGitWorkspaceService {
         && (!guard || JSON.stringify(guard) === JSON.stringify(priorRecovery.guard))
         && priorRecovery.taskId === guardOwner && priorRecovery.guardId === guardId
         && samePath(priorRecovery.repositoryRoot, repositoryRoot)
-        && priorRecovery.proof?.kind === "windows-owned-job-retired"
-        && ownsWindowsTaskProcessProof(guardId, priorRecovery.proof.completion);
+        && (priorRecovery.proof?.kind === "windows-owned-job-retired"
+          ? ownsWindowsTaskProcessProof(guardId, priorRecovery.proof.completion)
+          : priorRecovery.proof?.kind === "windows-owned-job-fenced-before-execution"
+            && ownsWindowsTaskLaunchPermit(guardId, priorRecovery.proof.permit));
       if (!guard) {
         if (!exactPriorRecovery() && !exactNativeRecovery) {
           throw new Error("Task Git process-tree recovery evidence does not match the recovery request");
@@ -1810,6 +1816,7 @@ export class TaskGitWorkspaceService {
       }
       if (
         !guard?.guardId
+        || (guard.version === 2 && !nativeGuardIdentity(guard))
         || guard.guardId !== String(guardId ?? "").trim()
         || guard.taskId !== guardOwner
         || !samePath(guard.repositoryRoot, repositoryRoot)
@@ -1827,12 +1834,15 @@ export class TaskGitWorkspaceService {
       if (nativeGuardIdentity(guard) && proof?.kind !== "system-restart-after-guard") {
         const job = this.#nativeProcessJob(guardOwner, guardId);
         const completion = await readOwnedWindowsTaskProcessProof(job);
-        if (!completion) throw Object.assign(new Error(
+        await combined.assertOwned();
+        const permit = completion ? null : await fenceOwnedWindowsTaskLaunch(job);
+        if (!completion && !permit) throw Object.assign(new Error(
           "Task Git guard retained: exact Windows Job retirement evidence is missing or incomplete"), {
           code: "TASK_GIT_WINDOWS_JOB_RETIREMENT_PENDING",
         });
         const recovery = { version: 2, taskId: guard.taskId, guardId, repositoryRoot, guard,
-          proof: { kind: "windows-owned-job-retired", completion, verifiedAt: new Date().toISOString() } };
+          proof: { ...(completion ? { kind: "windows-owned-job-retired", completion }
+            : { kind: "windows-owned-job-fenced-before-execution", permit }), verifiedAt: new Date().toISOString() } };
         await combined.assertOwned();
         await writeSelectedRecord(recoveryFile, recovery);
         await combined.assertOwned();

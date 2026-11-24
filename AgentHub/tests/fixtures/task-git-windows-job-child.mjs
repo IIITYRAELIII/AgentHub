@@ -19,14 +19,19 @@ if (mode === "descendant") {
   const child = spawn(process.execPath, [script, "descendant", running, late], { windowsHide: true, stdio: "ignore" });
   await new Promise(resolve => child.on("exit", resolve));
 } else if (mode === "hub") {
-  const holdCompleted = process.env.HUB_JOB_FIXTURE_MODE === "completed";
+  const mode = process.env.HUB_JOB_FIXTURE_MODE;
   const service = new TaskGitWorkspaceService({ dataDir });
   await taskOperationExecutionStorage.run({ taskId, operationId, signal: new AbortController().signal, assertExecuting() {} },
     () => service.withTaskLock(taskId, async lease => {
       const original = lease.beginProcessTreeGuard;
-      if (holdCompleted) {
+      if (mode === "completed" || mode === "before-spawn") {
         lease.beginProcessTreeGuard = async args => {
           const guard = await original(args);
+          if (mode === "before-spawn") {
+            process.stdout.write("prepared-held\n");
+            await delay(60_000);
+            throw new Error("Fixture was not killed before dispatch");
+          }
           return { ...guard, async clear() {
             process.stdout.write("completed-held\n");
             await delay(60_000);
@@ -34,7 +39,7 @@ if (mode === "descendant") {
           } };
         };
       }
-      if (holdCompleted) {
+      if (mode !== "running") {
         const transaction = "start\nupdate refs/heads/dev " + target + "\nprepare\ncommit\n";
         await runOwnedGit(["update-ref", "--stdin"], { cwd, lease, input: Buffer.from(transaction) });
       } else {

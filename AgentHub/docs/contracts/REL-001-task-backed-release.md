@@ -196,6 +196,14 @@ Workspace-required delivery stages, and Task Done/Complete. Cleanup and
 backup retention are separate. Post-publication corrections belong to a later
 release; published source, assets and original outcomes are preserved.
 
+## Git effects of interrupted Test (HUB-524)
+
+The Windows Job proves retirement of the physical Git tree. For the exact
+original Test intent, the cancellation owner separately reads dev and the Task
+result ref under the repository lease. The original lifecycle receipt retains
+its interruption and actual Git evidence without another ref mutation. The
+next Test requires ordinary ownership and admission. See ADR-HUB-524.
+
 ## Managed claim, Test and Await
 
 Claim returns the canonical managed checkout with its claim/custody binding.
@@ -308,11 +316,3 @@ behavior, application import/startup wiring and independent package/maintenance
 checks. No old release full suite or old live release original is run to deliver
 the removal. Exact checks and any unsupported environment checks accompany the
 reviewed Git result. Historical failed/unknown runs keep their attribution.
-
-## Git effects of interrupted Test (HUB-524)
-
-The Windows Job proves retirement of the physical Git tree. For the exact
-original Test intent, the cancellation owner separately reads dev and the Task
-result ref under the repository lease. The original lifecycle receipt retains
-its interruption and actual Git evidence without another ref mutation. The
-next Test requires ordinary ownership and admission. See ADR-HUB-524.

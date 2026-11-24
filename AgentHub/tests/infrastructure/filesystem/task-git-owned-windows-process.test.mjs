@@ -11,7 +11,7 @@ import test from "node:test";
 import { TaskLifecycleService } from "../../../src/application/task-lifecycle-service.mjs";
 import { mcpArgumentsHash } from "../../../src/domain/mcp-arguments-hash.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
-import { runOwnedGit } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
+import { runOwnedGit, TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { prepareOwnedWindowsTaskProcess } from "../../../src/infrastructure/process/windows-task-process-owner.mjs";
 import { claimCustodyFixture } from "../../fixtures/claim-custody-public-fixture.mjs";
 
@@ -104,13 +104,16 @@ for (const mode of ["running", "completed"]) {
       expected_workflow_status: f.prior.workflowStatus, project_root: repositoryRoot, confirm_reconcile: true,
     });
     // Absence of a receipt, even after the processes are gone, cannot clear this guard.
+    const admissionFile = proofFile.replace(/\.finished$/u, ".admitted");
     await rename(proofFile, proofFile + ".held");
+    await rename(admissionFile, admissionFile + ".held");
     const pending = await reconcile("missing");
     assert.equal(pending.resolved, false);
     assert.equal(pending.cancellation.waitingFor, "windows-owned-job-retirement");
     assert.deepEqual(JSON.parse(await readFile(guardFile, "utf8")), guard);
     assert.equal(reopened.catalog.mcpOperation(operationId).taskExecution.cancellation.phase, "requested");
     await rename(proofFile + ".held", proofFile);
+    await rename(admissionFile + ".held", admissionFile);
     const settled = await reconcile("available");
     assert.equal(settled.resolved, true);
     assert.equal(settled.cancellation.effects, "retained_unknown");
@@ -200,4 +203,58 @@ test("Live MCP cancellation drains its Windows Job with an already applied Git r
   assert.equal(next.workflowStatus, "testing");
   assert.equal(f.catalog.mcpOperation(args.request_id).taskExecution.cancellation.phase, "stopped");
   assert.equal(f.catalog.mcpOperation("ordinary-test-after-stop").status, "succeeded");
+});
+
+test("Windows recovery takes the durable launch permit before Git can start after a Hub dies",
+  { skip: !windows, timeout: 45_000 }, async t => {
+  const f = await claimCustodyFixture(t, { unassigned: true });
+  const repositoryRoot = f.source.repositoryRoot;
+  const taskId = f.prior.id;
+  const operationId = "crash-before-native-dispatch";
+  const dataDir = path.join(f.root, "data");
+  const child = spawn(process.execPath, [worker, "hub", dataDir, repositoryRoot, taskId, operationId, f.source.headCommit], {
+    windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, HUB_JOB_FIXTURE_MODE: "before-spawn" },
+  });
+  const joined = once(child, "close");
+  t.after(async () => { if (child.exitCode == null && child.signalCode == null) child.kill(); await joined; });
+  let stdout = "", stderr = "";
+  child.stdout.on("data", bytes => { stdout += bytes; });
+  child.stderr.on("data", bytes => { stderr += bytes; });
+  await waitFor(() => {
+    assert.equal(child.exitCode, null, stderr);
+    return stdout.includes("prepared-held");
+  }, "The guard was never prepared before dispatch");
+  const directory = path.join(dataDir, "task-process-tree-guards", taskId);
+  const [name] = await readdir(directory);
+  const guardFile = path.join(directory, name);
+  const guard = JSON.parse(await readFile(guardFile, "utf8"));
+  const evidenceDir = path.join(dataDir, "task-process-tree-recoveries", taskId);
+  const recordBase = path.join(evidenceDir, createHash("sha256").update("native-" + guard.guardId).digest("hex") + ".json");
+  assert.equal(guard.operationId, operationId);
+  assert.deepEqual(JSON.parse(await readFile(recordBase + ".permit", "utf8")), { version: 1, guardId: guard.guardId });
+  assert.equal(await optionalFile(recordBase + ".admitted"), null);
+  assert.equal(child.kill(), true);
+  await joined;
+  const reopened = new TaskGitWorkspaceService({ dataDir });
+  const recovery = { repositoryRoot, guardId: guard.guardId, operationId };
+  await assert.rejects(reopened.recoverProcessTreeGuard(taskId, { ...recovery, operationId: "different" }), /guard identity/);
+  const proof = await reopened.recoverProcessTreeGuard(taskId, recovery);
+  assert.equal(proof.proof.kind, "windows-owned-job-fenced-before-execution");
+  assert.deepEqual(proof.proof.permit, { version: 1, guardId: guard.guardId });
+  assert.equal(await optionalFile(guardFile), null);
+  assert.equal(await optionalFile(recordBase + ".permit"), null);
+  assert.equal((await reopened.recoverProcessTreeGuard(taskId, recovery)).reused, true);
+
+  // Even a helper entering with a live, valid Hub identity cannot start this
+  // exact invocation after the recovery owner took its permit.
+  const marker = path.join(f.root, "late-dispatch-must-not-run");
+  const command = await prepareOwnedWindowsTaskProcess({ guardId: guard.guardId, recordBase }, process.execPath,
+    ["-e", "require('node:fs').writeFileSync(process.argv[1], 'ran')", marker], { timeoutMs: 1000 });
+  await assert.rejects(run(command.executable, command.args, { cwd: f.root, windowsHide: true }),
+    error => error.code === 1 && /Task Job evidence unavailable/.test(error.stderr));
+  assert.equal(await optionalFile(marker), null);
+  assert.equal(await optionalFile(recordBase + ".admitted"), null);
+  assert.equal(await reopened.withTaskLock(taskId, lease =>
+    runOwnedGit(["rev-parse", "HEAD"], { cwd: repositoryRoot, lease })), f.source.headCommit);
 });

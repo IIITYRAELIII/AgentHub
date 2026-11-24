@@ -404,6 +404,13 @@ public static class AgentHubReleaseLockPublisher {
                     { "parentBirth", parentBirth.ToString() }, { "rootPid", created.ProcessId },
                     { "rootBirth", Birth(created.Process).ToString() },
                 };
+                // Recovery can take the same permit instead. Missing evidence
+                // cannot mint another permit, and a fenced invocation cannot resume.
+                File.Move(recordBase + ".permit", recordBase + ".started");
+                var launch = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(
+                    File.ReadAllText(recordBase + ".started", Encoding.UTF8));
+                if (launch == null || launch.Count != 2 || !Object.Equals(launch["version"], 1)
+                    || !Object.Equals(launch["guardId"], args[1])) throw new InvalidOperationException("Task launch permit differs");
                 WriteTaskJobRecord(recordBase + ".admitted", identity);
                 var clock = Stopwatch.StartNew();
                 string reason = TaskJobStop(owner, recordBase + ".stop", 0, timeout);

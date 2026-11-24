@@ -1,4 +1,4 @@
-import { access, readFile, unlink } from "node:fs/promises";
+import { access, readFile, rename, unlink } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -41,12 +41,36 @@ export function requestOwnedWindowsTaskProcessStop({ recordBase }) {
   catch (error) { if (error?.code !== "EEXIST") throw error; }
 }
 
-export async function readOwnedWindowsTaskProcessProof({ guardId, recordBase }) {
-  const read = (suffix) => readFile(recordBase + suffix, "utf8").then(JSON.parse, error => {
-    if (error?.code === "ENOENT") return null;
+function readJobRecord(recordBase, suffix) {
+  return readFile(recordBase + suffix, "utf8").then(JSON.parse).catch(error => {
+    if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
     throw error;
   });
-  const [admitted, finished] = await Promise.all([read(".admitted"), read(".finished")]);
+}
+
+export function ownsWindowsTaskLaunchPermit(guardId, permit) {
+  return Boolean(permit && permit.version === 1 && permit.guardId === guardId && Object.keys(permit).length === 2);
+}
+
+export async function fenceOwnedWindowsTaskLaunch({ guardId, recordBase }) {
+  const existing = await readJobRecord(recordBase, ".fenced");
+  if (existing) return ownsWindowsTaskLaunchPermit(guardId, existing) ? existing : null;
+  const permit = await readJobRecord(recordBase, ".permit");
+  if (!ownsWindowsTaskLaunchPermit(guardId, permit)) return null;
+  try {
+    // The native resume path consumes the exact same source name. At most one
+    // rename wins. Never recreate a missing permit from the guard or receipts.
+    await rename(recordBase + ".permit", recordBase + ".fenced");
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+  const fenced = await readJobRecord(recordBase, ".fenced");
+  return ownsWindowsTaskLaunchPermit(guardId, fenced) ? fenced : null;
+}
+
+export async function readOwnedWindowsTaskProcessProof({ guardId, recordBase }) {
+  const [admitted, finished] = await Promise.all([".admitted", ".finished"].map(suffix => readJobRecord(recordBase, suffix)));
   if (!admitted || Object.keys(admitted).length !== 6
     || !ownsWindowsTaskProcessProof(guardId, finished)
     || ["version", "guardId", "parentPid", "parentBirth", "rootPid", "rootBirth"]
@@ -67,5 +91,5 @@ export function ownsWindowsTaskProcessProof(guardId, proof) {
 }
 
 export async function discardOwnedWindowsTaskProcessProof({ recordBase }) {
-  await Promise.allSettled([".admitted", ".finished", ".stop"].map(suffix => unlink(recordBase + suffix)));
+  await Promise.allSettled([".permit", ".started", ".fenced", ".admitted", ".finished", ".stop"].map(suffix => unlink(recordBase + suffix)));
 }

@@ -9,7 +9,14 @@ The existing Windows native process helper owns a separate Job for each
 guarded Git invocation. It pins the Hub process by PID and creation time.
 Windows places the suspended Git root in the Job at creation, with only its
 three standard handles inherited. The helper flushes and publishes the
-admission record before running Git. The helper survives an individual Hub
+admission record before running Git. A durable one-use permit is published
+before the guard. The native owner takes that permit by renaming it before
+resuming Git. Recovery can take the same file instead under the guard owner
+locks. By winning the atomic rename it prevents a delayed native launch,
+even if the old root was already created suspended. This proves absence of
+execution for that invocation. It does not settle earlier Git effects in the
+original operation. A missing permit alone is never proof.
+The helper survives an individual Hub
 process exit. It monitors the pinned parent handle, cancellation and timeout.
 On interruption it terminates its own Job. It publishes a completion record
 only after the root handle signals and Job accounting reports zero members.
