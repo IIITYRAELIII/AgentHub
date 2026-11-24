@@ -6968,9 +6968,17 @@ function renderMessagesContent({
     .filter(Boolean));
   const historyLoaded = state.messages.has(taskId);
   const allMessages = MessageView.conversationSurfaceMessages(state.messages.get(taskId) ?? []);
-  const visibleLimit = tailLimit > 0
+  let visibleLimit = tailLimit > 0
     ? tailLimit
     : (state.messageRenderLimits.get(taskId) ?? INITIAL_MESSAGE_RENDER_LIMIT);
+  const readingAnchor = anchor ?? (!stickToBottom && restoredScroll?.anchor);
+  if (readingAnchor?.id && allMessages.length > visibleLimit) {
+    const index = allMessages.findIndex(message => message.id === readingAnchor.id);
+    if (index >= 0 && index < allMessages.length - visibleLimit) {
+      visibleLimit = allMessages.length - index;
+      state.messageRenderLimits.set(taskId, visibleLimit);
+    }
+  }
   const messages = MessageView.messageTailWindow(allMessages, visibleLimit);
   renderHistoryLoader();
   if (messages.length === 0) {

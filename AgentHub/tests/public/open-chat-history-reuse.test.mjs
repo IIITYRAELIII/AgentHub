@@ -4,6 +4,7 @@ import { mkdir, writeFile, readFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { launchBrowser, openFixture, snapshot } from "./composer-production.fixture.mjs";
+import { openClientEventFixture } from "./client-event.fixture.mjs";
 import { TaskReadStateStore, taskHasUnreadAnswer } from "../../src/infrastructure/persistence/task-read-state-store.mjs";
 import { DesktopReadModelService } from "../../src/interfaces/desktop/desktop-read-model-service.mjs";
 
@@ -22,6 +23,77 @@ const history = (suffix, revision = 1) => ({
       { role: "agent", itemId: `final-${suffix}-${index}`, phase: "final",
         text: `Loaded answer ${suffix}/${index}${revision > 1 ? ` revision ${revision}` : ""}\n\n${"Retained complete text. ".repeat(30)}` }],
   })),
+});
+
+test("a disjoint refresh keeps the visible reading anchor and pages through the gap", { timeout: 30_000 }, async () => {
+  const browser = await launchBrowser();
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const cursors = [];
+  let total = 60;
+  const turns = Array.from({ length: 91 }, (_, i) => ({
+    id: `b-${i}`, completed: true, messages: [
+      { role: "agent", phase: "final", itemId: `answer-${i}`, text: `Answer ${i}. ${"Sample paragraph. ".repeat(40)}` },
+    ],
+  }));
+  try {
+    const errors = await openClientEventFixture(page, { surface: "web", fixtureHistory: history("a"), assetOverrides });
+    await page.route("**/api/control", async route => {
+      const { action, params } = route.request().postDataJSON();
+      if (action !== "task-history" || params.streamId !== "stream-b") return route.fallback();
+      const end = params.before ?? total;
+      const start = Math.max(0, end - params.limit);
+      if (params.before != null) cursors.push(params.before);
+      return route.fulfill({ json: { ok: true, result: {
+        provider: "codex", threadId: "thread-b", streamId: "stream-b",
+        start, end, total, nextBefore: start || null, messageTotal: total,
+        version: `tail-${total}`, items: turns.slice(start, end),
+      } } });
+    });
+    const tab = suffix => page.locator(`.stream-tabs-track [data-stream-tab-id="stream-${suffix}"]`);
+    const log = page.locator("[data-chat-log]");
+    const load = page.locator("[data-history-load]");
+    const anchor = log.locator('[data-turn-id="b-12"]').first();
+    const offset = node => node.getBoundingClientRect().top
+      - document.querySelector("[data-chat-scroll]").getBoundingClientRect().top;
+    await tab("b").click();
+    await log.locator('[data-turn-id="b-59"]').first().waitFor();
+    await load.click();
+    await anchor.evaluate(node => {
+      const scroll = document.querySelector("[data-chat-scroll]");
+      scroll.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+      scroll.scrollTop += node.getBoundingClientRect().top - scroll.getBoundingClientRect().top;
+    });
+    const initialOffset = await anchor.evaluate(offset);
+    assert.ok(Math.abs(initialOffset) <= 2, "the reader is positioned at turn 12");
+    await tab("a").click();
+    await log.locator('[data-turn-id="turn-a-11"]').first().waitFor();
+    total = 91;
+    await tab("b").click();
+    await log.locator('[data-turn-id="b-90"]').first().waitFor({ state: "attached" });
+    const ids = () => page.evaluate(() => window.__clientProjectionFixture.messages["stream-b"].map(m => m.turnId));
+    assert.deepEqual(await ids(), turns.filter((_, i) => i !== 60).map(turn => turn.id));
+    assert.ok(Math.abs(await anchor.evaluate(offset) - initialOffset) <= 2, "same visible message and pixel offset");
+    // The first click can reveal a virtualized local prefix. The next one
+    // must request the missing interval using the newer range's cursor.
+    if (!await log.locator('[data-turn-id="b-0"]').count()) {
+      await load.evaluate(button => button.click());
+      await log.locator('[data-turn-id="b-0"]').first().waitFor({ state: "attached" });
+    }
+    await load.evaluate(button => button.click());
+    await page.waitForFunction(() => window.__clientProjectionFixture.messages["stream-b"].length === 91);
+    assert.deepEqual(cursors, [30, 61]);
+    assert.deepEqual(await ids(), turns.map(turn => turn.id));
+    assert.ok(Math.abs(await anchor.evaluate(offset) - initialOffset) <= 2, "filling the gap keeps the reader in place");
+    assert.equal(await page.evaluate(() => window.__clientProjectionFixture.pagination["stream-b"].hasOlder), false);
+    if (process.env.AGENT_HUB_UI_EVIDENCE_DIR) {
+      await mkdir(process.env.AGENT_HUB_UI_EVIDENCE_DIR, { recursive: true });
+      await page.screenshot({ path: path.join(process.env.AGENT_HUB_UI_EVIDENCE_DIR, "retained-gap-loaded.png") });
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.unrouteAll({ behavior: "wait" });
+    await browser.close();
+  }
 });
 
 test("cached navigation paints before selection; a new final clears only after exact painted SQLite read ACK", { timeout: 30000 }, async (t) => {

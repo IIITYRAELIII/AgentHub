@@ -3009,6 +3009,20 @@ function mergeNewestHistory(previous, newest) {
   ]);
 }
 
+// Keep the loaded ranges in history order. Pagination walks back from the
+// newest range, so an older retained page cannot hide a gap in front of it.
+function refreshHistoryRanges(previous, history, messages) {
+  const ranges = previous.filter(range => range.start < history.start);
+  const older = ranges.at(-1);
+  if (older && older.end >= history.start) {
+    ranges[ranges.length - 1] = { ...older, end: history.end,
+      messages: mergeNewestHistory(older.messages, messages) };
+  } else {
+    ranges.push({ start: history.start, end: history.end, nextBefore: history.nextBefore, messages });
+  }
+  return ranges;
+}
+
 function focusedHistoryMessages(focusedTurn) {
   if (!focusedTurn) return [];
   return historyMessages({
@@ -3024,8 +3038,10 @@ function displayedHistory(id, base = historyWindowByTask.get(id) ?? []) {
   return focused ? mergeNewestHistory(base, focused.messages) : base;
 }
 
-function setHistoryWindow(id, messages) {
+function displayHistoryRanges(id, ranges) {
+  const messages = ranges.length === 1 ? ranges[0].messages : ranges.flatMap(range => range.messages);
   const base = projectCanonicalMessages(messages);
+  if (ranges.length === 1) ranges[0].messages = base;
   historyWindowByTask.set(id, base);
   historyByTask.set(id, displayedHistory(id, base));
 }
@@ -3203,32 +3219,25 @@ function applyOpened(result, {
   const newest = historyMessages(history, retainsPinnedFocus ? null : result.focusedTurn);
   const existingPage = historyPageByTask.get(id);
   const previousPage = existingPage && sameIdentity(existingPage.identity, history) ? existingPage : null;
-  const preserveOlder = !result.focusedTurn
-    && previousPage
-    && Number(previousPage.start) < Number(history.start)
-    && Number(previousPage.end) >= Number(history.start);
   if (retainsPinnedFocus) setFocusedHistoryWindow(id, result, exactNavigation);
-  const previousWindow = previousPage ? historyWindowByTask.get(id) : null;
-  setHistoryWindow(id, retainsPinnedFocus && previousWindow
-    ? previousWindow
-    : preserveOlder
-      ? mergeNewestHistory(previousWindow ?? [], newest)
-      : newest);
-  const liveBefore = liveCardsByTask.get(id) ?? null;
-  const liveCleared = clearDurablyCompletedLiveCard(id);
-  if (!retainsPinnedFocus || !previousPage) {
+  if (retainsPinnedFocus && previousPage) {
+    historyByTask.set(id, displayedHistory(id));
+  } else {
+    const ranges = refreshHistoryRanges(result.focusedTurn ? [] : previousPage?.ranges ?? [], history, newest);
+    displayHistoryRanges(id, ranges);
     historyPageByTask.set(id, {
       identity: stableIdentity(history),
-      reusable: previousPage?.reusable === true && sameIdentity(previousPage.identity, history),
-      start: preserveOlder ? previousPage.start : history.start,
-      end: history.end,
+      reusable: previousPage?.reusable === true,
+      ranges,
       total: history.total,
       messageTotal: history.messageTotal,
-      nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
+      nextBefore: ranges.at(-1).nextBefore,
       loading: !settleHistory && history.nextBefore != null,
       version: history.version ?? "",
     });
   }
+  const liveBefore = liveCardsByTask.get(id) ?? null;
+  const liveCleared = clearDurablyCompletedLiveCard(id);
   if (selectTask) rememberSelectedTaskId(id);
   if (!skipSnapshot && result?.snapshot?.notModified !== true) {
     try {
@@ -3862,18 +3871,26 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
     // A task switch can finish while the remote command was in flight.  Its
     // old result must not alter the pagination and scroll of the new task.
     if (historyPageByTask.get(id) !== page) return;
-    setHistoryWindow(
-      id,
-      prependOlderHistory(historyWindowByTask.get(id) ?? [], historyMessages(history)),
-    );
     const nextBefore = history.nextBefore;
+    const ranges = refreshHistoryRanges(page.ranges.slice(0, -1), {
+      ...history,
+      nextBefore: Number.isSafeInteger(nextBefore) && nextBefore >= 0 && nextBefore < requestedBefore
+        ? nextBefore : (returnedStart > 0 ? returnedStart : null),
+    }, historyMessages(history));
+    const newest = page.ranges.at(-1);
+    const loaded = ranges.at(-1);
+    if (loaded.end >= newest.start) {
+      loaded.end = newest.end;
+      loaded.messages = prependOlderHistory(newest.messages, loaded.messages);
+    } else if (newest.start < history.total) {
+      throw new Error("Agent Hub вернул не ту страницу истории. Повторите загрузку.");
+    }
+    displayHistoryRanges(id, ranges);
     Object.assign(page, {
-      start: history.start,
+      ranges,
       total: history.total,
       messageTotal: history.messageTotal,
-      nextBefore: Number.isSafeInteger(nextBefore) && nextBefore >= 0 && nextBefore < requestedBefore
-        ? nextBefore
-        : (returnedStart > 0 ? returnedStart : null),
+      nextBefore: loaded.nextBefore,
       loading: false,
     });
     syncHistoryPagination(id);
