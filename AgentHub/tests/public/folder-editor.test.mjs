@@ -108,7 +108,7 @@ for(const terminal of ["success","rejection"]) testCase(`UNKNOWN retains request
   const requests=backend.calls.filter(call=>call.action==="workspace-folder-result");
   assert.ok(requests.length>=2);for(const call of requests)assert.equal(call.params.requestId,mutations(backend)[0].params.requestId);
   if(terminal==="success")assert.equal(h.modal()===null,true);
-  else{assert.ok(h.modal());assert.equal(h.field("comment").value,"Черновик");assert.equal(h.field("name").disabled,false);}
+  else{assert.ok(h.modal());assert.equal(h.field("comment").value,"Черновик");assert.equal(h.field("name").disabled,false);assert.equal(h.modal().querySelector("h2").textContent,"Редактирование папки");}
 });
 
 testCase("UNKNOWN close/reload restores only a persistent notice and explicit read recovers a rejected draft",async t=>{
@@ -177,6 +177,34 @@ testCase("late success preserves another open editor and its focus",async t=>{
   release();await h.requests.at(-1).promise;await drain(backend);
   assert.equal(h.modal()===editor,true);assert.equal(h.document.activeElement===focused,true);
   assert.equal(h.field("comment").value,"Active draft");assert.equal(mutations(backend).length,1);assert.equal(h.toasts.length,1);
+});
+
+for(const origin of ["notice","modal"]) testCase(`readback failure stays with its original operation: ${origin}`,async t=>{
+  const backend=await backendFixture(t),h=await clientFixture(backend,surface);h.open();h.field("comment").value="Original";
+  backend.faults.lose=true;save(h);await drain(backend);
+  const original=mutations(backend)[0].params;
+  let fail;h.faults.readGate={promise:new Promise((resolve,reject)=>{fail=reject;})};
+  if(origin==="notice")cancel(h);
+  const readButton=origin==="notice"?h.document.querySelector("[data-folder-notice-id] button"):h.modal().querySelectorAll("footer button")[1];
+  readButton.click();const request=h.requests.at(-1).promise;
+  if(origin==="modal")cancel(h);
+  h.open(h.controller.folder("Другая").id);h.field("name").value="";h.submit();
+  h.field("name").value="Active name";h.field("comment").value="Active comment";h.field("comment").focus();
+  const editor=h.modal(),focused=h.document.activeElement,alert=editor.querySelector('[role="alert"]'),priorAlert=alert.textContent;
+  fail(new Error("late addressed read failed"));await assert.rejects(request,/late addressed read failed/u);await drain(backend);
+  assert.equal(h.modal()===editor,true);assert.equal(h.document.activeElement===focused,true);
+  assert.equal(h.field("name").value,"Active name");assert.equal(h.field("comment").value,"Active comment");
+  assert.equal(alert.textContent,priorAlert,"another editor keeps its own alert");assert.equal(alert.hidden,false);
+  const notice=h.document.querySelector("[data-folder-notice-id]");
+  assert.match(notice.querySelector('[role="alert"]').textContent,/Не удалось проверить результат/u);
+  assert.equal(mutations(backend).length,1);
+  const reads=backend.calls.filter(call=>call.action==="workspace-folder-result");assert.equal(reads.length,1);
+  assert.equal(reads[0].params.requestId,original.requestId);assert.deepEqual(reads[0].params.payload,original.payload);
+  cancel(h);assert.match(h.document.querySelector('[data-folder-notice-id] [role="alert"]').textContent,/Повторная команда не отправлена/u);
+  h.faults.readGate=null;h.document.querySelector("[data-folder-notice-id] button").click();await drain(backend);
+  assert.equal(h.document.querySelector("[data-folder-notice-id]"),null);assert.equal(h.modal()===null,true);assert.equal(mutations(backend).length,1);
+  assert.equal(backend.calls.filter(call=>call.action==="workspace-folder-result").length,2);
+  assert.equal(backend.calls.filter(call=>call.action==="workspace-folder-result")[1].params.requestId,original.requestId);
 });
 
 testCase("draft CTA safely reads a deleted identity and never recreates the folder",async t=>{

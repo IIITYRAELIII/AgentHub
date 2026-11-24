@@ -122,3 +122,11 @@ process and the same durable receipt; installed runtime restart is not claimed.
 Previous screenshot/metric verdicts above remain historical and bound to their
 original hashes. A new exact source/behavior Design verdict, native corrective
 Test and checked composition are required; metadata records those outcomes.
+
+
+Architecture recovery follow-up: terminal rejection restores the editor title as
+well as its fields. A delayed addressed-read failure can write inline feedback
+only to that operation's modal; otherwise its own persistent notice retains the
+alert. A neighboring editor's fields, alert and focus are preserved. Readback
+continues with the exact original request and never resubmits the mutation.
+Focused non-GUI reproduction covers both notice-origin and modal-origin reads.

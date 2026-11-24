@@ -94,6 +94,7 @@
             ? `Workspace „${record.meta.workspaceName}“ может уже находиться ${record.meta.targetName ? `в папке „${record.meta.targetName}“` : "в разделе „Без папки“"}. Показано текущее состояние каталога.`
             : record.input.action === "remove" ? "Папка могла быть удалена. Повторная команда не отправлена."
             : "Папка могла быть изменена. Повторная команда не отправлена."));
+          if (record.readError) region.append(node("p",record.readError,{ role: "alert", "aria-atomic": "true", class: "folder-catalog-alert" }));
           const button = node("button",record.state === "checking" ? "Проверяем…" : "Проверить результат",{ type: "button", class: "board-task-primary" });
           button.setAttribute("aria-disabled",String(record.state === "checking"));
           button.addEventListener("click",() => void check(record)); region.append(button);
@@ -251,8 +252,8 @@
     }
     async function check(record) {
       if (inFlight.has(record.input.requestId)) return;
-      record.readbackActivated = true; record.restoreDraftRequested = false;
-      inFlight.add(record.input.requestId); record.state = "checking"; updateNotices();
+      record.readbackActivated = true; record.restoreDraftRequested = false; delete record.readError;
+      inFlight.add(record.input.requestId); record.state = "checking"; persistAfterAdmission(); updateNotices();
       if (modal?.record === record) { modal.confirm.setAttribute("aria-disabled","true"); modal.confirm.textContent = "Проверяем…"; }
       try {
         const receipt = await read("workspace-folder-result",{ ...record.input,
@@ -270,7 +271,9 @@
         }
       } catch {
         unknown(record);
-        errorInModal("Не удалось проверить результат. Повторная команда не отправлена.");
+        const message = "Не удалось проверить результат. Повторная команда не отправлена.";
+        if (modal?.record === record) errorInModal(message);
+        else { record.readError = message; persistAfterAdmission(); updateNotices(); }
       } finally { inFlight.delete(record.input.requestId); }
     }
     function openShell(mode, title, origin) {
@@ -374,6 +377,7 @@
     }
     function editorReady(current) {
       current.busy = false; current.refreshing = false; current.mode = "edit"; current.record = null;
+      current.title.textContent = "Редактирование папки";
       current.dialog.setAttribute("aria-busy","false");
       current.name.disabled = current.comment.disabled = current.close.disabled = current.cancel.disabled = false;
       current.confirm.disabled = false; current.confirm.removeAttribute("aria-disabled");
