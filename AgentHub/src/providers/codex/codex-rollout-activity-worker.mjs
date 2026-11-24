@@ -1,5 +1,6 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { readCodexTracePage } from "./codex-trace-page.mjs";
+import { readCodexVisualization } from "./codex-visualization.mjs";
 import { recoverCodexRolloutSubagentsOnCurrentThread } from "./codex-rollout-subagent-recovery.mjs";
 
 import {
@@ -9,6 +10,7 @@ import {
 
 async function execute(message) {
   if (message.operation === "trace-page") return readCodexTracePage(message.rolloutPath, message.options);
+  if (message.operation === "visualization") return readCodexVisualization(message.rolloutPath, message.options);
   if (message.operation === "recover-subagents") {
     return recoverCodexRolloutSubagentsOnCurrentThread(message.rolloutPath, message.candidates);
   }

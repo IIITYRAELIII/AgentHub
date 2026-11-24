@@ -122,3 +122,7 @@ export function readCodexTracePageInWorker(rolloutPath, options, timing) {
   const request = options?.groupId ? requestExactTraceWorker : requestWorker;
   return request("trace-page", { rolloutPath, options }, timing);
 }
+
+export function readCodexVisualizationInWorker(rolloutPath, options) {
+  return requestWorker("visualization", { rolloutPath, options });
+}

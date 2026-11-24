@@ -46,6 +46,7 @@ const STATIC_CONTENT_TYPES = new Map([
   [".jpeg", "image/jpeg"],
   [".jpg", "image/jpeg"],
   [".js", "text/javascript; charset=utf-8"],
+  [".html", "text/html; charset=utf-8"],
   [".mjs", "text/javascript; charset=utf-8"],
   [".png", "image/png"],
   [".svg", "image/svg+xml; charset=utf-8"],
@@ -380,6 +381,7 @@ function responseHeaders(contentType, {
       "base-uri 'none'",
       "connect-src 'self'",
       "form-action 'none'",
+      "frame-src 'self'",
       "frame-ancestors 'none'",
       `img-src 'self' data: blob:${externalImages ? " http: https:" : ""}`,
       "object-src 'none'",
@@ -1000,7 +1002,7 @@ export class MiniAppServer {
 
   async #handle(request, response, transportReceivedAtMs = Date.now()) {
     const method = String(request.method ?? "GET").toUpperCase();
-    const url = new URL(request.url ?? "/", `http://${this.#host}`);
+    const url = new URL(request.url ?? "/", "http://localhost");
     if (this.#startupOnly) {
       const read = ["GET", "HEAD"].includes(method);
       const localSession = url.pathname === "/api/local-session";
@@ -1993,6 +1995,11 @@ export class MiniAppServer {
       const styleNonce = url.pathname === "/" ? randomBytes(18).toString("base64") : "";
       const read = () => this.#staticBody(url.pathname, assetBundle, { nonce: styleNonce });
       const body = timing ? await timing.measure("http-asset-read", read) : await read();
+      const frameHeaders = url.pathname === "/visualization-frame.html" ? {
+        "Content-Security-Policy": loopbackRequest(request)
+          ? "frame-ancestors 'self' vscode-webview: vscode-file:"
+          : "frame-ancestors 'self'",
+      } : undefined;
       send(
         response,
         200,
@@ -2005,6 +2012,7 @@ export class MiniAppServer {
           telegramRuntime,
           styleNonce,
           externalImages: url.pathname === "/",
+          headers: frameHeaders,
         },
       );
     } catch (error) {

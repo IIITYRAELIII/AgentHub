@@ -12,6 +12,23 @@ The private PKCE verifier and token never enter the page. Cancellation/replaceme
 are never persisted as a client draft, command receipt or shared snapshot. A failed
 request is displayed without reflecting response secrets. See ADR-HUB-254.
 
+## Inline Codex visualizations
+
+A standalone visualization reference in a completed Codex answer occupies its
+position in both current and retained chat. Markdown code keeps the literal
+reference. Ordinary Markdown and HTML file links continue using the existing
+safe message and file renderers. Missing, invalid or unauthorized artifacts
+have a local unavailable state without displaying the machine path.
+
+The addressed history read joins the Stream, Codex Thread, turn, final item and
+exact marker digest. The provider transcript and the configured artifact
+directory authorize the read. Neither the browser nor an arbitrary path in
+message text can select a file. The sandboxed frame accepts artifact script
+execution on an opaque origin, with no Hub API credentials or parent DOM access.
+Its only host integration is a source-checked layout measurement. The
+browser may reload the artifact when its message is reopened.
+See [ADR-HUB-520](../decisions/ADR-HUB-520-inline-codex-visualization.md).
+
 ## Addressed queue receipts and deferred Task presentation
 
 An addressed lookup projects the same result as the recent window. The command
