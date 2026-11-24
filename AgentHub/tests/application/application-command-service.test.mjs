@@ -61,12 +61,10 @@ test("workspace and stream commands use the shared command path", async () => {
     settings: { workingDirectory: "D:/work/AgentHub" },
   }, { source: "desktop", userId: "7" });
   await commands.dispatch("workspace.folder.move", {
-    workspaceId: "workspace-1",
-    folderName: "Клиенты",
+    requestId:"move-exact",workspaceId:"workspace-1",sourceFolderId:null,target:{id:"folder-1",revision:4},
   }, { source: "desktop", userId: "7" });
   await commands.dispatch("workspace.folder.rename", {
-    fromFolderName: "Клиенты",
-    toFolderName: "Заказчики",
+    requestId:"rename-exact",folderId:"folder-1",expectedRevision:4,name:"Заказчики",
   }, { source: "desktop", userId: "7" });
   await commands.dispatch("workspace.developer-rules.update", {
     workspaceId: "workspace-1",
@@ -121,11 +119,11 @@ test("workspace and stream commands use the shared command path", async () => {
     },
     {
       name: "moveWorkspaceToFolder",
-      args: [{ workspaceId: "workspace-1", folderName: "Клиенты" }],
+      args: [{ requestId:"move-exact",workspaceId:"workspace-1",sourceFolderId:null,target:{id:"folder-1",revision:4} }],
     },
     {
       name: "renameWorkspaceFolder",
-      args: [{ fromFolderName: "Клиенты", toFolderName: "Заказчики" }],
+      args: [{ requestId:"rename-exact",folderId:"folder-1",expectedRevision:4,name:"Заказчики" }],
     },
     {
       name: "updateWorkspaceDeveloperRules",
@@ -179,4 +177,21 @@ test("Stream rotation keeps an exact task-scoped command target", async () => {
     name: "rotateStream",
     args: [{ ...target }],
   });
+});
+
+
+test("folder receipt lookup remains a read while the original catalog mutation waits", {timeout:3000}, async()=>{
+  const gate=Promise.withResolvers(), entered=Promise.withResolvers();
+  const input={requestId:"original",action:"remove",payload:{folderId:"folder-1",previewToken:"exact"}};
+  let writes=0;
+  const commands=createApplicationCommandService({handlers:new Proxy({
+    workspaceFolderCommand:async params=>{writes++; entered.resolve(); await gate.promise; return params;},
+    workspaceFolderCommandResult:params=>({requestId:params.requestId,status:"unknown"}),
+  },{get:(target,key)=>target[key]??(()=>null)})});
+  const pending=commands.dispatch("workspace.folder.command",input,{clientId:"web"});
+  await entered.promise;
+  try {
+    assert.deepEqual(await commands.dispatch("workspace.folder.result",input,{clientId:"webview"}),{requestId:"original",status:"unknown"});
+    assert.equal(writes,1);
+  } finally {gate.resolve(); await pending;}
 });

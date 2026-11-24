@@ -1,5 +1,29 @@
 # UI-001 — Canonical message projection
 
+## Workspace folder actions
+
+Dialogs alone owns folder editing. Workspace native drag on Web/WebView and
+the keyboard/touch menu chooser use the same checked move owner. A different
+existing folder row is the only drop target; foreign payloads and stale,
+renamed, deleted or current-folder targets do nothing. A collapsed target stays
+collapsed; no hover timer or internal reorder is introduced. Mobile uses the
+same menu action without touch drag. Dashboard remains navigation.
+
+Folder deletion uses the shared native confirmation shell, exact server member
+list, initial Cancel focus, body-only scroll and a visible footer. No mutation
+occurs before confirmation. Pending locks one command; stale content requires
+another explicit confirmation. Stable IDs preserve disclosure/focus across
+catalog refresh and rename, and deletion clears obsolete collapse state.
+
+Lost responses transition the same modal primary slot to normal-accent
+«Проверить результат». Closing retains a labelled persistent catalog notice;
+reload restores the original request pointer without resubmission or autofocus.
+Readback reuses its exact request and arguments/hash, never a fresh mutation.
+Only authoritative terminal success/rejection retires the notice and entity
+lock. Unrelated navigation remains available, and canonical snapshot absence
+does not create a phantom row. Identical polling states do not repeatedly
+announce; terminal outcomes announce once. See ADR-HUB-121.
+
 The Server accounts panel projects the shared GitHub account's public identity and
 connected/disconnected/expired state. Connect, reconnect and disconnect use protected
 local control; remote clients cannot start or poll authorization. Primary sign-in

@@ -1,4 +1,5 @@
 import { assertNoPendingTaskInterruption } from "./task-operation-interruption-fence.mjs";
+import { configureWorkspaceFolders, WorkspaceFolderCatalog, workspaceFolderName } from "./workspace-folder-catalog.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -33,7 +34,7 @@ import {
 } from "../../domain/workspace-task-workflow.mjs";
 import { workspaceSettingsWithTaskPrefix } from "../../domain/task-number.mjs";
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);
@@ -208,6 +209,7 @@ function configureSchema(database) {
     INSERT INTO hub_workspace_catalog_meta (key, value) VALUES ('schema_version', '${SCHEMA_VERSION}')
       ON CONFLICT(key) DO UPDATE SET value = excluded.value;
   `);
+  configureWorkspaceFolders(database);
   const workspaceColumns = database.prepare("PRAGMA table_info(hub_workspaces)").all();
   if (!workspaceColumns.some((column) => column.name === "comment")) {
     database.exec("ALTER TABLE hub_workspaces ADD COLUMN comment TEXT NOT NULL DEFAULT ''");
@@ -465,10 +467,6 @@ function deleteWorkspaceLayoutRows(database, workspaceId) {
   }
 }
 
-function workspaceFolderName(value) {
-  return String(value ?? "").replace(/\s+/gu, " ").trim().slice(0, 80);
-}
-
 function developerRuleScope(value) {
   const scope = String(value ?? "").trim().toLowerCase();
   if (!DEVELOPER_RULE_SCOPES.has(scope)) throw new Error(`invalid developer rule scope: ${value}`);
@@ -700,33 +698,38 @@ export class WorkspaceCatalogStore {
   createWorkspace({
     id = this.#idFactory(), name, comment = "", kind = "user", systemKey = null, settings = {},
   } = {}) {
-    const workspaceId = safeIdentifier(id, "workspace id");
-    const workspaceName = normalizedWorkspaceName(name);
-    const normalizedKind = String(kind).trim().toLowerCase();
-    if (!['user', 'system'].includes(normalizedKind)) throw new Error("invalid workspace kind");
-    const key = systemKey == null ? null : safeIdentifier(systemKey, "workspace system key");
-    if (normalizedKind === "system" && !key) throw new Error("system workspace requires systemKey");
-    if (normalizedKind === "user" && key) throw new Error("user workspace cannot have systemKey");
-    const nowMs = this.#nowMs();
-    this.#database.prepare(`
-      INSERT INTO hub_workspaces
-        (id, name, comment, kind, system_key, created_at_ms, updated_at_ms, settings_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      workspaceId,
-      workspaceName,
-      String(comment ?? "").trim().slice(0, 1000),
-      normalizedKind,
-      key,
-      nowMs,
-      nowMs,
-      JSON.stringify(workspaceSettingsWithReleaseWorkflow(
-        workspaceSettingsWithTaskPrefix(settings),
-        releaseWorkflowEnabled(settings),
-      )),
-    );
-    this.#updateWorkspaceDeveloperRules(workspaceId, "");
-    return this.workspace(workspaceId);
+    return this.#transaction(() => {
+      if (workspaceFolderName(settings.catalogFolder)) {
+        settings = { ...settings, catalogFolder: this.#folders().ensureWorkspaceCreation(settings.catalogFolder) };
+      }
+      const workspaceId = safeIdentifier(id, "workspace id");
+      const workspaceName = normalizedWorkspaceName(name);
+      const normalizedKind = String(kind).trim().toLowerCase();
+      if (!['user', 'system'].includes(normalizedKind)) throw new Error("invalid workspace kind");
+      const key = systemKey == null ? null : safeIdentifier(systemKey, "workspace system key");
+      if (normalizedKind === "system" && !key) throw new Error("system workspace requires systemKey");
+      if (normalizedKind === "user" && key) throw new Error("user workspace cannot have systemKey");
+      const nowMs = this.#nowMs();
+      this.#database.prepare(`
+        INSERT INTO hub_workspaces
+          (id, name, comment, kind, system_key, created_at_ms, updated_at_ms, settings_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        workspaceId,
+        workspaceName,
+        String(comment ?? "").trim().slice(0, 1000),
+        normalizedKind,
+        key,
+        nowMs,
+        nowMs,
+        JSON.stringify(workspaceSettingsWithReleaseWorkflow(
+          workspaceSettingsWithTaskPrefix(settings),
+          releaseWorkflowEnabled(settings),
+        )),
+      );
+      this.#updateWorkspaceDeveloperRules(workspaceId, "");
+      return this.workspace(workspaceId);
+    });
   }
 
   renameWorkspace(workspaceId, name) {
@@ -752,79 +755,48 @@ export class WorkspaceCatalogStore {
   }
 
   updateWorkspaceSettings(workspaceId, settings = {}) {
-    const id = safeIdentifier(workspaceId, "workspace id");
-    const current = this.workspace(id);
-    if (!current) throw new Error(`workspace not found: ${id}`);
-    const explicitReleaseWorkflow = Object.prototype.hasOwnProperty.call(
-      settings ?? {},
-      RELEASE_WORKFLOW_SETTING,
-    );
-    const enabled = explicitReleaseWorkflow
-      ? releaseWorkflowEnabled(settings)
-      : releaseWorkflowEnabled(current.settings);
-    const nextSettings = workspaceSettingsWithReleaseWorkflow(workspaceSettingsWithTaskPrefix(settings), enabled);
-    if (Object.prototype.hasOwnProperty.call(settings ?? {}, "autoReviewEnabled")
-      || Object.prototype.hasOwnProperty.call(current.settings ?? {}, "autoReviewEnabled")) {
-      nextSettings.autoReviewEnabled = Object.prototype.hasOwnProperty.call(settings ?? {}, "autoReviewEnabled")
-        ? settings.autoReviewEnabled === true
-        : current.settings?.autoReviewEnabled === true;
-    }
-    this.#database.prepare(`
-      UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
-    `).run(JSON.stringify(nextSettings), this.#nowMs(), id);
-    return this.workspace(id);
-  }
-
-  moveWorkspaceToFolder(workspaceId, folderName) {
-    const id = safeIdentifier(workspaceId, "workspace id");
     return this.#transaction(() => {
+      const id = safeIdentifier(workspaceId, "workspace id");
       const current = this.workspace(id);
       if (!current) throw new Error(`workspace not found: ${id}`);
-      const settings = current.settings && typeof current.settings === "object" && !Array.isArray(current.settings)
-        ? { ...current.settings }
-        : {};
-      const normalizedFolderName = workspaceFolderName(folderName);
-      if (normalizedFolderName) settings.catalogFolder = normalizedFolderName;
-      else delete settings.catalogFolder;
+      const explicitReleaseWorkflow = Object.prototype.hasOwnProperty.call(
+        settings ?? {},
+        RELEASE_WORKFLOW_SETTING,
+      );
+      const enabled = explicitReleaseWorkflow
+        ? releaseWorkflowEnabled(settings)
+        : releaseWorkflowEnabled(current.settings);
+      const nextSettings = workspaceSettingsWithReleaseWorkflow(workspaceSettingsWithTaskPrefix(settings), enabled);
+      // Membership has its own checked command. A stale full settings form cannot
+      // move a Workspace back into a renamed/deleted folder or clear membership.
+      if (Object.hasOwn(settings, "catalogFolder")
+        && workspaceFolderName(settings.catalogFolder) !== workspaceFolderName(current.settings?.catalogFolder)) {
+        throw new Error("Workspace folder membership changed; use the checked move command");
+      }
+      if (current.settings?.catalogFolder) nextSettings.catalogFolder = current.settings.catalogFolder;
+      else delete nextSettings.catalogFolder;
+      if (Object.prototype.hasOwnProperty.call(settings ?? {}, "autoReviewEnabled")
+        || Object.prototype.hasOwnProperty.call(current.settings ?? {}, "autoReviewEnabled")) {
+        nextSettings.autoReviewEnabled = Object.prototype.hasOwnProperty.call(settings ?? {}, "autoReviewEnabled")
+          ? settings.autoReviewEnabled === true
+          : current.settings?.autoReviewEnabled === true;
+      }
       this.#database.prepare(`
         UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
-      `).run(JSON.stringify(settings), this.#nowMs(), id);
+      `).run(JSON.stringify(nextSettings), this.#nowMs(), id);
       return this.workspace(id);
     });
   }
 
-  renameWorkspaceFolder(fromFolderName, toFolderName) {
-    const fromName = workspaceFolderName(fromFolderName);
-    const toName = workspaceFolderName(toFolderName);
-    if (!fromName || !toName) throw new Error("workspace folder names are required");
-    if (fromName === toName) {
-      return { fromFolderName: fromName, toFolderName: toName, workspaceCount: 0 };
-    }
-    const rows = this.#database.prepare("SELECT id, settings_json FROM hub_workspaces").all();
-    const matching = rows.flatMap((row) => {
-      let settings = {};
-      try { settings = JSON.parse(String(row.settings_json ?? "{}")); } catch { settings = {}; }
-      if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
-      if (workspaceFolderName(settings.catalogFolder) !== fromName) return [];
-      return [{ id: String(row.id), settings: { ...settings, catalogFolder: toName } }];
-    });
-    if (matching.length) {
-      const updatedAtMs = this.#nowMs();
-      const update = this.#database.prepare(`
-        UPDATE hub_workspaces SET settings_json = ?, updated_at_ms = ? WHERE id = ?
-      `);
-      this.#transaction(() => {
-        for (const workspace of matching) {
-          update.run(JSON.stringify(workspace.settings), updatedAtMs, workspace.id);
-        }
-      });
-    }
-    return {
-      fromFolderName: fromName,
-      toFolderName: toName,
-      workspaceCount: matching.length,
-    };
+  #folders() {
+    return new WorkspaceFolderCatalog({ database: this.#database,
+      transaction: operation => this.#transaction(operation), now: () => this.#nowMs() });
   }
+
+  workspaceFolderCatalog() { return this.#folders().catalog(); }
+  previewWorkspaceFolderDeletion(folderId) { return this.#folders().preview(folderId); }
+  workspaceFolderCommand(input) { return this.#folders().command(input); }
+  workspaceFolderCommandResult(input) { return this.#folders().result(input); }
 
   archiveWorkspace(workspaceId) {
     const id = safeIdentifier(workspaceId, "workspace id");
@@ -1083,8 +1055,12 @@ export class WorkspaceCatalogStore {
     }
   }
 
-  createWorkspaceWithStream({ name, comment = "", streamName = null, settings = {} } = {}) {
+  createWorkspaceWithStream({ name, comment = "", streamName = null, settings = {}, folderTarget } = {}) {
     return this.#transaction(() => {
+      if (workspaceFolderName(settings.catalogFolder)) {
+        const folder = this.#folders().requireFolder(folderTarget?.id,folderTarget?.revision);
+        settings = { ...settings, catalogFolder: folder.name };
+      }
       const workspace = this.createWorkspace({ name, comment, settings });
       const stream = this.createStream({ workspaceId: workspace.id, name: streamName });
       return { workspace, stream };

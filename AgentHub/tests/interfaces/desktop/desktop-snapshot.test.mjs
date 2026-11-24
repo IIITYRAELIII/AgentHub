@@ -82,7 +82,7 @@ async function cancelledReceiptFixture(t, later = 0) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub422-aged-receipt-"));
   const store = new RuntimeStateStore({ dataDir: directory });
   let external;
-  t.after(async () => { external?.close(); await store.close(); await rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { external?.close(); await store.close(); await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); });
   const item = { id: "old-release-event", clientUserMessageId: "release:original:1441:operation.resumed",
     provider: "codex", threadId: "thread-1", streamId: "stream-1", projectRoot: "D:/work",
     input: "synthetic queued event", temporaryFiles: [], createdAt: new Date().toISOString() };
@@ -2819,4 +2819,29 @@ test("authoritative live run clears stale catalog unknown while real and catalog
   assert.equal(snapshot.running, false);
   assert.equal(snapshot.activityUnknown, true);
   assert.equal(snapshot.run.activityUnknown, true);
+});
+
+
+test("empty folder catalog changes invalidate both snapshot protocols, including another SQLite client", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(),"hub121-snapshot-catalog-"));
+  const databaseFile = path.join(directory,"journal.sqlite");
+  const owner = new WorkspaceCatalogStore({databaseFile}); await owner.load();
+  const observer = new WorkspaceCatalogStore({databaseFile}); await observer.load();
+  t.after(async()=>{observer.close(); owner.close(); await rm(directory,{recursive:true,force:true,maxRetries:3,retryDelay:100});});
+  const setup = fixture({revision:()=>owner.snapshotRevision,board:{
+    get snapshotRevision(){return owner.snapshotRevision;}, snapshot:()=>[], layout:()=>({columnOrder:[],notesComment:""}),
+    workspaces:()=>owner.hierarchy(),workspaceFolderCatalog:()=>owner.workspaceFolderCatalog(),
+  }});
+  const initial = await setup.desktopSnapshot({});
+  assert.deepEqual(initial.workspaceFolders.folders,[]);
+  const folder = observer.workspaceFolderCommand({requestId:"external-create",action:"create",payload:{name:"Empty"}}).result.folder;
+  const created = await setup.desktopSnapshot({knownVersion:initial.version});
+  assert.equal(created.workspaceFolders.folders[0].id,folder.id);
+  assert.notEqual(created.version,initial.version);
+  const compact = await setup.desktopSnapshot({compactSnapshot:true,snapshotProtocol:4});
+  assert.deepEqual(compact.workspaceFolders,created.workspaceFolders);
+  observer.workspaceFolderCommand({requestId:"external-rename",action:"rename",payload:{folderId:folder.id,expectedRevision:folder.revision,name:"Renamed"}});
+  const renamed = await setup.desktopSnapshot({compactSnapshot:true,snapshotProtocol:4,knownVersion:compact.version});
+  assert.equal(renamed.workspaceFolders.folders[0].name,"Renamed");
+  assert.equal(renamed.workspaceFolders.folders[0].id,folder.id);
 });

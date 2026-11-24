@@ -387,6 +387,7 @@ const localSessionReady = Promise.all([
 window.AgentHubLocalSessionReady = localSessionReady;
 const vscodeMode = Boolean(window.__agentHubVscode);
 let mobileDialogs = null;
+let folderCatalogController = null;
 const telegramPlatform = String(telegram?.platform ?? "").toLowerCase();
 const mobileTelegramPlatforms = new Set(["android", "ios"]);
 const compactSurfaceWidth = 860;
@@ -2458,6 +2459,8 @@ function persistWorkspaceFolders() {
 }
 
 function workspaceFolderCatalogNames() {
+  const canonical = folderCatalogController?.names();
+  if (canonical) return canonical;
   restoreWorkspaceFolders();
   const names = window.AgentHubStreamTabs.workspaceFolderNames(
     state.workspaces,
@@ -2470,39 +2473,11 @@ function workspaceFolderCatalogNames() {
   return names;
 }
 
-function createWorkspaceFolder(requestedName) {
-  const folderName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(requestedName);
-  if (!folderName) return false;
-  const duplicate = workspaceFolderCatalogNames().find((name) => (
-    name.toLocaleLowerCase("ru") === folderName.toLocaleLowerCase("ru")
-  ));
-  if (duplicate) {
-    showToast(`Папка «${duplicate}» уже существует`);
-    return false;
-  }
-  state.workspaceFolderNames.add(folderName);
-  persistWorkspaceFolders();
-  renderTasks();
-  showToast(`Папка «${folderName}» создана`);
-  return true;
-}
-
-function renameWorkspaceFolderCatalog(fromFolderName, toFolderName) {
-  const fromName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(fromFolderName);
-  const toName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(toFolderName);
-  if (!fromName || !toName || fromName === toName) return false;
-  restoreWorkspaceFolders();
-  state.workspaceFolderNames.delete(fromName);
-  state.workspaceFolderNames.add(toName);
-  persistWorkspaceFolders();
-  restoreCollapsedWorkspaceFolders();
-  for (const oldKey of [fromName, `folder:${fromName}`]) {
-    if (!state.collapsedWorkspaceFolders.delete(oldKey)) continue;
-    state.collapsedWorkspaceFolders.add(`folder:${toName}`);
-  }
-  persistCollapsedWorkspaceFolders();
-  renderTasks();
-  return true;
+async function createWorkspaceFolder(requestedName) {
+  const name = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(requestedName);
+  if (!name || !folderCatalogController?.ready) return false;
+  const receipt = await folderCatalogController.createFolder(name);
+  return receipt?.status === "succeeded";
 }
 
 function populateWorkspaceFolderSelect(selectedName = "") {
@@ -2511,9 +2486,18 @@ function populateWorkspaceFolderSelect(selectedName = "") {
   const names = workspaceFolderCatalogNames();
   workspaceCardFolder.replaceChildren(
     el("option", { value: "", text: "Без папки — общий список" }),
-    ...names.map((name) => el("option", { value: name, text: name })),
+    ...names.map((name) => { const folder = folderCatalogController?.folder(name); return el("option", {
+      value: name, text: name, "data-folder-id": folder?.id ?? "", "data-folder-revision": String(folder?.revision ?? ""),
+    }); }),
   );
   workspaceCardFolder.value = names.includes(normalizedSelected) ? normalizedSelected : "";
+  workspaceCardFolder.dataset.initialName = normalizedSelected;
+  workspaceCardFolder.dataset.sourceFolderId = folderCatalogController?.folder(normalizedSelected)?.id ?? "";
+}
+
+function workspaceCardFolderTarget() {
+  const option = workspaceCardFolder?.selectedOptions[0];
+  return option?.value ? { id: option.dataset.folderId, revision: Number(option.dataset.folderRevision) } : null;
 }
 
 function renderWorkspaceArchive() {
@@ -3861,6 +3845,7 @@ function renderTasks() {
 }
 
 function renderTasksContent() {
+  const folderRenderFocus = folderCatalogController?.beforeRender();
   const filter = (taskFilter.value ?? "").trim().toLowerCase();
   const visible = state.tasks.filter((task) => {
     if (!filter) return true;
@@ -3935,6 +3920,8 @@ function renderTasksContent() {
   resumeAdoptedCardAnimations();
   renderActivityRail();
   mobileDialogs?.sync();
+  folderCatalogController?.decorate();
+  folderCatalogController?.afterRender(folderRenderFocus);
 }
 
 function workspaceStreams(tasks) {
@@ -4002,11 +3989,12 @@ function streamMaintenanceKind(task) {
 function renderTaskWorkspaceFolder(folder) {
   restoreCollapsedWorkspaceFolders();
   const folderKey = String(folder.key ?? folder.name ?? "").trim();
-  const open = window.AgentHubStreamTabs.workspaceFolderOpen(
+  const canonicalOpen = window.AgentHubStreamTabs.workspaceFolderOpen(
     folder,
     state.collapsedWorkspaceFolders,
     workspaceKey(currentTask()),
   );
+  const open = folderCatalogController?.keepClosed(folder.name) ? false : canonicalOpen;
   const items = folder.items ?? [];
   const running = items.some((item) => (item.tasks ?? []).some((task) => task?.running));
   const unread = items.some((item) => (item.tasks ?? []).some((task) => task?.unread));
@@ -4015,6 +4003,7 @@ function renderTaskWorkspaceFolder(folder) {
     class: "task-workspace-folder",
     "data-workspace-folder": folderKey,
     "data-workspace-folder-name": folder.name,
+    "data-workspace-folder-id": folderCatalogController?.folder(folder.name)?.id ?? null,
     "data-workspace-folder-kind": folder.type,
     "data-selected": selected ? "" : null,
     "data-running": running ? "" : null,
@@ -4884,13 +4873,12 @@ taskList.addEventListener("dblclick", (event) => {
 });
 taskList.addEventListener("keydown", (event) => {
   if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
-    if (surface === "mobile" && !vscodeMode) return;
     const workspace = event.target.closest("[data-workspace-select]");
     if (workspace) {
       event.preventDefault();
       const rect = workspace.getBoundingClientRect();
       openWorkspaceContextMenu(
-        { clientX: rect.left + 12, clientY: rect.top + 36 },
+        { clientX: rect.left + 12, clientY: rect.top + 36, target: event.target, currentTarget: taskList },
         workspace.dataset.workspaceSelect,
       );
       return;
@@ -4900,7 +4888,7 @@ taskList.addEventListener("keydown", (event) => {
       event.preventDefault();
       const rect = folder.getBoundingClientRect();
       openWorkspaceFolderContextMenu(
-        { clientX: rect.left + 12, clientY: rect.top + 36 },
+        { clientX: rect.left + 12, clientY: rect.top + 36, target: event.target, currentTarget: taskList },
         folder.dataset.workspaceFolderName,
       );
       return;
@@ -4921,24 +4909,14 @@ taskList.addEventListener("toggle", (event) => {
   const folderKey = String(details.dataset.workspaceFolderDetails ?? "").trim();
   if (!folderKey) return;
   restoreCollapsedWorkspaceFolders();
-  if (details.open) state.collapsedWorkspaceFolders.delete(folderKey);
-  else state.collapsedWorkspaceFolders.add(folderKey);
+  const id = details.closest("[data-workspace-folder-id]")?.dataset.workspaceFolderId;
+  for (const key of [folderKey,...(id ? [`folder-id:${id}`] : [])]) {
+    if (details.open) state.collapsedWorkspaceFolders.delete(key);
+    else state.collapsedWorkspaceFolders.add(key);
+  }
   persistCollapsedWorkspaceFolders();
 }, true);
 
-function moveWorkspaceToFolder(workspaceId, folderName) {
-  const workspace = workspaceCatalogItem(workspaceId);
-  const mutation = window.AgentHubStreamTabs.workspaceFolderMutation(workspace, folderName);
-  if (!mutation) return;
-  const current = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(
-    workspace?.settings?.catalogFolder,
-  );
-  if (current === mutation.folderName) return;
-  emit("workspace:folder-move", {
-    workspaceId: mutation.workspaceId,
-    folderName: mutation.folderName,
-  });
-}
 activityRailToggle?.addEventListener("click", () => {
   activityRailCollapsed = !activityRailCollapsed;
   applyActivityRailState({ persist: true });
@@ -5400,6 +5378,7 @@ function ensureWorkspaceContextMenu() {
     hidden: true,
   });
   document.body.append(workspaceContextMenu);
+  attachWorkspaceMenuKeyboard(workspaceContextMenu,closeWorkspaceContextMenu);
   workspaceContextMenu.addEventListener("click", async (event) => {
     const action = event.target.closest("[data-workspace-menu-action]");
     if (!action) return;
@@ -5408,6 +5387,7 @@ function ensureWorkspaceContextMenu() {
     const kind = String(action.dataset.workspaceMenuAction ?? "");
     closeWorkspaceContextMenu();
     if (kind === "edit") openWorkspaceCard(workspaceId);
+    if (kind === "move") folderCatalogController?.openMove(workspaceId, workspaceContextMenu.origin);
   });
   return workspaceContextMenu;
 }
@@ -5427,6 +5407,10 @@ function renderWorkspaceContextMenu(menu, workspace) {
       "data-workspace-menu-action": "edit",
       text: "Редактировать…",
     }),
+    el("span", { class: "resource-context-menu-divider", role: "separator" }),
+    el("button", { type: "button", role: "menuitem", class: "stream-context-action",
+      "data-workspace-menu-action": "move", text: "Переместить в папку…",
+      disabled: !folderCatalogController?.ready || workspace.kind === "system" || folderCatalogController?.blocked({ workspaceId: workspace.id }) }),
   );
 }
 
@@ -5438,12 +5422,15 @@ function openWorkspaceContextMenu(event, workspaceId) {
   const workspace = workspaceCatalogItem(workspaceId);
   renderWorkspaceContextMenu(menu, workspace);
   menu.dataset.workspaceId = String(workspaceId);
+  menu.origin = event.target?.closest?.("[data-mobile-workspace-edit], [data-workspace-select]") || event.currentTarget || document.activeElement;
+  menu.anchorRect = menu.origin?.getBoundingClientRect?.();
+  (event.currentTarget?.closest?.("dialog[open]") || document.body).append(menu);
   menu.hidden = false;
   const left = Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8));
   const top = Math.max(8, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8));
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
-  menu.querySelector("button")?.focus();
+  menu.querySelector("button")?.focus({ preventScroll: true });
 }
 
 function ensureWorkspaceFolderContextMenu() {
@@ -5459,23 +5446,49 @@ function ensureWorkspaceFolderContextMenu() {
     class: "stream-context-action",
     "data-workspace-folder-menu-action": "rename",
     text: "Переименовать папку…",
-  })]);
+  }), el("span", { class: "resource-context-menu-divider", role: "separator" }),
+  el("button", { type: "button", role: "menuitem", class: "stream-context-action folder-catalog-danger",
+    "data-workspace-folder-menu-action": "remove", text: "Удалить папку…" })]);
   document.body.append(workspaceFolderContextMenu);
+  attachWorkspaceMenuKeyboard(workspaceFolderContextMenu,closeWorkspaceFolderContextMenu);
   workspaceFolderContextMenu.addEventListener("click", async (event) => {
     const action = event.target.closest("[data-workspace-folder-menu-action]");
     if (!action) return;
     event.preventDefault();
-    const currentName = String(workspaceFolderContextMenu.dataset.folderName ?? "");
+    const origin = workspaceFolderContextMenu.origin;
     closeWorkspaceFolderContextMenu();
-    if (action.dataset.workspaceFolderMenuAction !== "rename") return;
-    await renameWorkspaceFolder(currentName);
+    const folder = folderCatalogController?.folderById(workspaceFolderContextMenu.dataset.folderId);
+    if (!folder || folderCatalogController.blocked({ folderId: folder.id })) return;
+    if (action.dataset.workspaceFolderMenuAction === "remove") {
+      await folderCatalogController.openRemove(folder.id, origin); return;
+    }
+    if (surface === "mobile" && !vscodeMode) mobileDialogs?.renameFolder(folder.name, origin);
+    else await renameWorkspaceFolder(folder.name);
   });
   return workspaceFolderContextMenu;
 }
 
+function attachWorkspaceMenuKeyboard(menu,close) {
+  menu.addEventListener("keydown",event => {
+    if (event.key === "Escape") {
+      event.preventDefault(); event.stopPropagation(); close();
+      const target = menu.origin?.isConnected ? menu.origin : taskList.querySelector("summary,[data-workspace-select]");
+      target?.focus?.({ preventScroll: true }); return;
+    }
+    if (!["ArrowDown","ArrowUp","Home","End"].includes(event.key)) return;
+    event.preventDefault(); event.stopPropagation();
+    const items = [...menu.querySelectorAll("button:not(:disabled)")];
+    const index = items.indexOf(document.activeElement);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+      : (index + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
+    items[next]?.focus({ preventScroll: true });
+  });
+}
+
 async function renameWorkspaceFolder(folderName) {
   const currentName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(folderName);
-  if (!currentName) return;
+  const folder = folderCatalogController?.folder(currentName);
+  if (!folder || folderCatalogController.blocked({ folderId: folder.id })) return;
   const requestedName = await askText({ title: "Новое название папки", value: currentName });
   if (requestedName == null) return;
   const plan = window.AgentHubStreamTabs.workspaceFolderRenamePlan(
@@ -5486,7 +5499,7 @@ async function renameWorkspaceFolder(folderName) {
     showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
     return;
   }
-  emit("workspace:folder-rename", plan);
+  await folderCatalogController.renameFolder(folder, plan.toFolderName, document.activeElement);
 }
 
 function openWorkspaceFolderContextMenu(event, folderName) {
@@ -5496,12 +5509,18 @@ function openWorkspaceFolderContextMenu(event, folderName) {
   closeWorkspaceContextMenu();
   const menu = ensureWorkspaceFolderContextMenu();
   menu.dataset.folderName = normalizedName;
+  menu.origin = event.target?.closest?.("[data-mobile-folder-rename], summary") || event.currentTarget || document.activeElement;
+  menu.anchorRect = menu.origin?.getBoundingClientRect?.();
+  (event.currentTarget?.closest?.("dialog[open]") || document.body).append(menu);
+  const folder = folderCatalogController?.folder(normalizedName);
+  menu.dataset.folderId = folder?.id ?? "";
+  for (const button of menu.querySelectorAll("button")) button.disabled = !folder || folderCatalogController.blocked({ folderId: folder.id });
   menu.hidden = false;
   const left = Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8));
   const top = Math.max(8, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8));
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
-  menu.querySelector("button")?.focus();
+  menu.querySelector("button")?.focus({ preventScroll: true });
 }
 
 function workspaceMenuOptions(currentWorkspaceId) {
@@ -5669,8 +5688,12 @@ window.addEventListener("resize", closeWorkspaceFolderContextMenu);
 window.addEventListener("resize", scheduleStreamTabsOverflow);
 document.addEventListener("scroll", (event) => {
   if (!streamContextMenu?.contains(event.target)) closeStreamContextMenu();
-  if (!workspaceContextMenu?.contains(event.target)) closeWorkspaceContextMenu();
-  if (!workspaceFolderContextMenu?.contains(event.target)) closeWorkspaceFolderContextMenu();
+  const moved = (menu) => {
+    const before = menu?.anchorRect, after = menu?.origin?.getBoundingClientRect?.();
+    return before && after && (Math.abs(before.top - after.top) > 1 || Math.abs(before.left - after.left) > 1);
+  };
+  if (!workspaceContextMenu?.contains(event.target) && moved(workspaceContextMenu)) closeWorkspaceContextMenu();
+  if (!workspaceFolderContextMenu?.contains(event.target) && moved(workspaceFolderContextMenu)) closeWorkspaceFolderContextMenu();
 }, true);
 
 let draggedStreamId = "";
@@ -10442,6 +10465,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     emit("workspace:create", {
       name,
       folderName: workspaceCardFolder?.value ?? "",
+      folderTarget: workspaceCardFolderTarget(),
       comment: workspaceCardComment.value.trim(),
       workingDirectory: workspaceCardWorkingDirectory.value.trim(),
       taskPrefix: workspaceCardTaskPrefix.value.trim(),
@@ -10463,6 +10487,9 @@ workspaceCardForm?.addEventListener("submit", (event) => {
     workspaceId: workspace.id,
     name,
     folderName: workspaceCardFolder?.value ?? "",
+    folderTarget: workspaceCardFolderTarget(),
+    sourceFolderId: workspaceCardFolder?.dataset.sourceFolderId || null,
+    folderChangedByUser: workspaceCardFolder?.value !== workspaceCardFolder?.dataset.initialName,
     comment: workspaceCardComment.value.trim(),
     workingDirectory: workspaceCardWorkingDirectory.value.trim(),
     taskPrefix: workspaceCardTaskPrefix.value.trim(),
@@ -11630,7 +11657,7 @@ async function handleAction(action, trigger) {
       break;
     case "workspace-folder-new": {
       const folderName = await askText({ title: "Название папки Workspace" });
-      if (folderName) createWorkspaceFolder(folderName);
+      if (folderName) await createWorkspaceFolder(folderName);
       break;
     }
     case "workspace-new":
@@ -11774,7 +11801,45 @@ document.addEventListener("click", (event) => {
 
 /* ============================================ контракт для backend (render) */
 
+folderCatalogController = window.AgentHubWorkspaceFolders.create({
+  rail: taskList, getWorkspaces: () => state.workspaces,
+  isMobile: () => surface === "mobile" && !vscodeMode,
+  storageKey: `agent-hub:folder-operations:v1:${draftStorageSurface()}`,
+  toast: showToast,
+  focusResult({ kind, origin, record, receipt }) {
+    const visible = node => node?.isConnected && node.getClientRects?.().length;
+    const workspaceRow = id => [...taskList.querySelectorAll("[data-workspace-select]")].find(node => node.dataset.workspaceSelect === id);
+    let target;
+    if (kind === "success" && record?.input.action === "remove") {
+      const members = receipt.result.members;
+      const id = members.find(item => item.id === workspaceKey(currentTask()))?.id ?? members[0]?.id;
+      target = id ? workspaceRow(id) : null;
+      if (!target) {
+        const rows = [...taskList.querySelectorAll('.task-workspace-folder-summary')];
+        target = rows[Math.min(record.meta.folderIndex ?? 0, rows.length - 1)]
+          || document.querySelector('[data-action="workspace-folder-new"]');
+      }
+    } else if (kind === "success" && record?.input.action === "rename") {
+      const row = [...taskList.querySelectorAll("[data-workspace-folder-id]")]
+        .find(row=>row.dataset.workspaceFolderId === record.meta.folderId);
+      target = row?.querySelector("[data-mobile-folder-rename]") || row?.querySelector("summary");
+    } else if (kind === "success" && record?.input.action === "move") {
+      const row = workspaceRow(record.meta.workspaceId);
+      target = visible(row) ? row : [...taskList.querySelectorAll('[data-workspace-folder-name]')]
+        .find(item => item.dataset.workspaceFolderName === record.meta.targetName)?.querySelector("summary");
+    } else target = origin || record?.meta.origin || workspaceRow(record?.meta.workspaceId);
+    if (!visible(target)) target = document.querySelector("[data-folder-notices] button") || taskList.querySelector("[tabindex],button,summary");
+    if (visible(target)) {
+      if (kind === "success" || kind === "failure") target.scrollIntoView({ block: "nearest" });
+      (target.querySelector?.("[data-mobile-workspace-select]") || target).focus({ preventScroll: true });
+    }
+  },
+});
+
 const AgentHub = {
+  workspaceFolders: folderCatalogController,
+  legacyWorkspaceFolderNames() { restoreWorkspaceFolders(); return [...state.workspaceFolderNames]; },
+  acknowledgeWorkspaceFolderImport() { state.workspaceFolderNames.clear(); persistWorkspaceFolders(); },
   /** Подписка на действия пользователя. */
   on(type, handler) {
     if (!listeners.has(type)) listeners.set(type, new Set());
@@ -11904,13 +11969,29 @@ const AgentHub = {
       transientAnswerArrivalTaskIds = new Set();
     }
   },
-  setWorkspaces(workspaces, columnOrder = []) {
+  setWorkspaces(workspaces, columnOrder = [], catalog = null) {
+    const foldersChanged = folderCatalogController.setCatalog(catalog);
     const nextWorkspaces = Array.isArray(workspaces) ? workspaces.slice() : [];
     const nextColumnOrder = Array.isArray(columnOrder) ? columnOrder.slice() : [];
-    if (sameData(state.workspaces, nextWorkspaces)
+    if (!foldersChanged && sameData(state.workspaces, nextWorkspaces)
       && sameData(state.workspaceColumnOrder, nextColumnOrder)) return;
     state.workspaces = nextWorkspaces;
     state.workspaceColumnOrder = nextColumnOrder;
+    if (foldersChanged) {
+      restoreCollapsedWorkspaceFolders();
+      const names = new Set(folderCatalogController.names());
+      const folders = folderCatalogController.folders();
+      const closed = folders.filter(folder => state.collapsedWorkspaceFolders.has(`folder-id:${folder.id}`)
+        || state.collapsedWorkspaceFolders.has(`folder:${folder.name}`) || state.collapsedWorkspaceFolders.has(folder.name));
+      state.collapsedWorkspaceFolders.clear();
+      for (const folder of closed) {
+        state.collapsedWorkspaceFolders.add(`folder-id:${folder.id}`);
+        state.collapsedWorkspaceFolders.add(`folder:${folder.name}`);
+      }
+      persistCollapsedWorkspaceFolders();
+      window.AgentHubTaskBoard?.setWorkspaceFolderCatalog?.([...names]);
+      renderTasks();
+    }
     mobileDialogs?.sync();
     if (journalRendered) updateJournalStreamCount();
   },
@@ -11921,7 +12002,6 @@ const AgentHub = {
     renderWorkspaceArchive();
     mobileDialogs?.sync();
   },
-  renameWorkspaceFolderCatalog,
   openDialogSettings,
   /** Точечное обновление задачи (статус, время, непрочитанное). */
   patchTask(id, patch) {
@@ -18526,6 +18606,8 @@ mobileDialogs = window.AgentHubMobileDialogs.create({
   transientLayers: [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
     annotationContextMenu, resourceContextMenu, composerEmojiPicker?.layer, dialog, settingsPanel, workspaceMessageSearch],
   openWorkspaceCard, workspaceDialog: workspaceCardModal, renameWorkspaceFolder,
+  openWorkspaceMenu: (event, id) => openWorkspaceContextMenu(event, id),
+  openFolderMenu: (event, name) => openWorkspaceFolderContextMenu(event, name),
   textDialog: dialog, cancelTextDialog: () => closeDialog(null),
   createStream: (workspaceId) => emit("stream:new", { workspaceId }),
   retryConnection: () => emit("connection:retry", { taskId: state.selectedId }),

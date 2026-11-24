@@ -69,6 +69,46 @@ or migration authority is introduced.
   a different confirmation name fails. A permanently deleted Workspace ID is
   not reusable.
 
+## Workspace folder catalog
+
+The existing Workspace catalog owns one-level declared folders, including empty
+ones. Schema 16 assigns a stable ID and revision to each live folder while
+membership remains in the original `settings.catalogFolder` field. Rename and
+member/name changes invalidate the revision; deleted identities remain
+tombstoned. A same-name replacement is a different destination.
+
+Folder deletion requires an exact server preview of the folder identity,
+revision and all member IDs/names, including archived Workspaces. Confirmation
+removes only the folder and moves every member to the root, «Без папки».
+Workspace/Stream/Thread/Task data, settings, files and history are preserved.
+A stale preview rejects with a new preview and requires another explicit
+confirmation. Unknown or recursive structure cannot authorize deletion.
+
+Move and rename retain their existing command aliases but require request ID
+and checked identity/revision inputs; name-only old clients fail closed and
+must reload. Moves also bind the source folder ID. No generic settings update
+may overwrite membership; the dedicated checked move owns it. Workspace
+creation into a selected folder checks the exact captured destination.
+
+The same existing SQLite transaction/savepoint and asynchronous mutation owner
+commit each folder effect with its exact terminal domain receipt. Duplicate
+request/argument bindings read that result; a changed binding refuses.
+Unexpected transaction/persistence failure rolls back the whole transaction
+and cannot be presented as a known rejection by the client. A lost reply stays
+UNKNOWN until an addressed read of the original request confirms a terminal
+receipt. Absence of that receipt or a matching snapshot grants no replay or
+success authority.
+
+Migration seeds identities once from all retained membership rows. Existing
+browser-local declared names have one explicit import boundary: the client
+submits its bounded legacy list once, then clears it only on confirmed success.
+Retired names cannot be resurrected by stale legacy imports. Explicit later
+creation may reuse a name with a fresh identity. The legacy import adapter can
+be removed when supported installed clients no longer retain those local lists;
+it is never a parallel catalog after the canonical snapshot is present.
+
+See [ADR-HUB-121](../decisions/ADR-HUB-121-workspace-folder-catalog.md).
+
 ## Cards and menus
 
 - The Codex Stream model dropdown ends with the separate action

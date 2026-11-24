@@ -30,7 +30,7 @@ async function fixture(t) {
   await store.load();
   t.after(async () => {
     store.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
   return store;
 }
@@ -46,7 +46,7 @@ async function oldCatalogWithMissingFence(t) {
     writer?.close();
     startup.close();
     previous.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
   await previous.load();
   const { workspace, stream } = previous.createWorkspaceWithStream({ name: "Existing Workspace" });
@@ -210,7 +210,7 @@ test('Thread point resolution observes another SQLite owner without a binding ca
   const databaseFile = path.join(directory, 'journal.sqlite');
   const owner = new WorkspaceCatalogStore({ databaseFile });
   const peer = new WorkspaceCatalogStore({ databaseFile });
-  t.after(async () => { owner.close(); peer.close(); await rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { owner.close(); peer.close(); await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }); });
   await owner.load(); await peer.load();
   const initial = owner.createWorkspaceWithStream({ name: 'Initial' });
   const target = owner.createWorkspaceWithStream({ name: 'Target' });
@@ -278,7 +278,7 @@ test("Workspace mutation queue retries real SQLite contention and keeps timers r
     try { blocker.exec("ROLLBACK"); } catch {}
     blocker.close();
     store.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
   const updated = await store.runMutation(
     () => store.renameWorkspace(workspace.id, "After contention"),
@@ -302,7 +302,7 @@ test("Workspace archive hides hierarchy, restores intact, and never expires", as
   await store.load();
   t.after(async () => {
     store.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
   const workspace = store.createWorkspace({ name: "Удалённый проект" });
   const stream = store.createStream({ workspaceId: workspace.id, name: "Основной" });
@@ -352,7 +352,7 @@ test("startup cancels every legacy archive purge deadline before projection", as
   await store.load();
   t.after(async () => {
     store.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
   assert.equal(store.workspace(workspace.id).purgeAfterMs, null);
   assert.deepEqual(store.archivedWorkspaces().map((item) => item.id), [workspace.id]);
@@ -404,7 +404,7 @@ test("Task attachment and permanent delete serialize without orphan or false suc
     layout.close();
     taskBoard.close();
     catalog.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
   const seedLayout = (workspaceId, position) => {
     layout.prepare(`
@@ -524,7 +524,7 @@ test("workspace catalog read-only mode exposes hierarchy without running migrati
   } finally {
     writer?.close();
     reader?.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
 
@@ -537,7 +537,7 @@ test("workspace catalog fails closed on a corrupt shared database", async () => 
     await assert.rejects(store.load(), /not a database/iu);
     assert.equal(await readFile(databaseFile, "utf8"), "not a sqlite database");
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
 
@@ -567,18 +567,22 @@ test("Workspace folder rename updates every member atomically and preserves sett
   });
   store.archiveWorkspace(second.id);
 
-  assert.deepEqual(store.renameWorkspaceFolder(" Клиенты ", " Заказчики "), {
-    fromFolderName: "Клиенты",
-    toFolderName: "Заказчики",
-    workspaceCount: 2,
-  });
+  const folder = store.workspaceFolderCatalog().folders.find(item=>item.name === "Клиенты");
+  const renamed = store.workspaceFolderCommand({ requestId: "rename-clients",action: "rename",
+    payload: { folderId: folder.id,expectedRevision: folder.revision,name: " Заказчики " } });
+  assert.equal(renamed.status,"succeeded");
+  assert.equal(renamed.result.folder.name,"Заказчики");
+  assert.equal(renamed.result.workspaceCount,2);
   assert.equal(store.workspace(first.id).settings.catalogFolder, "Заказчики");
   assert.equal(store.workspace(first.id).settings.workingDirectory, "first");
   assert.equal(store.workspace(first.id).settings.taskPrefix, "ONE");
   assert.equal(store.workspace(second.id).settings.catalogFolder, "Заказчики");
   assert.equal(store.workspace(second.id).settings.workingDirectory, "second");
   assert.equal(store.workspace(untouched.id).settings.catalogFolder, "Внутренние");
-  assert.throws(() => store.renameWorkspaceFolder("", "Новая"), /names are required/u);
+  const current = store.workspaceFolderCatalog().folders.find(item=>item.id === folder.id);
+  const refused = store.workspaceFolderCommand({ requestId: "empty-folder-name",action: "rename",
+    payload: { folderId: folder.id,expectedRevision: current.revision,name: "" } });
+  assert.equal(refused.status,"rejected"); assert.equal(refused.error.code,"FOLDER_NAME_REQUIRED");
 });
 
 test("Workspace folder move preserves settings updated after a stale client snapshot", async (t) => {
@@ -594,12 +598,19 @@ test("Workspace folder move preserves settings updated after a stale client snap
   });
   const staleClientSnapshot = structuredClone(workspace);
 
+  store.workspaceFolderCommand({ requestId: "create-move-target", action: "create", payload: { name: "Клиенты" } });
+
   store.updateWorkspaceSettings(workspace.id, {
     ...workspace.settings,
     workingDirectory: "new-authoritative",
     concurrentMarker: "must-survive",
   });
-  const moved = store.moveWorkspaceToFolder(staleClientSnapshot.id, " Клиенты ");
+  const from = store.workspaceFolderCatalog().folders.find(item=>item.name === staleClientSnapshot.settings.catalogFolder);
+  const target = store.workspaceFolderCatalog().folders.find(item=>item.name === "Клиенты");
+  assert.equal(store.workspaceFolderCommand({ requestId: "move-settings",action: "move",payload: {
+    workspaceId: staleClientSnapshot.id,sourceFolderId: from.id,target: { id: target.id,revision: target.revision },
+  } }).status,"succeeded");
+  const moved = store.workspace(staleClientSnapshot.id);
 
   assert.deepEqual(moved.settings, {
     catalogFolder: "Клиенты",
@@ -608,7 +619,10 @@ test("Workspace folder move preserves settings updated after a stale client snap
     releaseWorkflowEnabled: true,
     concurrentMarker: "must-survive",
   });
-  const ungrouped = store.moveWorkspaceToFolder(staleClientSnapshot.id, "");
+  assert.equal(store.workspaceFolderCommand({ requestId: "ungroup-settings",action: "move",payload: {
+    workspaceId: staleClientSnapshot.id,sourceFolderId: target.id,target: null,
+  } }).status,"succeeded");
+  const ungrouped = store.workspace(staleClientSnapshot.id);
   assert.deepEqual(ungrouped.settings, {
     workingDirectory: "new-authoritative",
     taskPrefix: "RACE",
@@ -633,7 +647,7 @@ test("legacy Experiments name migrates to Other without replacing its Workspace"
   await store.load();
   t.after(async () => {
     store.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
   const migrated = store.ensureExperiments();
   assert.equal(migrated.id, originalId);
@@ -812,7 +826,7 @@ test("detached historical Threads remain resolvable but cannot become active", a
     );
     store.close();
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
 
@@ -1260,7 +1274,7 @@ test.skip("retired release registry schema migration", async (t) => {
   await store.load();
   t.after(async () => {
     store.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
 
   assert.equal(store.releasePlan("workspace").ready[0].revision, 1);
@@ -1320,7 +1334,7 @@ test.skip("retired destructive release registry discard", async (t) => {
 test("Release Manager role migrates once from legacy role or exact name without runtime fallback", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-manager-role-migration-"));
   const databaseFile = path.join(directory, "journal.sqlite");
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   let store = new WorkspaceCatalogStore({ databaseFile });
   await store.load();
   const workspace = store.createWorkspace({ name: "Agent HUB" });
@@ -1350,7 +1364,7 @@ test("Release Manager role migrates once from legacy role or exact name without 
 test("role rename preserves disabled and explicit new settings across SQLite reopen", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-role-rename-"));
   const databaseFile = path.join(directory, "journal.sqlite");
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   let store = new WorkspaceCatalogStore({ databaseFile });
   await store.load();
   const workspace = store.createWorkspace({ name: "Roles" });
@@ -1524,7 +1538,7 @@ test("legacy Workspace catalog gains the comment property without losing data", 
   await store.load();
   t.after(async () => {
     store.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   });
   assert.equal(store.workspace("legacy").comment, "");
   assert.equal(store.updateWorkspaceComment("legacy", "После миграции").comment, "После миграции");
@@ -1668,8 +1682,8 @@ test("legacy task data survives the default one-Workspace-per-Thread upgrade", a
     '{"answer":"preserved"}',
   );
   verified.close();
-  await rm(directory, { recursive: true, force: true });
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
 });
 
 test("merging Workspaces preserves Streams and compacts their ordinals", async (t) => {

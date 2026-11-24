@@ -5,7 +5,7 @@
   // only the compact conversation/overlay route, never messages, drafts or unread state.
   function create({ root, state, currentTask, workspaceKey, workspaceStreams,
     representativeStreamTask, restoreSelection, selectTask, setView, setPane,
-    openSettings, openWorkspaceCard, workspaceDialog, renameWorkspaceFolder,
+    openSettings, openWorkspaceCard, workspaceDialog, renameWorkspaceFolder, openWorkspaceMenu, openFolderMenu,
     textDialog, cancelTextDialog,
     createStream, retryConnection, closeTransient, closeNative, transientLayers = [], isMobile }) {
     const doc = root.ownerDocument;
@@ -303,7 +303,11 @@
       const rows = [...rail.querySelectorAll(kind === "folder" ? '[data-workspace-folder-kind="folder"]' : "[data-workspace-select]")];
       editRowIndex = Math.max(0, rows.findIndex((row) => kind === "folder" ? row.dataset.workspaceFolderName === identity : row.dataset.workspaceSelect === identity));
       editOpener.focus({ preventScroll: true });
-      if (kind === "workspace") { openWorkspaceCard(identity); return; }
+      if (kind === "workspace") { openWorkspaceMenu(event,identity); return; }
+      if (kind === "folder") { openFolderMenu(event,identity); return; }
+    }
+    function renameFolder(identity, opener) {
+      editOpener = opener;
       renameHome = { parent: textDialog.parentNode, next: textDialog.nextSibling,
         role: textDialog.getAttribute("role"), modal: textDialog.getAttribute("aria-modal") };
       renameLayer.append(textDialog);
@@ -435,9 +439,9 @@
         if (item.querySelector("[data-mobile-workspace-edit]")) continue;
         const id = item.dataset.workspaceSelect;
         const name = state.workspaces?.find((workspace) => workspace.id === id)?.name || item.querySelector(".task-workspace-name")?.textContent || "";
-        const edit = button(`Редактировать Workspace «${name}»`, "pencil-simple", (event) => {
+        const edit = button(`Действия с Workspace «${name}»`, "pencil-simple", (event) => {
           event.stopPropagation(); openDirectEdit(event, id, "workspace");
-        }, { "data-mobile-workspace-edit": "", "aria-haspopup": "dialog" });
+        }, { "data-mobile-workspace-edit": "", "aria-haspopup": "menu" });
         edit.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) event.stopPropagation(); });
         item.append(edit);
       }
@@ -449,9 +453,9 @@
         const row = node("div", { class: "mobile-folder-row", "data-mobile-folder-row": "" });
         const details = summary.parentElement;
         details.replaceWith(row); row.append(details);
-        const edit = button(`Переименовать папку «${item.dataset.workspaceFolderName}»`, "pencil-simple", (event) => {
+        const edit = button(`Действия с папкой «${item.dataset.workspaceFolderName}»`, "pencil-simple", (event) => {
           event.stopPropagation(); openDirectEdit(event, item.dataset.workspaceFolderName, "folder");
-        }, { "data-mobile-folder-rename": "", "aria-haspopup": "dialog" });
+        }, { "data-mobile-folder-rename": "", "aria-haspopup": "menu" });
         edit.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) event.stopPropagation(); });
         row.append(edit);
       }
@@ -605,7 +609,7 @@
         archiveButton.querySelector("span").textContent = `Архив Workspace${archiveCount ? ` (${archiveCount})` : ""}`;
       } finally { syncing = false; }
     }
-    return { sync, showSelected, openStream, handleBack };
+    return { sync, showSelected, openStream, handleBack, renameFolder };
   }
   window.AgentHubMobileDialogs = Object.freeze({ create });
 })();

@@ -248,6 +248,7 @@ export function createDesktopShellComposition({
       orderingActivityAtMs: taskOrderingActivityAtMs,
       catalogEntries: getTaskCatalog,
       workspaceHierarchy: () => workspaceCatalogStore.hierarchy(),
+      workspaceFolderCatalog: () => workspaceCatalogStore.workspaceFolderCatalog(),
       archivedWorkspaces: () => workspaceCatalogStore.archivedWorkspaces(),
       taskBoardSnapshot: (options) => taskBoard.snapshot({ ...options, compactPresentation: true }),
       taskBoardSnapshotRevision: () => taskBoard.snapshotRevision,

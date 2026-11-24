@@ -214,6 +214,7 @@ async function openFixture(page, {
   themeRegistry = null,
   followSelection = false,
   tracePageReader = null,
+  folderControlHandler = null,
 } = {}) {
   const diagnostics = [];
   page.on("pageerror", (error) => diagnostics.push(error.message));
@@ -221,6 +222,7 @@ async function openFixture(page, {
     if (message.type() === "error") diagnostics.push(message.text());
   });
   if (tracePageReader) await page.exposeFunction("__fixtureTracePageReader", tracePageReader);
+  if (folderControlHandler) await page.exposeFunction("__fixtureFolderControl", folderControlHandler);
   await page.addInitScript(({
     initialSnapshot, initialHistory, initialDrafts, authorityAvailable, holdAuthority, attachmentOpenFailure,
     transportSurface, direct, followSelection,
@@ -362,6 +364,20 @@ async function openFixture(page, {
         }
         fixture.log.push(recorded);
         write("fixture:bridge-log", fixture.log);
+        if (typeof window.__fixtureFolderControl === "function" && [
+          "snapshot", "workspace-folder-catalog", "workspace-folder-preview", "workspace-folder-result",
+          "mutate-workspace-folder", "move-workspace-to-folder", "rename-workspace-folder",
+          "create-workspace", "update-workspace-settings", "rename-workspace", "update-workspace-rules",
+          "board-column-move", "board-column-comment",
+        ].includes(message.action)) {
+          void window.__fixtureFolderControl(message).then(result => {
+            if (result?.workspaceFolders) {
+              fixture.snapshot = result; write("fixture:snapshot",result);
+            }
+            respond({ id: message.id, result });
+          }, failure => respond({ id: message.id, ok: false, error: failure.message }));
+          return;
+        }
         let ok = true;
         let result = {};
         let error = "";
@@ -550,7 +566,14 @@ async function openFixture(page, {
     }
     if (requestUrl.pathname === "/api/snapshot") {
       let value;
-      try { value = await page.evaluate(() => window.__agentHubFixture.snapshot); }
+      try {
+        value = folderControlHandler ? await folderControlHandler({ action: "snapshot", params: {} })
+          : await page.evaluate(() => window.__agentHubFixture.snapshot);
+        if (folderControlHandler) await page.evaluate(snapshot=>{
+          window.__agentHubFixture.snapshot=snapshot;
+          localStorage.setItem("fixture:snapshot",JSON.stringify(snapshot));
+        },value);
+      }
       catch (error) {
         if (!String(error.message).includes("Execution context was destroyed")) throw error;
         await route.abort("aborted");

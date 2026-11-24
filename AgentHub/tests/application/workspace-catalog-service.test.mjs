@@ -14,12 +14,7 @@ function fixture({ taskBoard = null, blockingRunForWorkspace = () => null } = {}
     createStream: (value) => (calls.push(["createStream", value]), { id: "stream-1", ...value }),
     renameWorkspace: (...args) => calls.push(["renameWorkspace", ...args]),
     updateWorkspaceSettings: (...args) => (calls.push(["updateWorkspaceSettings", ...args]), { settings: args[1] }),
-    moveWorkspaceToFolder: (...args) => (calls.push(["moveWorkspaceToFolder", ...args]), {
-      id: args[0], settings: { catalogFolder: args[1] },
-    }),
-    renameWorkspaceFolder: (...args) => (calls.push(["renameWorkspaceFolder", ...args]), {
-      fromFolderName: args[0], toFolderName: args[1], workspaceCount: 2,
-    }),
+    workspaceFolderCommand: input => (calls.push(["workspaceFolderCommand", input]), input),
     archiveWorkspace: (...args) => (calls.push(["archiveWorkspace", ...args]), { id: args[0], archivedAtMs: 1 }),
     restoreWorkspace: (...args) => (calls.push(["restoreWorkspace", ...args]), { id: args[0], archivedAtMs: null }),
     deleteArchivedWorkspace: (...args) => (calls.push(["deleteArchivedWorkspace", ...args]), { id: args[0], deleted: true }),
@@ -132,17 +127,13 @@ test("Workspace settings provide an inherited working directory", async () => {
   ]);
 });
 
-test("Workspace folder rename delegates one atomic catalog mutation", () => {
+test("Workspace folder rename binds the exact identity, revision and request", () => {
   const { service, calls } = fixture();
-  assert.deepEqual(service.renameWorkspaceFolder({
-    fromFolderName: "Клиенты",
-    toFolderName: "Заказчики",
-  }), {
-    fromFolderName: "Клиенты",
-    toFolderName: "Заказчики",
-    workspaceCount: 2,
-  });
-  assert.deepEqual(calls.at(-1), ["renameWorkspaceFolder", "Клиенты", "Заказчики"]);
+  const payload = { folderId: "folder-1", expectedRevision: 4, name: "Заказчики" };
+  const expected = { requestId: "rename-1", action: "rename", payload };
+  assert.deepEqual(service.renameWorkspaceFolder({ requestId: "rename-1", ...payload }), expected);
+  assert.deepEqual(calls.at(-1), ["workspaceFolderCommand", expected]);
+  assert.throws(() => service.renameWorkspaceFolder({ fromFolderName: "Клиенты", toFolderName: "Заказчики" }), /identity/);
 });
 
 test("permanent delete checks the production active-run owner immediately before persistence", () => {
@@ -448,16 +439,13 @@ test("Workspace archive and restore keep the stable Workspace identity", () => {
   ]);
 });
 
-test("Workspace folder move delegates only stable identity and folder name", () => {
+test("Workspace folder move binds source membership, target revision and request", () => {
   const { service, calls } = fixture();
-  assert.deepEqual(service.moveWorkspaceToFolder({
-    workspaceId: "workspace-1",
-    folderName: "Клиенты",
-  }), {
-    id: "workspace-1",
-    settings: { catalogFolder: "Клиенты" },
-  });
-  assert.deepEqual(calls.at(-1), ["moveWorkspaceToFolder", "workspace-1", "Клиенты"]);
+  const payload = { workspaceId: "workspace-1", sourceFolderId: null, target: { id: "folder-1", revision: 4 } };
+  const expected = { requestId: "move-1", action: "move", payload };
+  assert.deepEqual(service.moveWorkspaceToFolder({ requestId: "move-1", ...payload }), expected);
+  assert.deepEqual(calls.at(-1), ["workspaceFolderCommand", expected]);
+  assert.throws(() => service.moveWorkspaceToFolder({ workspaceId: "workspace-1", folderName: "Клиенты" }), /identity/);
 });
 
 test("adding a Workspace Task prefix backfills its unnumbered Tasks", async () => {

@@ -2,6 +2,7 @@ import { commandClientContext, commandTaskTarget } from "../../application/appli
 import { createDesktopControlRouter } from "./desktop-control-router.mjs";
 
 const MUTATION_ACTIONS = Object.freeze([
+  "mutate-workspace-folder",
   "select-task", "send-message", "new-task", "rotate-stream", "create-stream",
   "update-setting", "rename-task", "archive-task", "cancel-run",
   "refresh-model-catalog",
@@ -175,6 +176,10 @@ export function createDesktopApplicationRouter({
       "rename-workspace": (params, context) => dispatch("workspace.rename", params, context),
       "update-workspace-settings": (params, context) => dispatch("workspace.settings.update", params, context),
       "move-workspace-to-folder": (params, context) => dispatch("workspace.folder.move", params, context),
+      "workspace-folder-catalog": (params, context) => dispatch("workspace.folder.catalog", params, context),
+      "workspace-folder-preview": (params, context) => dispatch("workspace.folder.preview", params, context),
+      "workspace-folder-result": (params, context) => dispatch("workspace.folder.result", params, context),
+      "mutate-workspace-folder": (params, context) => dispatch("workspace.folder.command", params, context),
       "rename-workspace-folder": (params, context) => dispatch("workspace.folder.rename", params, context),
       "update-workspace-rules": (params, context) => dispatch("workspace.developer-rules.update", params, context),
       "create-workspace": (params, context) => dispatch("workspace.create", params, context),

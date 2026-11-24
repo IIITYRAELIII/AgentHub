@@ -2712,7 +2712,8 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     }
     agentHub.setExchangeRates(snapshot.exchangeRates ?? null);
     agentHub.setServerStatus(snapshot.server ?? null);
-    agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? []);
+    agentHub.setWorkspaces(snapshot.workspaces ?? [], snapshot.boardLayout?.columnOrder ?? [], snapshot.workspaceFolders);
+    maybeImportLegacyWorkspaceFolders(snapshot);
     const focusedHistoryChanged = reconcileFocusedHistoryWindows(snapshot.messagePins ?? []);
     agentHub.setMessagePins(snapshot.messagePins ?? []);
     agentHub.setArchivedWorkspaces(snapshot.archivedWorkspaces ?? []);
@@ -4265,20 +4266,15 @@ agentHub.on("task:rename", ({ id, title }) => runAction(async () => {
 agentHub.on("workspace:rename", ({ workspaceId, name }) => runAction(async () => applySnapshot(
   await control("rename-workspace", { workspaceId, name }),
 )));
-agentHub.on("workspace:folder-move", ({ workspaceId, folderName }) => runAction(async () => {
-  const mutation = window.AgentHubStreamTabs.workspaceFolderMutation({ id: workspaceId }, folderName);
-  if (!mutation) return;
-  applySnapshot(await control("move-workspace-to-folder", mutation));
-  agentHub.toast(mutation.folderName
-    ? `Workspace перемещён в папку «${mutation.folderName}»`
-    : "Workspace убран из папки");
-}));
-agentHub.on("workspace:folder-rename", ({ fromFolderName, toFolderName }) => runAction(async () => {
-  const snapshot = await control("rename-workspace-folder", { fromFolderName, toFolderName });
-  applySnapshot(snapshot);
-  agentHub.renameWorkspaceFolderCatalog(fromFolderName, toFolderName);
-  agentHub.toast(`Папка «${fromFolderName}» переименована в «${toFolderName}»`);
-}));
+agentHub.workspaceFolders.configure({ control, applySnapshot, onImported: () => agentHub.acknowledgeWorkspaceFolderImport() });
+let folderImportStarted = false;
+function maybeImportLegacyWorkspaceFolders(snapshot) {
+  if (folderImportStarted || snapshot.workspaceFolders?.version !== 1 || agentHub.workspaceFolders.hasPendingAction("import")) return;
+  const names = agentHub.legacyWorkspaceFolderNames();
+  if (!names.length) return;
+  folderImportStarted = true;
+  void agentHub.workspaceFolders.importLegacy(names);
+}
 agentHub.on("workspace:archive", ({ workspaceId }) => runAction(async () => {
   applySnapshot(await control("archive-workspace", { workspaceId }));
   agentHub.toast("Workspace перемещён в бессрочный архив");
@@ -4302,11 +4298,12 @@ agentHub.on("workspace:delete-permanently", ({ workspaceId, confirmationName }) 
   }
 }));
 agentHub.on("workspace:create", ({
-  name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, autoReviewEnabled, beforeColumnId,
+  name, folderName, folderTarget, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, autoReviewEnabled, beforeColumnId,
 }) => runAction(async () => {
   let snapshot = await control("create-workspace", {
     name,
     comment,
+    folderTarget,
     settings: window.AgentHubStreamTabs.workspaceCreationSettings({
       workingDirectory,
       taskPrefix,
@@ -4328,7 +4325,7 @@ agentHub.on("workspace:create", ({
   applySnapshot(snapshot);
 }));
 agentHub.on("workspace:update", ({
-  workspaceId, name, folderName, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, autoReviewEnabled,
+  workspaceId, name, folderName, folderTarget, sourceFolderId, folderChangedByUser, comment, workingDirectory, taskPrefix, rules, releaseWorkflowEnabled, autoReviewEnabled,
   beforeColumnId,
 }) => runAction(async () => {
   if (!lastSnapshot?.boardLayout) {
@@ -4339,15 +4336,15 @@ agentHub.on("workspace:update", ({
   let snapshot = lastSnapshot;
   const nextSettings = {
     ...(workspace?.settings ?? {}),
-    catalogFolder: String(folderName ?? "").trim(),
     workingDirectory: String(workingDirectory ?? "").trim(),
     taskPrefix: String(taskPrefix ?? "").trim(),
     releaseWorkflowEnabled: releaseWorkflowEnabled === true,
     autoReviewEnabled: autoReviewEnabled === undefined
       ? workspace?.settings?.autoReviewEnabled === true : autoReviewEnabled === true,
   };
-  const settingsChanged = nextSettings.catalogFolder !== String(workspace?.settings?.catalogFolder ?? "")
-    || nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")
+  const moveTarget = folderTarget;
+  const folderChanged = folderChangedByUser === true;
+  const settingsChanged = nextSettings.workingDirectory !== String(workspace?.settings?.workingDirectory ?? "")
     || nextSettings.taskPrefix !== String(workspace?.settings?.taskPrefix ?? "")
     || nextSettings.releaseWorkflowEnabled !== (workspace?.settings?.releaseWorkflowEnabled === true)
     || nextSettings.autoReviewEnabled !== (workspace?.settings?.autoReviewEnabled === true);
@@ -4378,6 +4375,12 @@ agentHub.on("workspace:update", ({
     snapshot = await control("board-column-move", { columnId, beforeColumnId });
   }
   applySnapshot(snapshot);
+  if (folderChanged && (!folderName || moveTarget)) {
+    await agentHub.workspaceFolders.submit("move", {
+      workspaceId, sourceFolderId,
+      target: moveTarget ? { id: moveTarget.id, revision: moveTarget.revision } : null,
+    }, { workspaceId, workspaceName: name, targetId: moveTarget?.id ?? null, targetName: String(folderName ?? ""), keyboard: true });
+  }
 }));
 agentHub.on("directory:browse", ({ initialPath, resolve, reject }) => {
   void control("browse-directory", { initialPath }).then(resolve, reject);

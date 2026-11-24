@@ -22,6 +22,7 @@ const DEFAULT_DESKTOP_MAX_RESPONSE_BYTES = 3_500_000;
 const PRIVILEGED_CONTROL_SOURCES = Object.freeze(["desktop-control", "local-mini-app", "local-vscode-webview"]);
 const RECEIPT_SHAPE = "__agentHubControlReceiptShape";
 const SNAPSHOT_RESULT_KEYS = Object.freeze([
+  "workspaceFolders",
   "apiVersion", "workspaces", "boardTasks", "boardLayout", "selected", "settings",
   "pendingApprovals", "messageReceipts", "messagePins", "deferredInputs", "restartPending",
   "restartWaiting", "restartBlockingCount", "restartFailure", "exchangeRates", "activeCount", "server",
