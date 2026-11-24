@@ -14,6 +14,12 @@ are not an access boundary for these actions. Creating a public external share
 is a separate action with its existing owner and publication policy.
 See [ADR-HUB-447](../decisions/ADR-HUB-447-local-file-location.md).
 
+Chat previews for image files share the direct local GET path resolver. Only
+the image preview response is available to a verified local VS Code webview
+session. Trusted-device download tickets, reveal, copy and ordinary download
+retain their own authentication rules. Image responses remain sandboxed on
+direct navigation, including when the source is SVG.
+
 ## Archive and deletion
 
 The Dashboard closes a Task card independently of its delivery workflow.

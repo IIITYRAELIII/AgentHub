@@ -6367,7 +6367,7 @@ function loadAttachmentViewerSource({ source = "", name = "Изображени�
       generation,
       index,
       loaded: false,
-      message: "Не удалось загрузить изображение",
+      message: attachmentViewerGallery[index]?.loadError ?? "Не удалось загрузить изображение",
     });
   };
   attachmentViewerImage.src = resource;
@@ -7235,6 +7235,8 @@ function markdownLink(raw, fileContext = currentFileLinkContext()) {
     : source;
   const taskReferenceLink = TaskReferences.link(value);
   if (taskReferenceLink) return taskReferenceLink;
+  const imageLink = projectedImageLink(value, fileContext.attachments);
+  if (imageLink) return imageLink;
   if (/^https?:\/\//iu.test(value)) {
     try {
       return { href: new URL(value).href };
@@ -7243,6 +7245,25 @@ function markdownLink(raw, fileContext = currentFileLinkContext()) {
     }
   }
   return desktopFileLink(value, fileContext);
+}
+
+function projectedImageLink(value, attachments) {
+  if (!Array.isArray(attachments) || !attachments.length) return null;
+  let target;
+  try { target = new URL(value, window.location.href); }
+  catch { return null; }
+  if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) return null;
+  for (const attachment of attachments) {
+    if (!attachment?.url || !resourceInteractions.isImageAttachment(attachment)) continue;
+    try {
+      if (new URL(attachment.url, window.location.href).href !== target.href) continue;
+      const imageMime = String(attachment.type || "image/*");
+      if (resourceInteractions.imageLinkPreview({ href: target.href, type: imageMime, attachmentName: attachment.name ?? "" })) {
+        return { href: target.href, imageMime };
+      }
+    } catch { /* Invalid attachment metadata has no authority. */ }
+  }
+  return null;
 }
 
 function codexFileCitation(raw) {
@@ -7280,6 +7301,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           rel: "noopener noreferrer",
         });
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
+        if (targetLink.imageMime) link.dataset.agentHubImageMime = targetLink.imageMime;
         target.append(link);
         appendLocalResourceOverflow(target, link, targetLink, citation?.label);
       } else {
@@ -7325,6 +7347,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
         });
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
+        if (targetLink.imageMime) link.dataset.agentHubImageMime = targetLink.imageMime;
         target.append(link);
         appendLocalResourceOverflow(target, link, targetLink, parts[1]);
       } else {
@@ -7990,10 +8013,11 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     const text = role === "system"
       ? MessageView.normalizeSystemEventText(message.text ?? "")
       : message.text ?? "";
+    const fileContext = { ...currentFileLinkContext(task), attachments: message.attachments };
     if (role === "agent" && Array.isArray(message.responseCitationPresentations)
       && message.responseCitationPresentations.length) {
-      renderAgentResponseBody(target, message, text, currentFileLinkContext(task));
-    } else renderMarkdown(target, text, currentFileLinkContext(task), role);
+      renderAgentResponseBody(target, message, text, fileContext);
+    } else renderMarkdown(target, text, fileContext, role);
   };
   const deferredPreview = MessageView.deferredUserMessagePreview(message);
   if (deferredPreview != null) {
@@ -8088,8 +8112,32 @@ document.addEventListener("click", (event) => {
     TaskReferences.open({ taskId: taskReferenceLink.dataset.agentHubTaskReference });
     return;
   }
-  const link = event.target.closest("a[data-agent-hub-local-link]");
+  const link = event.target.closest("a[href]");
   if (!link) return;
+  const localPath = link.dataset.agentHubLocalLink;
+  if (!event.defaultPrevented && event.button === 0 && !event.altKey && !event.ctrlKey
+    && !event.metaKey && !event.shiftKey && link.closest("[data-chat-pane] .msg-body")) {
+    const preview = resourceInteractions.imageLinkPreview({
+      href: link.href,
+      localPath,
+      type: link.dataset.agentHubImageMime,
+    });
+    if (preview) {
+      event.preventDefault();
+      const name = preview.name || "Изображение";
+      const generation = openAttachmentViewer({
+        gallery: [{
+          name,
+          type: "image/*",
+          dataUrl: preview.url,
+          loadError: "Не удалось открыть изображение: файл недоступен или формат не поддерживается",
+        }],
+      });
+      if (preview.localPath) emit("resource:image-preview", { localPath, name, generation });
+      return;
+    }
+  }
+  if (!localPath) return;
   event.preventDefault();
   openResourceContextMenu(event, resourceInteractions.linkResource({
     href: link.href,
