@@ -7312,16 +7312,20 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
       appendInlineMarkdown(emphasis, token.slice(1, -1), fileContext);
       target.append(emphasis);
     } else {
-      const parts = token.match(/^\[([^\]\n]+)\]\(<([^>\n]+)>(?:\s+"([^"]*)")?\)$/u)
-        ?? token.match(/^\[([^\]\n]+)\]\(([^)\n]+?)(?:\s+"([^"]*)")?\)$/u);
-      const targetLink = markdownLink(parts?.[2], fileContext);
+      const parts = token.match(/^\[([^\]\n]+)\]\(([^\n]+)\)$/u);
+      const destination = parts?.[2] ?? "";
+      const title = destination.endsWith('"')
+        ? /(\S)\s+"((?:[^"\\]|\\[^\n])*)"$/u.exec(destination)
+        : null;
+      const linkDestination = title ? destination.slice(0, title.index + title[1].length) : destination;
+      const targetLink = markdownLink(linkDestination, fileContext);
       if (targetLink) {
         const link = el("a", {
           href: targetLink.href,
           target: targetLink.taskId ? null : "_blank",
           rel: targetLink.taskId ? null : "noopener noreferrer",
           text: parts[1],
-          title: parts[3] || null,
+          title: title?.[2].replace(/\\(["\\])/gu, "$1") || null,
         });
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
