@@ -6,23 +6,23 @@ import { pathToFileURL } from "node:url";
 
 const FORWARDED_ENVIRONMENT = ["CODEX_HOME"];
 
-function defaultRuntimeRoot(environment = process.env) {
+export function runtimeCommandRoot(environment = process.env) {
+  if (environment.AGENT_HUB_RUNTIME_ROOT) return path.resolve(environment.AGENT_HUB_RUNTIME_ROOT);
+  if (environment.AGENT_HUB_CONFIG) return path.dirname(path.resolve(environment.AGENT_HUB_CONFIG));
   if (process.platform === "win32") {
     return path.resolve(environment.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "AgentHub");
   }
   return path.resolve(environment.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"), "agent-hub");
 }
 
-function runtimeCommandId(runtimeRoot) {
+export function runtimeCommandId(runtimeRoot) {
   return createHash("sha256").update(path.resolve(runtimeRoot).toLowerCase()).digest("hex").slice(0, 24);
 }
 
-function runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot = os.tmpdir()) {
-  return path.join(temporaryRoot, `agent-hub-command-${runtimeCommandId(runtimeRoot)}`);
-}
-
-function workspaceTemporaryRoot(projectRoot) {
-  return path.join(projectRoot, ".agent-hub", "runtime");
+export function runtimeCommandSpoolDirectory(runtimeRoot = runtimeCommandRoot(), temporaryRoot) {
+  return temporaryRoot
+    ? path.join(temporaryRoot, `agent-hub-command-${runtimeCommandId(runtimeRoot)}`)
+    : path.join(runtimeRoot, "data", "runtime-command");
 }
 
 function forwardedEnvironment(environment, threadId) {
@@ -53,7 +53,7 @@ function runtimeRequest(command, payload, input, environment = process.env) {
   };
 }
 
-async function enqueueThroughSpool(request, runtimeRoot, temporaryRoot = os.tmpdir()) {
+async function enqueueThroughSpool(request, runtimeRoot, temporaryRoot) {
   const spool = runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot);
   await mkdir(spool, { recursive: true });
   await writeTextAtomic(path.join(spool, `${request.id}.request.json`), `${JSON.stringify(request)}\n`);
@@ -61,7 +61,7 @@ async function enqueueThroughSpool(request, runtimeRoot, temporaryRoot = os.tmpd
 
 export async function enqueueLifecycleRequest(request, runtimeRoot, {
   enqueueRequest = enqueueThroughSpool,
-  temporaryRoot = os.tmpdir(),
+  temporaryRoot,
 } = {}) {
   await enqueueRequest(request, runtimeRoot, temporaryRoot);
 }
@@ -112,10 +112,8 @@ export async function main({
   const chunks = [];
   input.setEncoding("utf8");
   for await (const chunk of input) chunks.push(chunk);
-  const { input: lifecycleInput, request } = lifecycleRequest(JSON.parse(chunks.join("")), environment);
-  await enqueueRequest(request, defaultRuntimeRoot(environment), {
-    temporaryRoot: workspaceTemporaryRoot(lifecycleInput.projectRoot),
-  });
+  const { request } = lifecycleRequest(JSON.parse(chunks.join("")), environment);
+  await enqueueRequest(request, runtimeCommandRoot(environment));
   output.write("{}\n");
 }
 

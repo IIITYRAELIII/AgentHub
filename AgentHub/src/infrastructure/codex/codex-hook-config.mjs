@@ -3,9 +3,9 @@ import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
+import { runtimeCommandRoot } from "../../../codex-stop-hook-launcher.mjs";
 import { isMainModule } from "../process/main-module.mjs";
 import {
-  defaultRuntimeRoot,
   runtimeLayout,
   runtimeReleaseDirectory,
 } from "../filesystem/runtime-layout.mjs";
@@ -116,7 +116,7 @@ async function readConfig(file) {
 
 export async function installCodexStopHook({
   hooksFile = path.join(defaultCodexHome(), "hooks.json"),
-  runtimeRoot = defaultRuntimeRoot(),
+  runtimeRoot = runtimeCommandRoot(),
   nodeExecutable = process.execPath,
 } = {}) {
   const sourceLauncher = await sourceLauncherFile(runtimeRoot);
@@ -143,7 +143,7 @@ export async function uninstallCodexStopHook({
 
 export async function codexStopHookStatus({
   hooksFile = path.join(defaultCodexHome(), "hooks.json"),
-  runtimeRoot = defaultRuntimeRoot(),
+  runtimeRoot = runtimeCommandRoot(),
   nodeExecutable = process.execPath,
 } = {}) {
   const current = await readConfig(hooksFile);
