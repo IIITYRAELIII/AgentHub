@@ -97,6 +97,18 @@ messages are never repeated. Explicit `mode=queue`, immutable request/origin/bod
 binding and direct exact-target service guards retain their contracts. See
 MSG-001 and ADR-0136. This changes routing policy, not MCP mutation ownership.
 
+## Requested Git cancellation after service exit (HUB-524)
+
+The existing cancellation owner can continue the original requested cancellation
+after service exit using matching Windows Git Job retirement evidence or an exact launch permit
+taken before execution. Release
+Manager reconciliation accepts this original even while its workflow receipt is
+pending. The exact Task, arguments hash and current Task revision remain
+required. Without proof, the stop remains requested. With proof, it retains the
+original cancellation and observed Git effects and stops the original execution
+without repeating it. Historical guards without Job evidence require the
+existing exact positive recovery path. See ADR-HUB-524.
+
 ## Explicit Task operation interruption
 
 `hub_task_operation_cancel` is an explicit audited mutation of future execution,

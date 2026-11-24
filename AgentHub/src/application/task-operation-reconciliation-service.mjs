@@ -852,7 +852,7 @@ export class TaskOperationReconciliationService {
             allowMetadataRecovery: identity.metadataRecovery });
         if (!native) throw new Error("Pending workflow reconciliation requires the exact process-tree guard id or original native Git intent");
       }
-      const proof = needsRecovery && identity.guardId ? {
+      const proof = needsRecovery && identity.guardId && supplied(options.proofKind) ? {
         kind: requiredText(options.proofKind, "proof kind", 100),
         confirmed: options.confirmed === true,
         summary: requiredText(options.proofSummary, "proof summary", 1_000),

@@ -1516,7 +1516,7 @@ export class TaskLifecycleService {
         throw new Error("Selected composition original Task lifecycle identity changed");
       }
       const recovery = guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
-        repositoryRoot: projectRoot, guardId, proof, lease,
+        repositoryRoot: projectRoot, guardId, proof, operationId, lease,
       }) : null;
       if (!guardId) await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
       const validateAbsorption = selectedComposition.absorptionInput ? () => {
@@ -1579,7 +1579,7 @@ export class TaskLifecycleService {
         throw new Error("Unknown squash transfer identity or two-Task CAS does not match");
       }
       const recovery = guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
-        repositoryRoot: projectRoot, guardId, proof, lease,
+        repositoryRoot: projectRoot, guardId, proof, operationId, lease,
       }) : null;
       if (!guardId) {
         await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
@@ -1630,7 +1630,7 @@ export class TaskLifecycleService {
       }
       const pending = await this.taskGitWorkspaces.pendingWithdrawal({ projectRoot, taskId, operationId });
       const recovery = pending && guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
-        repositoryRoot: projectRoot, guardId, proof, lease,
+        repositoryRoot: projectRoot, guardId, proof, operationId, lease,
       }) : null;
       if (pending) {
         await this.taskGitWorkspaces.withdrawResultOwned({
@@ -1650,7 +1650,7 @@ export class TaskLifecycleService {
       }
       const native = await this.taskGitWorkspaces.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease });
       if (!native) throw new Error("Native Test recovery has no original Git intent");
-      if (guardId) await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, { repositoryRoot: projectRoot, guardId, proof, lease });
+      if (guardId) await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, { repositoryRoot: projectRoot, guardId, proof, operationId, lease });
       else await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
       return { result: await this.#updateWorkflowStatusWithLease({ taskId, status: "testing", operationId, projectRoot,
         operationEvidence: transition.evidence, initialNativeTestSource: verifyInitialNativeTest,
@@ -1677,6 +1677,7 @@ export class TaskLifecycleService {
       repositoryRoot: projectRoot,
       guardId,
       proof,
+      operationId,
       lease,
     }) : null;
     const result = await this.#updateWorkflowStatusWithLease({

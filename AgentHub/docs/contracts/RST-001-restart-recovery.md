@@ -294,6 +294,17 @@ pricing backfill. Its existing post-readiness coordinator remains the owner;
 mandatory terminal projection recovery and its durable ACK fences still finish
 before readiness, with the existing replacement deadline unchanged.
 
+## Task Git retirement evidence (HUB-524)
+
+An individual Hub exit leaves the Windows Job witness able to retire its own
+Git tree and publish matching admission and completion records. Before execution,
+recovery may instead take the exact durable launch permit. The native owner
+must consume the same permit before it can resume Git. The existing
+Task and Git owners validate the evidence and persist recovery before removing
+the guard. A missing or damaged receipt cannot be replaced with PID absence.
+A generation without Job evidence keeps the existing after-guard boot-proof
+route. See ADR-HUB-524.
+
 ## Identity and owner
 
 The optional GitHub account owner pauses credential mutation intake at actual

@@ -227,6 +227,14 @@ writes invalidate the next read, rollbacks do not, and restart reconstructs it.
 Oversized projections use uncached reads. Pricing, attribution, projection CAS,
 terminal/outbox durability and full scalar aggregation retain their owners.
 
+## Windows guarded Git timing (HUB-524)
+
+Guarded Windows Git timing includes starting the native Job owner and sealing
+retirement. The diagnostic retirement checkpoint records the process identity,
+exit code and reason, with no arguments or repository content. Cancellation
+recovery events use the original operation ID. A Git ref read cannot stand in
+for the Job retirement checkpoint. See ADR-HUB-524.
+
 ## Trace contract
 
 Task MCP receipt admission emits one bounded SQLite summary per invocation on
