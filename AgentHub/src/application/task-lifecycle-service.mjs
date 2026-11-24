@@ -1093,6 +1093,14 @@ export class TaskLifecycleService {
                   lease: repositoryLease,
                   operationId,
                   nativeAwaitRecovery,
+                  admitAwaitPromotion: nativeAwaitRecovery?.preparedPromotion ? async () => {
+                    await this.#assertOwned(repositoryLease);
+                    const { manifestHash, head, tree } = nativeAwaitRecovery.preparedPromotion;
+                    return this.#mutation(() => this.taskBoard.admitInterruptedAwaitPromotion({
+                      operationId, taskId: task.id, taskRevision: task.revision, workspaceId: task.workspaceId,
+                      argumentsHash: nativeAwaitRecovery.argumentsHash, manifestHash, head, tree,
+                    }), operationId);
+                  } : null,
                   validateAwaitOriginal: nativeAwaitRecovery?.preparedPromotion ? async () => {
                     const { receipt } = this.#readPendingNativeAwait(task.id, operationId);
                     if (receipt.argumentsHash !== nativeAwaitRecovery.argumentsHash

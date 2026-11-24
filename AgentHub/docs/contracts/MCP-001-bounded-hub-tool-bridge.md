@@ -819,6 +819,10 @@ bounded already-published-notes archive or an exact interrupted native
 promotion can substitute for a nonexistent process guard; every real guard
 still refuses. Drift remains UNKNOWN. The same durable workflow outcome
 settles the same receipt; repeated terminal reconciliation performs a read.
+The exact promotion permit and durable cancellation serialize in the
+existing Task/receipt database. Cancellation before the permit prevents
+promotion. After admission, the original journal retains any written
+effects and the terminal Task CAS still observes cancellation.
 An interrupted promotion records the first failure with its phase separately
 from rollback/readback failure. Successful reconciliation retains the original
 error text as diagnostic evidence. See [ADR-HUB-530](../decisions/ADR-HUB-530-interrupted-await.md).

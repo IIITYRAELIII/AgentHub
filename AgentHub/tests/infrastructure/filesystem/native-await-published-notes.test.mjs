@@ -233,7 +233,13 @@ test("durable archive intent resumes after checkpoint-move boundary and rejects 
   assert.equal(await git(candidate.releaseRoot, "show", "PreRelease:selected.txt"), "selected");
 });
 
-test("same original Await continues a clean detached prepared checkout before ref promotion", async t => {
+test("same original Await continues a clean detached prepared checkout before ref promotion", t => verifyInterruptedAwait(t));
+test("durable cancellation immediately before the promotion permit leaves both old pointers", t =>
+  verifyInterruptedAwait(t, "before"));
+test("durable cancellation after the promotion permit retains the applied effect on the original", t =>
+  verifyInterruptedAwait(t, "after"));
+
+async function verifyInterruptedAwait(t, cancellation = null) {
   const f = await fixture(t, { interrupted: true });
   const databaseFile = path.join(f.root, "tasks.sqlite");
   const catalog = new WorkspaceCatalogStore({ databaseFile });
@@ -364,6 +370,44 @@ test("same original Await continues a clean detached prepared checkout before re
     workspaceId: workspace.id, taskId: task.id, operationRequestId: operationId,
     projectRoot: f.primary, expectedTaskRevision: task.revision, expectedWorkflowStatus: "testing",
   });
+  if (cancellation) {
+    const requestCancel = () => catalog.runMutation(() => catalog.requestTaskOperationInterruption(operationId, {
+      taskId: task.id, targetWorkspaceId: workspace.id, expectedArgumentsHash: argumentsHash,
+      expectedTaskRevision: task.revision, actor: { workspaceId: workspace.id, streamId: stream.id, releaseManager: true },
+      arguments: args, cohort: null, cancellationRequestId: "fixture-cancel", requestedAtMs: Date.now(),
+    }));
+    const admit = board.admitInterruptedAwaitPromotion.bind(board);
+    board.admitInterruptedAwaitPromotion = async input => {
+      if (cancellation === "before") await requestCancel();
+      const permit = await admit(input);
+      if (cancellation === "after") await requestCancel();
+      return permit;
+    };
+    const result = await recover();
+    assert.equal(result.outcome, "unknown", JSON.stringify(result));
+    assert.match(result.error, /Original Await receipt or cancellation changed/u);
+    assert.equal(catalog.mcpOperation(operationId).taskExecution.cancellation.phase, "requested");
+    assert.equal(board.task(task.id).revision, task.revision);
+    assert.equal(board.task(task.id).workflowStatus, "testing");
+    const actualRef = await git(releaseRoot, "rev-parse", "refs/heads/PreRelease");
+    if (cancellation === "before") {
+      assert.equal(actualRef, oldHead);
+      assert.deepEqual(await readFile(checkpointFile), oldCheckpoint);
+      assert.deepEqual(await readFile(journalFile), journalBytes);
+      assert.equal(board.lifecycleTransition(operationId).evidence?.awaitPromotion, undefined);
+    } else {
+      assert.equal(actualRef, target);
+      assert.equal(JSON.parse(await readFile(checkpointFile)).preReleaseHead, target);
+      const pending = JSON.parse(await readFile(journalFile));
+      assert.equal(pending.phase, "prepared");
+      assert.equal(pending.requestId, operationId);
+      assert.deepEqual(board.lifecycleTransition(operationId).evidence.awaitPromotion, {
+        manifestHash: journal.manifestHash, head: target, tree: journal.targetTree,
+      });
+      assert.equal(catalog.mcpOperation(operationId).receiptState, "unknown");
+    }
+    return;
+  }
   guarded = true;
   await assert.rejects(recover(), /real guard/u);
   guarded = false;
@@ -415,4 +459,4 @@ test("same original Await continues a clean detached prepared checkout before re
   assert.equal(done.phase, "completed");
   assert.equal(done.requestId, original.operationId);
   assert.deepEqual(done.before, journal.before);
-});
+}

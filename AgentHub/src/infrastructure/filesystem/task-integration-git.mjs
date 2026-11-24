@@ -1247,7 +1247,7 @@ export class TaskIntegrationGitService {
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, preserveFrozen = false, commitPrepared = null, preparationGuard = null,
-    nativeAwaitRecovery = null, forwardPreparation = null, awaitOperationId = null,
+    nativeAwaitRecovery = null, forwardPreparation = null, awaitOperationId = null, admitAwaitPromotion = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     if (!preparationObjectStore()) {
@@ -1257,7 +1257,7 @@ export class TaskIntegrationGitService {
         withPreparationGitIsolation(this.dataDir, () => this.prepareCandidate({
           planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks, approvedBaseCommit, baseProvenance,
           validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
-          nativeAwaitRecovery, forwardPreparation, awaitOperationId }), lease, objects));
+          nativeAwaitRecovery, forwardPreparation, awaitOperationId, admitAwaitPromotion }), lease, objects));
     }
     const isolation = forwardPreparation?.readIsolation?.();
     if (isolation && !this.#isolationContext) return this.#prepareIsolatedCandidate({
@@ -1268,7 +1268,7 @@ export class TaskIntegrationGitService {
     if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
       () => this.prepareCandidate({ planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks,
         approvedBaseCommit, baseProvenance, validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
-        nativeAwaitRecovery, forwardPreparation, awaitOperationId }));
+        nativeAwaitRecovery, forwardPreparation, awaitOperationId, admitAwaitPromotion }));
     if (authority && authority.phase !== "completed" && preflightRequestId !== authority.requestId) {
       throw new Error("Isolated original preparation still owns this candidate");
     }
@@ -1761,14 +1761,6 @@ export class TaskIntegrationGitService {
         await validate();
         let promotionPhase = "checkout";
         try {
-        if (preparedPromotion) {
-          const current = await readPromotion();
-          if (current.journal.requestId == null) {
-            journal = { ...current.journal, requestId: awaitOperationId };
-            await writeJsonAtomic(journalFile, journal);
-            interruptedJournalHash = sha256(stableManifest(journal));
-          }
-        }
         // Git owns physical checkout and EOL. No reset, clean, force checkout,
         // per-file serializer or hard-link publication enters the ordinary path.
         if (head !== composition.head) await git(["checkout", "--detach", "--no-overwrite-ignore", composition.head]);
@@ -1777,6 +1769,20 @@ export class TaskIntegrationGitService {
         await validate();
         const current = preparedPromotion ? await readPromotion() : null;
         promotionPhase = "ref promotion";
+        if (current) {
+          if (typeof admitAwaitPromotion !== "function") throw interruptedAwaitRefusal("promotion admission is unavailable");
+          const permit = await admitAwaitPromotion();
+          if (permit.manifestHash !== manifestHash || permit.head !== composition.head || permit.tree !== composition.tree) {
+            throw interruptedAwaitRefusal("promotion permit does not match the verified target");
+          }
+          await promotionLease.assertOwned();
+          await assertPreparationProcessOwned();
+          if (current.journal.requestId == null) {
+            journal = { ...current.journal, requestId: awaitOperationId };
+            await writeJsonAtomic(journalFile, journal);
+            interruptedJournalHash = sha256(stableManifest(journal));
+          }
+        }
         if ((current ? current.branch : branch) !== composition.head) {
           await git(["update-ref", branchRef, composition.head, journal.before.branch || "0".repeat(40)]);
         }

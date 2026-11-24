@@ -11,7 +11,12 @@ continue the exact ordinary Await under their existing locks. The candidate
 owner checks the original journal, standalone checkout, index, ref and prior
 checkpoint, then verifies the completed native merge graph and selected
 content. It reproduces the complete prepared manifest at the current Task
-CAS, plan and publication. It advances only the missing ref, symbolic HEAD
+CAS, plan and publication. The existing Task transition records the exact
+promotion permit in the same SQLite writer transaction that checks for
+durable cancellation. A cancellation recorded before admission leaves the
+old ref and checkpoint. After admission any written Git effects belong to
+the original, and the terminal Task CAS still checks cancellation. The
+owner advances only the missing ref, symbolic HEAD
 and checkpoint effects, then uses the existing workflow CAS and receipt
 settlement. After a committed Task CAS, the same owner can finish the
 original journal write without replaying the CAS or Git promotion. Later

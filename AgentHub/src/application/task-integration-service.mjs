@@ -250,7 +250,7 @@ export class TaskIntegrationService {
 
   async prepareAwaitAcceptance({
     workspaceId, acceptingTask, projectRoot, lease = null, operationId, commitPrepared,
-    nativeAwaitRecovery = null, validateAwaitOriginal = null,
+    nativeAwaitRecovery = null, validateAwaitOriginal = null, admitAwaitPromotion = null,
   } = {}) {
     if (typeof commitPrepared !== "function") throw new TypeError("commitPrepared is required");
     const root = path.resolve(String(projectRoot ?? "").trim());
@@ -260,7 +260,8 @@ export class TaskIntegrationService {
     // recovery and cross-Task cutover. Retain candidate rollback through Task CAS.
     try {
       return await this.#prepareAwaitSet({
-        workspaceId, acceptingTask, lease, nativeAwaitRecovery, awaitOperationId: operation, validateAwaitOriginal,
+        workspaceId, acceptingTask, lease, nativeAwaitRecovery, awaitOperationId: operation,
+        validateAwaitOriginal, admitAwaitPromotion,
         commitPrepared: async (prepared) => {
           const matches = prepared.releaseCandidates.flatMap((candidate) => (
             canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
@@ -310,7 +311,8 @@ export class TaskIntegrationService {
     acceptingTask = null, commitPrepared = null, lease = null, validateOnly = false,
     reviewedMainApprovals = null, selectedTaskIds = null,
     prospectiveOnly = false,
-    previousSelectedResults = [], nativeAwaitRecovery = null, awaitOperationId = null, validateAwaitOriginal = null,
+    previousSelectedResults = [], nativeAwaitRecovery = null, awaitOperationId = null,
+    validateAwaitOriginal = null, admitAwaitPromotion = null,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
@@ -353,7 +355,8 @@ export class TaskIntegrationService {
       return { workspaceId: String(workspaceId), planRevision: plan.revision, taskIds: [], releaseCandidates: [] };
     }
     if (nativeAwaitRecovery?.preparedPromotion && (selectedRepositories.length !== 1
-        || awaitOperationId !== nativeAwaitRecovery.operationId || typeof validateAwaitOriginal !== "function")) {
+        || awaitOperationId !== nativeAwaitRecovery.operationId || typeof validateAwaitOriginal !== "function"
+        || typeof admitAwaitPromotion !== "function")) {
       throw new Error("Interrupted Await requires the original operation and its sole repository");
     }
     const releaseCandidates = [];
@@ -501,6 +504,7 @@ export class TaskIntegrationService {
         preserveFrozen,
         ...(awaitOperationId ? { awaitOperationId } : {}),
         ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
+        ...(admitAwaitPromotion ? { admitAwaitPromotion } : {}),
 
         validateBeforeCommit: async () => {
           await validatePlan(); await validateBases();
