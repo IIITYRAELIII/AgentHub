@@ -1025,6 +1025,13 @@ the connection owner retains its own diagnostic. An authoritative `ready=false`
 response still opens startup, including a replacement runtime with no stage
 metadata yet. A queued restart request alone does not prove replacement began.
 
+A delayed or failed health read during one startup retains its last confirmed
+stage list, counts and elapsed observation, explicitly labelled stale. It never
+presents the cached stage as fresh progress. One single-flight polling owner
+coalesces timer/event refreshes; restart/page disposal invalidate old requests
+and late responses cannot replace a newer confirmed startup generation. A real
+replacement wait does not inherit the old process's stages. See ADR-0138.
+
 ## Task operation result projection
 
 A durable Task admission is pending, not a successful status/update/cleanup.

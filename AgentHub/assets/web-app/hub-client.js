@@ -5480,7 +5480,7 @@ agentHub.on("hub:restart", () => runAction(async () => {
 }));
 // Same authenticated control/IPC owner as recovery; the public /health probe
 // intentionally strips local provider errors and is only a liveness fallback.
-window.__agentHubStartupRuntimeHealth = () => control("runtime-health");
+window.__agentHubStartupRuntimeHealth = (clientTraceId) => control("runtime-health", { clientTraceId });
 document.addEventListener("agenthub:startup-recovery", (event) => {
   const { action, startedAtMs } = event.detail ?? {};
   if (!["retry-startup", "restart-server"].includes(action)) return;
