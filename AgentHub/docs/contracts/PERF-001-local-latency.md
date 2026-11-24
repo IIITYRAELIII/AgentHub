@@ -431,6 +431,8 @@ and a passing private restart do not establish a historical lock holder.
 The terminal provider startup span includes the Codex selection outcome and
 durations from the same attempt, including recorded identity, bundle inventory,
 signature and process probes, custody, canary and state persistence when used.
+If selection is retried during rollback or unavailable-bundle recovery, the
+same span also retains the preceding selection attempt from this startup.
 These are bounded, content-free timings. Child phase durations can be inside
 the recorded or discovery duration and must not be added to their parent.
 

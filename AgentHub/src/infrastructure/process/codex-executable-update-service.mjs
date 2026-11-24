@@ -55,7 +55,7 @@ function unavailableRecordedIdentity(error) {
 
 function safeToolProof(canary, candidate) {
   if (canary?.status !== "passed" || canary.evidence?.safeToolCount !== 1
-    || !sameIdentity(canary.identity, candidate)) return null;
+    || !validIdentity(canary.identity) || !sameIdentity(canary.identity, candidate)) return null;
   return { identity: identity(candidate), status: "passed", evidence: { safeToolCount: 1 } };
 }
 
@@ -263,33 +263,36 @@ export class CodexExecutableUpdateService {
 
   async #select(candidate, status, reason = null, { measure, retainedCustody } = {}) {
     const previous = this.#selectionCustody;
-    this.#selection = identity(candidate);
-    const custody = candidate.bundle ? {
-      identity: identity(candidate), bound: false,
-      lease: retainedCustody ?? await measure("selectionCustodyMs", () => this.acquireCustody(candidate.bundle)),
-    } : null;
-    let proof = safeToolProof(this.#state.canary, candidate) ?? safeToolProof(this.#state.lastKnownGoodCanary, candidate);
+    let lease = retainedCustody;
+    let proof;
     try {
-      custody?.lease.assertAlive();
+      this.#selection = identity(candidate);
+      if (candidate.bundle && !lease) {
+        lease = await measure("selectionCustodyMs", () => this.acquireCustody(candidate.bundle));
+      }
+      lease?.assertAlive();
+      proof = safeToolProof(this.#state.canary, candidate) ?? safeToolProof(this.#state.lastKnownGoodCanary, candidate);
       if (candidate.bundle?.codeModeHost && !proof) {
         const startedAt = this.now().toISOString();
         const result = await measure("canaryMs", () => this.runCanary(candidate));
         if (result?.ok !== true || result.evidence?.safeToolCount !== 1) {
           throw new Error("Codex compatibility canary did not confirm safe tool execution");
         }
-        custody.lease.assertAlive();
+        lease.assertAlive();
         this.#state.canary = { identity: identity(candidate), status: "passed", startedAt,
           completedAt: this.now().toISOString(), evidence: result.evidence };
         proof = safeToolProof(this.#state.canary, candidate);
       }
-    } catch (error) { await custody?.lease.release(); throw error; }
-    this.#state.selected = identity(candidate);
-    this.#state.status = status;
-    this.#state.reason = reason;
-    this.#state.lastError = null;
-    try { await measure("stateWriteMs", () => this.#save()); }
-    catch (error) { await custody?.lease.release(); throw error; }
-    this.#selectionCustody = custody;
+      this.#state.selected = identity(candidate);
+      this.#state.status = status;
+      this.#state.reason = reason;
+      this.#state.lastError = null;
+      await measure("stateWriteMs", () => this.#save());
+    } catch (error) {
+      await lease?.release();
+      throw error;
+    }
+    this.#selectionCustody = lease ? { identity: this.#selection, bound: false, lease } : null;
     this.#selectionCanary = proof;
     if (previous && !previous.bound) await previous.lease.release();
     return candidate.path;
@@ -341,6 +344,10 @@ export class CodexExecutableUpdateService {
   async selectForStart() {
     const startedAt = performance.now();
     const selection = { startedAtMs: Date.now(), phases: {} };
+    if ((this.#rollbackIdentity || this.#rediscoverOnStart) && this.#startupSelection?.outcome) {
+      const { startedAtMs, durationMs, outcome, phases } = this.#startupSelection;
+      selection.previousAttempt = { startedAtMs, durationMs, outcome, phases: { ...phases } };
+    }
     this.#startupSelection = selection;
     const measure = async (phase, work) => {
       const start = performance.now();
@@ -694,6 +701,8 @@ export class CodexExecutableUpdateService {
   }
 
   diagnostics() {
+    const selection = this.#startupSelection;
+    const previousAttempt = selection?.previousAttempt;
     return {
       policy: this.requestedExecutable
         ? "manual-override"
@@ -712,7 +721,11 @@ export class CodexExecutableUpdateService {
       rejected: this.#state.rejected ?? [],
       lastError: this.#state.lastError,
       recordedSignatureRejection: this.#state.recordedSignatureRejection,
-      startupSelection: this.#startupSelection ? { ...this.#startupSelection, phases: { ...this.#startupSelection.phases } } : null,
+      startupSelection: selection ? {
+        ...selection,
+        phases: { ...selection.phases },
+        ...(previousAttempt ? { previousAttempt: { ...previousAttempt, phases: { ...previousAttempt.phases } } } : {}),
+      } : null,
       updatedAt: this.#state.updatedAt,
     };
   }

@@ -137,7 +137,11 @@ export class AgentHubStartupCoordinator {
               if (stage === "provider") {
                 try {
                   const selection = health.readDiagnostic("codexExecutableUpdate")?.startupSelection;
-                  if (selection?.startedAtMs >= startedAtMs && selection.outcome) metadata.codexSelection = selection;
+                  if (selection?.startedAtMs >= startedAtMs && selection.outcome) {
+                    const { previousAttempt, ...current } = selection;
+                    metadata.codexSelection = current;
+                    if (previousAttempt?.startedAtMs >= startedAtMs) current.previousAttempt = previousAttempt;
+                  }
                 } catch { /* Diagnostics cannot change the provider outcome. */ }
               }
             }
