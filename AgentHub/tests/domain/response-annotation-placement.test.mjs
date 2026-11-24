@@ -43,6 +43,15 @@ test("raw reprojection keeps two addressed list markers and never invents a seco
   const unsafe = project(raw, misplaced);
   assert.equal(unsafe.responseAnnotationReferences.length, 1);
   assert.equal(unsafe.responseAnnotationReferences[0].target, undefined);
+  const invalidLength = { ...references[1], position: {
+    start: references[1].position.start, end: references[1].position.end - 1,
+  } };
+  assert.deepEqual(project(raw, [invalidLength]), project(raw));
+  assert.deepEqual(project(expected, [invalidLength]).responseAnnotationReferences, []);
+  const { position, ...legacy } = references[1];
+  assert.deepEqual(project(raw, [legacy]).responseAnnotationReferences, [
+    { ...legacy, position: references[0].position },
+  ]);
 });
 
 export const fourAnswers = '# Зачем нужна история Git\n\nИстория Git сохраняет изменения. 🦊 :agent-annotation{index="2"}\n\nЗависимости можно переиспользовать. :codex-annotation{index="1"}\n\nВременные копии удаляются после проверки. :agent-annotation{index="3"}\n\nМедиа принадлежит открытой задаче. :codex-annotation{index="4"}';

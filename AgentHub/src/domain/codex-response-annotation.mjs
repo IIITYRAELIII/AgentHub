@@ -121,6 +121,8 @@ export function normalizedCodexResponseAnnotationReferences(references) {
     const position = reference?.position;
     const range = Number.isSafeInteger(position?.start) && Number.isSafeInteger(position?.end) && position.start >= 0
       && position.end === position.start + `Цитата ${index}`.length ? { start: position.start, end: position.end } : null;
+    // A damaged explicit address cannot fall back to an unrelated bare marker.
+    if (Object.hasOwn(reference, "position") && !range) continue;
     const retained = seen.get(key);
     if (retained) {
       const preferred = preferredResponseAnnotationTarget(retained.target, target);
