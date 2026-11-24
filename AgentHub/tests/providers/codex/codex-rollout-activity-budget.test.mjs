@@ -166,6 +166,23 @@ test("admission verifies the exact archive, rejects a truncated frame, and prefe
   assert.equal(correct.activity.scanBytes, valid.length);
   assert.equal(wrong.activity.sourceIssue, "thread-mismatch");
   assert.equal((await readCodexAdmissionActivity(archive, "fixture")).activity.scanBytes, 0);
+  const skippable = Buffer.from("502a4d1803000000010203", "hex");
+  const second = zstdCompressSync(Buffer.from('{"type":"event_msg"}\n'), {
+    params: { [constants.ZSTD_c_checksumFlag]: 1 },
+  });
+  const secondCorrupt = Buffer.from(second);
+  secondCorrupt[secondCorrupt.length - 1] ^= 1;
+  for (const [parts, issue] of [
+    [[valid, second], undefined],
+    [[skippable, valid, skippable], undefined],
+    [[valid, secondCorrupt], "invalid"],
+    [[valid, second.subarray(0, -1)], "invalid"],
+  ]) {
+    await writeFile(archive, Buffer.concat(parts));
+    const observation = await readCodexAdmissionActivity(rollout, "fixture", performance.timeOrigin + performance.now() + 5_000);
+    assert.equal(observation.activity.sourceIssue, issue);
+    assert.equal(observation.activity.sourceUnavailable, issue ? true : undefined);
+  }
   await writeFile(archive, valid.subarray(0, -1));
   assert.equal((await readCodexAdmissionActivity(rollout, "fixture")).activity.sourceIssue, "invalid");
   const changed = Buffer.from(valid);

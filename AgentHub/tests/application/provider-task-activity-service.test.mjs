@@ -209,7 +209,7 @@ test("compressed Codex admission requires fresh provider and native writer evide
   const path = "C:/rollout.jsonl";
   const archived = { sourceKind: "compressed", sourceGeneration: "one", rolloutPath: path, archivePath: path + ".zst" };
   const admissionTrace = (_stage, operation) => operation();
-  let provider = "notLoaded", holding = null, reads = 0, finalActivity = archived;
+  let provider = "notLoaded", holding = null, reads = 0, finalActivity = archived, appearsWithOwner = false;
   service.readCodexThread = async (id, options) => {
     events.push(["fresh", id, options.priority]);
     return { thread: { id, path, status: { type: provider } } };
@@ -222,7 +222,8 @@ test("compressed Codex admission requires fresh provider and native writer evide
   service.resolveActivity = async ({ activity, threadStatus }, options) => {
     assert.equal(threadStatus.type, "notLoaded");
     if (!options.forceFresh) return { state: activity.running ? "active" : "inactive" };
-    return { state: options.rolloutPath === holding ? "active" : "inactive", executionOwner: "external" };
+    return { state: options.rolloutPath === holding || (appearsWithOwner && reads === 2 && options.rolloutPath === path)
+      ? "active" : "inactive", executionOwner: "external" };
   };
   const read = async () => { reads = 0; return service.readCodex({ threadId: "fixture" }, { admissionTrace }); };
   assert.equal((await read()).state, "inactive");
@@ -234,6 +235,9 @@ test("compressed Codex admission requires fresh provider and native writer evide
   finalActivity = { ...archived, sourceGeneration: "changed" };
   assert.equal((await read()).state, "unknown");
   finalActivity = { sourceKind: "plain", running: true };
+  assert.equal((await read()).state, "active");
+  finalActivity = { sourceKind: "plain", running: false };
+  appearsWithOwner = true;
   assert.equal((await read()).state, "active");
   provider = "active";
   assert.equal((await read()).state, "active");

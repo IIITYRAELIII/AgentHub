@@ -74,6 +74,7 @@ export class ProviderTaskActivityService {
     const discover = async () => {
       if (!this.codexRunning()) await step("deferred-provider-ready", () => this.ensureCodex());
       let result;
+      sourceIssue = null;
       try {
         result = await step("deferred-thread-read", () => this.readCodexThread(target.threadId, {
           fresh: true,
@@ -132,7 +133,13 @@ export class ProviderTaskActivityService {
       // An external resume may have materialized the plain file during the probes.
       if (current.sourceKind === "compressed" && current.sourceGeneration === activity.sourceGeneration) return state;
       if (current.sourceUnavailable || current.sourceKind !== "plain") return unknown;
-      activity = current;
+      const previousPath = rolloutPath;
+      await discover();
+      if (threadStatus?.type === "active" || current.running) return { ...unknown, state: "active" };
+      if (rolloutPath !== previousPath || !["idle", "notLoaded"].includes(threadStatus?.type)) return unknown;
+      return step("deferred-runtime-owner", () => this.resolveActivity({ threadStatus, activity: current }, {
+        rolloutPath: activity.rolloutPath, agentHubPid: this.codexPid(), forceFresh: true,
+      }), (resolved) => ({ activityState: resolved.state }));
     }
     const activeTurnId = this.selectActiveTurnId(activity);
     return step("deferred-runtime-owner", () => this.resolveActivity({ threadStatus, activity }, {
