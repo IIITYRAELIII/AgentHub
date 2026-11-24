@@ -1650,8 +1650,11 @@ export class TaskIntegrationGitService {
       let interruptedJournalHash = interrupted?.journalHash;
       const readPromotion = async () => {
         const current = await this.#readInterruptedAwait(layout, initial, nativeAwaitRecovery, interruptedJournalHash);
-        if (!current.oldCheckpoint && (!current.checkpointBytes?.equals(Buffer.from(stableManifest(nextCheckpoint)))
-            || !(await awaitEvidenceBytes(manifestFile)).equals(Buffer.from(manifestText)))) {
+        await assertPlainIsolationPath(clone.evidenceRoot);
+        const existingManifest = await awaitEvidenceBytes(manifestFile, { optional: true });
+        if ((existingManifest && !existingManifest.equals(Buffer.from(manifestText)))
+            || (!current.oldCheckpoint && (!existingManifest
+              || !current.checkpointBytes?.equals(Buffer.from(stableManifest(nextCheckpoint)))))) {
           throw interruptedAwaitRefusal("promoted checkpoint or manifest differs");
         }
         await promotionLease.assertOwned();

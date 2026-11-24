@@ -305,12 +305,18 @@ test("same original Await continues a clean detached prepared checkout before re
   const proof = await inspect(original);
   assert.equal(proof.original.originMainCommit, f.base);
   assert.deepEqual(await readFile(journalFile), journalBytes);
-  const prepare = requestOverrides => f.service.prepareCandidate({
+  const prepare = (requestOverrides, commitPrepared = async () => assert.fail("foreign evidence reached the Task CAS")) =>
+    f.service.prepareCandidate({
     ...request, ...requestOverrides, awaitOperationId: original.operationId,
     nativeAwaitRecovery: { ...proof.original, preparedPromotion: proof.preparedPromotion },
-    commitPrepared: async () => assert.fail("foreign selection reached the Task CAS"),
+    commitPrepared,
   });
   await assert.rejects(prepare({ frozenTasks: [selected] }), /completed native selection|evidence file|ENOENT/u);
+  const futureManifest = path.join(path.dirname(releaseRoot), "evidence", journal.manifestHash + ".json");
+  await writeFile(futureManifest, "foreign manifest", { flag: "wx" });
+  await assert.rejects(prepare({}), /promoted checkpoint or manifest differs/u);
+  assert.equal(await readFile(futureManifest, "utf8"), "foreign manifest");
+  await rm(futureManifest);
   await assert.rejects(f.service.prepareCandidate({ ...request, awaitOperationId: "new-await",
     commitPrepared: async () => assert.fail("new operation adopted the old preparation") }), /original reconciliation/u);
   assert.deepEqual(await readFile(journalFile), journalBytes);
