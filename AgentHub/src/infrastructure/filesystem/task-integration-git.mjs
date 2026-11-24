@@ -321,6 +321,29 @@ async function disclosedCommit(root, commit, { localMain, originMain }) {
   };
 }
 
+function interruptedAwaitRefusal(reason) {
+  return Object.assign(new Error(`Interrupted native Await: ${reason}`), { code: "AWAIT_PREPARATION_UNKNOWN" });
+}
+
+async function awaitEvidenceBytes(file, { optional = false } = {}) {
+  const stat = await lstat(file).catch(error => {
+    if (optional && error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!stat) return null;
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > 16 * 1024 * 1024) {
+    throw interruptedAwaitRefusal("expected a bounded, private evidence file");
+  }
+  return readFile(file);
+}
+
+function awaitPromotionFailure(phase, error, readbackError) {
+  const describe = value => String(value?.message ?? value).slice(0, 1600);
+  return Object.assign(new Error(
+    `Native Await ${phase}: ${describe(error)}; rollback/readback: ${describe(readbackError)}`,
+    { cause: error }), { code: "AWAIT_PREPARATION_UNKNOWN", phase, readbackError });
+}
+
 async function revisionList(root, args) {
   const output = String(await runGit(["rev-list", "--reverse", "--topo-order", ...args], { cwd: root }));
   return output.split(/\r?\n/u).filter(Boolean);
@@ -995,11 +1018,121 @@ export class TaskIntegrationGitService {
       const originMainCommit = remote.split(/\s/u)[0];
       if (!/^[a-f0-9]{40}$/u.test(originMainCommit) || (original.originMainCommit
           && original.originMainCommit !== originMainCommit)) throw new Error("Original Await origin pin changed");
+      const identity = { ...original, originMainCommit };
+      if (!original.predecessor) {
+        await assertPlainIsolationPath(layout.root);
+        const bytes = await awaitEvidenceBytes(path.join(layout.root, "native-preparation.json"), { optional: true });
+        const journal = bytes && JSON.parse(bytes);
+        if (journal?.phase === "prepared" && !journal.publishedNotesArchive) {
+          if (frozenTasks?.length !== 1 || frozenTasks[0].taskId !== original.taskId
+              || frozenTasks[0].resultCommit !== original.resultCommit) {
+            throw interruptedAwaitRefusal("the original Task result changed");
+          }
+          const journalHash = sha256(bytes);
+          await this.#readInterruptedAwait(layout, primary, identity, journalHash);
+          return { original: identity, preparedPromotion: {
+            journalHash, manifestHash: journal.manifestHash, head: journal.target, tree: journal.targetTree,
+          } };
+        }
+      }
       return inspectPublishedNotesArchive({ layout,
-        original: original.predecessor ?? { ...original, originMainCommit },
+        original: original.predecessor ?? identity,
         successor: original.predecessor ? original : null, frozenTasks, publishedRevision,
         gitAt: (cwd, args, options) => runGit(args, { ...options, cwd }),
         assertClone: repositoryRoot => assertReleaseCloneForPublication({ repositoryRoot }), readJson });
+    });
+  }
+
+  // Read-only until the existing promotion owner has matched the complete
+  // prepared identity against the current plan and native merge evidence.
+  async #readInterruptedAwait(layout, primary, original, journalHash) {
+    await assertPlainIsolationPath(layout.releaseRoot);
+    await assertPlainIsolationPath(path.join(layout.releaseRoot, ".git"));
+    const clone = { ...layout, ...await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot }) };
+    if (!samePath(clone.primaryRoot, primary.root) || !samePath(clone.primaryGitCommonDir, primary.commonDir)
+        || !samePath(clone.releaseGitCommonDir, path.join(layout.releaseRoot, ".git"))) {
+      throw interruptedAwaitRefusal("release clone owner changed");
+    }
+    const journalFile = path.join(layout.root, "native-preparation.json");
+    const bytes = await awaitEvidenceBytes(journalFile);
+    const journal = JSON.parse(bytes);
+    const oid = value => /^[a-f0-9]{40}$/u.test(value ?? "");
+    const branchRef = `refs/heads/${RELEASE_BRANCH}`;
+    const before = journal.before;
+    if (sha256(bytes) !== journalHash || journal.version !== 1 || journal.policy !== NATIVE_RELEASE_POLICY
+        || journal.phase !== "prepared" || journal.publishedNotesArchive || journal.awaitSuccessor
+        || (journal.requestId != null && journal.requestId !== original.operationId)
+        || !/^[a-f0-9]{64}$/u.test(journal.manifestHash ?? "")
+        || !oid(journal.target) || !oid(journal.targetTree) || !oid(before?.head)
+        || ![null, before.head].includes(before.branch) || before.head === journal.target
+        || before.checkout !== (before.branch ? branchRef : "refs/heads/main")) {
+      throw interruptedAwaitRefusal("prepared journal or original owner changed");
+    }
+    const checkpointBytes = await awaitEvidenceBytes(clone.checkpointFile, { optional: true });
+    const beforeBytes = before.checkpointBytes === null ? null : Buffer.from(before.checkpointBytes ?? "", "base64");
+    if ((beforeBytes?.toString("base64") ?? null) !== before.checkpointBytes
+        || (beforeBytes === null ? before.checkpoint !== null
+          : before.checkpoint?.phase !== "prepared" || before.checkpoint.preReleaseHead !== before.branch
+            || stableManifest(JSON.parse(beforeBytes)) !== stableManifest(before.checkpoint))) {
+      throw interruptedAwaitRefusal("previous checkpoint evidence differs");
+    }
+    const oldCheckpoint = (checkpointBytes === null && beforeBytes === null)
+      || (checkpointBytes !== null && beforeBytes !== null && checkpointBytes.equals(beforeBytes));
+    const git = (args, options) => runGit(["--no-optional-locks", ...args], { ...options, cwd: clone.releaseRoot });
+    const head = await git(["rev-parse", "HEAD^{commit}", "HEAD^{tree}"]);
+    const checkout = await git(["symbolic-ref", "-q", "HEAD"], { acceptableExitCodes: [1] });
+    const branch = await git(["rev-parse", "--quiet", "--verify", `${branchRef}^{commit}`], { acceptableExitCodes: [1] });
+    if (head.replaceAll("\r\n", "\n") !== `${journal.target}\n${journal.targetTree}`) throw interruptedAwaitRefusal("checkout target or tree changed");
+    // With an old unaddressed journal we only accept the exact state before
+    // updating the ref. Later recovery steps require an original-owned journal.
+    const priorRef = (branch || null) === before.branch;
+    const advancedRef = !priorRef && journal.requestId === original.operationId && branch === journal.target;
+    if ((!priorRef && !advancedRef) || (checkout && (!advancedRef || checkout !== branchRef))
+        || (!oldCheckpoint && (!advancedRef || checkout !== branchRef))) {
+      throw interruptedAwaitRefusal("PreRelease ref, symbolic HEAD or checkpoint phase changed");
+    }
+    for (const name of ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-apply", "rebase-merge", "sequencer", "index.lock"]) {
+      if (await lstat(path.join(clone.releaseGitCommonDir, name)).then(() => true, error => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      })) throw interruptedAwaitRefusal("unfinished Git operation in the release clone");
+    }
+    const flags = await git(["ls-files", "-v", "-z"]);
+    if (flags.split("\0").some(entry => entry && !entry.startsWith("H "))
+        || await git(["diff-index", "--cached", "--name-only", "HEAD", "--"])
+        || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
+      throw interruptedAwaitRefusal("index or worktree does not match the target");
+    }
+    return { clone, journal, checkpointBytes, oldCheckpoint, branch: branch || null, checkout };
+  }
+
+  async finalizeInterruptedAwait({ projectRoot, original, planRevision } = {}) {
+    this.#assertAvailable("finalizeInterruptedAwait");
+    const primary = await primarySnapshot(projectRoot);
+    const layout = this.#layout(primary.root);
+    const journalFile = path.join(layout.root, "native-preparation.json");
+    return withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`)], async lease => {
+      await assertPlainIsolationPath(layout.root);
+      const bytes = await awaitEvidenceBytes(journalFile, { optional: true });
+      const journal = bytes && JSON.parse(bytes);
+      // Only finish this original's outstanding journal write.
+      const expected = original.preparedPromotion;
+      if (!["prepared", "completed"].includes(journal?.phase) || journal.requestId !== original.operationId
+          || journal.manifestHash !== expected.manifestHash || journal.target !== expected.head
+          || journal.targetTree !== expected.tree) throw interruptedAwaitRefusal("committed original journal changed");
+      if (journal.phase === "completed") return;
+      const state = await this.#readInterruptedAwait(layout, primary, original, sha256(bytes));
+      const checkpoint = state.checkpointBytes && JSON.parse(state.checkpointBytes);
+      const manifestFile = path.join(layout.evidenceRoot, `${expected.manifestHash}.json`);
+      if (state.oldCheckpoint || checkpoint?.phase !== "prepared" || checkpoint.planRevision !== planRevision
+          || checkpoint.preReleaseHead !== expected.head || checkpoint.manifestHash !== expected.manifestHash
+          || !samePath(checkpoint.manifestFile, manifestFile)) throw interruptedAwaitRefusal("committed checkpoint changed");
+      await assertPlainIsolationPath(layout.evidenceRoot);
+      if (sha256(await awaitEvidenceBytes(manifestFile)) !== expected.manifestHash) {
+        throw interruptedAwaitRefusal("committed manifest changed");
+      }
+      await lease.assertOwned();
+      await writeJsonAtomic(journalFile, { ...journal, phase: "completed" });
     });
   }
 
@@ -1114,7 +1247,7 @@ export class TaskIntegrationGitService {
     planRevision, projectRoot, workspaceId = null, preflightRequestId = null,
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, preserveFrozen = false, commitPrepared = null, preparationGuard = null,
-    nativeAwaitRecovery = null, forwardPreparation = null,
+    nativeAwaitRecovery = null, forwardPreparation = null, awaitOperationId = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     if (!preparationObjectStore()) {
@@ -1124,7 +1257,7 @@ export class TaskIntegrationGitService {
         withPreparationGitIsolation(this.dataDir, () => this.prepareCandidate({
           planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks, approvedBaseCommit, baseProvenance,
           validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
-          nativeAwaitRecovery, forwardPreparation }), lease, objects));
+          nativeAwaitRecovery, forwardPreparation, awaitOperationId }), lease, objects));
     }
     const isolation = forwardPreparation?.readIsolation?.();
     if (isolation && !this.#isolationContext) return this.#prepareIsolatedCandidate({
@@ -1135,7 +1268,7 @@ export class TaskIntegrationGitService {
     if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
       () => this.prepareCandidate({ planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks,
         approvedBaseCommit, baseProvenance, validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
-        nativeAwaitRecovery, forwardPreparation }));
+        nativeAwaitRecovery, forwardPreparation, awaitOperationId }));
     if (authority && authority.phase !== "completed" && preflightRequestId !== authority.requestId) {
       throw new Error("Isolated original preparation still owns this candidate");
     }
@@ -1161,7 +1294,7 @@ export class TaskIntegrationGitService {
     const layout = this.#layout(initial.root);
     const lock = path.join(this.dataDir, "locks", `release-git-${layout.repositoryKey}`);
     const preparationLockStarted = performance.now();
-    return withInterprocessLocks([lock], async () => {
+    return withInterprocessLocks([lock], async (promotionLease) => {
       recordTaskOperationTiming("preparation:candidate-lock-wait", {
         durationMs: performance.now() - preparationLockStarted,
       });
@@ -1177,7 +1310,23 @@ export class TaskIntegrationGitService {
             || await durablePublishedRevision(this.#environment, initial.root) !== published
             || remote.split(/\s/u)[0] !== nativeAwaitRecovery.originMainCommit) throw new Error("Original Await archive authority changed");
       };
-      const archive = nativeAwaitRecovery ? await archivePublishedNotesCheckout({
+      const interrupted = nativeAwaitRecovery?.preparedPromotion;
+      if (interrupted && (workspaceId !== nativeAwaitRecovery.workspaceId || !commitPrepared
+          || awaitOperationId !== nativeAwaitRecovery.operationId || forwardPreparation || preparationGuard
+          || !tasks.some(task => task.taskId === nativeAwaitRecovery.taskId
+            && task.resultCommit === nativeAwaitRecovery.resultCommit))) {
+        throw interruptedAwaitRefusal("original Await owner or selected result changed");
+      }
+      const preparedPromotion = interrupted
+        ? await this.#readInterruptedAwait(layout, initial, nativeAwaitRecovery, interrupted.journalHash)
+        : null;
+      if (awaitOperationId && !nativeAwaitRecovery) {
+        const journal = await readJson(path.join(layout.root, "native-preparation.json"));
+        if (journal?.phase === "prepared" && journal.requestId !== awaitOperationId) {
+          throw interruptedAwaitRefusal("unresolved preparation needs its original reconciliation");
+        }
+      }
+      const archive = nativeAwaitRecovery && !interrupted ? await archivePublishedNotesCheckout({
         layout: { ...layout, primaryRoot: initial.root }, original: nativeAwaitRecovery.predecessor ?? nativeAwaitRecovery,
         successor: nativeAwaitRecovery.predecessor ? nativeAwaitRecovery : null,
         frozenTasks: tasks, publishedRevision: published, validate: validateArchive,
@@ -1188,12 +1337,13 @@ export class TaskIntegrationGitService {
       // Forward custody never recreates a missing clone or rewrites its marker
       // before accounting for the original effects. Missing/partial stays put.
       if (forwardPreparation && nativeAwaitRecovery) throw new Error("Forward preparation cannot archive another Await original");
-      const clone = forwardPreparation && !this.#isolationContext
+      const clone = preparedPromotion?.clone ?? (forwardPreparation && !this.#isolationContext
         ? { ...layout, ...await assertReleaseCloneForPublication({ repositoryRoot: layout.releaseRoot }) }
-        : await this.#ensureClone(initial, [baseCommit, ...tasks.map(task => task.resultCommit)]);
+        : await this.#ensureClone(initial, [baseCommit, ...tasks.map(task => task.resultCommit)]));
       if (this.#isolationContext) await this.#assertIsolationClone(clone, this.#isolationContext);
       const git = (args, options = {}) => runGit(args, { ...options, cwd: clone.releaseRoot, timeoutMs: null });
-      const checkpoint = await readJson(clone.checkpointFile);
+      const checkpoint = preparedPromotion ? preparedPromotion.journal.before.checkpoint
+        : await readJson(clone.checkpointFile);
       if (forwardPreparation) {
         if (!preparationGuard || !preflightRequestId || typeof commitPrepared !== "function"
             || typeof forwardPreparation.observeEffects !== "function") throw new Error("Forward preparation owning boundaries are incomplete");
@@ -1340,11 +1490,12 @@ export class TaskIntegrationGitService {
       // owner completed, ordinary later selections read their exact objects
       // from the registered primary without changing either repository's config.
       const workspace = authority?.phase === "completed" && !forwardPreparation ? initial.root : "workspace";
-      await git(["fetch", "--prune", workspace, "+refs/heads/main:refs/remotes/workspace/main"]);
+      if (!preparedPromotion) await git(["fetch", "--prune", workspace, "+refs/heads/main:refs/remotes/workspace/main"]);
       // Operational source objects are verification inputs, not merge bases.
       for (const commit of [baseCommit, ...(localSource ? [localSource.sourceBaseCommit] : []),
         ...tasks.map((task) => task.resultCommit)]) {
         if (await gitMaybe(["cat-file", "-e", `${commit}^{commit}`], { cwd: clone.releaseRoot }) === null) {
+          if (preparedPromotion) throw interruptedAwaitRefusal("exact prepared input is missing");
           await git(["fetch", workspace, commit]);
         }
       }
@@ -1401,7 +1552,22 @@ export class TaskIntegrationGitService {
           unchanged: async () => sha256(await readFile(clone.checkpointFile)) === sha256(checkpointBytes)
             && sha256(await readFile(retained.manifestFile)) === retained.manifestHash };
       });
-      const composition = await mergeSelectedResults({
+      const readPreparedComposition = async () => {
+        await assertPlainIsolationPath(mergeRoot);
+        const state = JSON.parse(await awaitEvidenceBytes(path.join(mergeRoot, "merge.json")));
+        const { target: head, targetTree: tree } = preparedPromotion.journal;
+        if (state.version !== 1 || stableManifest(state.identity) !== stableManifest(identity)
+            || state.next !== tasks.length || state.conflict || state.merging || state.provisioningObjects
+            || state.head !== head) throw interruptedAwaitRefusal("completed native selection differs");
+        await preparationObjectStore().withInputMath({
+          sourceRoot: clone.releaseRoot, inputs: [head, baseCommit, ...tasks.map(task => task.resultCommit)],
+        }, ({ repository }) => assertNativePreparedComposition({
+          git: (args, options = {}) => runGit(args, { ...options, cwd: repository }),
+          baseCommit, tasks, merges: state.merges, head, tree, identity, historyAuthority,
+        }));
+        return { head, tree, merges: state.merges };
+      };
+      const composition = preparedPromotion ? await readPreparedComposition() : await mergeSelectedResults({
         root: mergeRoot, sourceRoot: clone.releaseRoot, baseCommit, tasks, identity,
         reuseContext: { repositoryRoot: initial.root, primaryGitCommonDir: initial.commonDir,
           baseProvenance: provenance ?? null, historyAuthority: historyAuthority ?? null },
@@ -1435,7 +1601,20 @@ export class TaskIntegrationGitService {
           || baseCommit !== preparationGuard.approvedBaseCommit)) {
         throw new TaskPreparationRejectedError("Full selected/joint preparation tree differs from the reviewed tree");
       }
-      const cutover = archive?.cutover ?? await this.#nativeCutover(clone, checkpoint);
+      let cutover;
+      if (preparedPromotion && checkpoint) {
+        if (!/^[a-f0-9]{64}$/u.test(checkpoint.manifestHash ?? "")) throw interruptedAwaitRefusal("previous manifest digest is invalid");
+        const previous = path.join(clone.evidenceRoot, `${checkpoint.manifestHash}.json`);
+        if (!samePath(checkpoint.manifestFile, previous)) throw interruptedAwaitRefusal("previous manifest path changed");
+        await assertPlainIsolationPath(clone.evidenceRoot);
+        const bytes = await awaitEvidenceBytes(previous), manifest = JSON.parse(bytes);
+        if (sha256(bytes) !== checkpoint.manifestHash || manifest.compositionPolicy !== NATIVE_RELEASE_POLICY) {
+          throw interruptedAwaitRefusal("previous native manifest changed");
+        }
+        cutover = manifest.cutover ?? null;
+      } else {
+        cutover = archive?.cutover ?? await this.#nativeCutover(clone, checkpoint);
+      }
       const manifest = {
         schemaVersion: 2, compositionPolicy: NATIVE_RELEASE_POLICY,
         ...(workspaceId ? { workspaceId: String(workspaceId) } : {}),
@@ -1457,7 +1636,31 @@ export class TaskIntegrationGitService {
       const manifestFile = path.join(clone.evidenceRoot, `${manifestHash}.json`);
       const branchRef = `refs/heads/${RELEASE_BRANCH}`;
       const journalFile = path.join(layout.root, "native-preparation.json");
-      let journal = await readJson(journalFile);
+      let journal = preparedPromotion?.journal ?? await readJson(journalFile);
+      if (preparedPromotion && journal.manifestHash !== manifestHash) {
+        throw interruptedAwaitRefusal("original prepared manifest, publication or selected set differs");
+      }
+      const nextCheckpoint = {
+        schemaVersion: 2, phase: "prepared", compositionPolicy: NATIVE_RELEASE_POLICY,
+        planRevision: revision, manifestHash, manifestFile, baseCommit,
+        ...(provenance ? { baseProvenance: provenance } : {}), preReleaseHead: composition.head,
+        ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
+        ...(preparationGuard ? { preparationIdentity: manifest.preparationIdentity } : {}),
+      };
+      let interruptedJournalHash = interrupted?.journalHash;
+      const readPromotion = async () => {
+        const current = await this.#readInterruptedAwait(layout, initial, nativeAwaitRecovery, interruptedJournalHash);
+        if (!current.oldCheckpoint && (!current.checkpointBytes?.equals(Buffer.from(stableManifest(nextCheckpoint)))
+            || !(await awaitEvidenceBytes(manifestFile)).equals(Buffer.from(manifestText)))) {
+          throw interruptedAwaitRefusal("promoted checkpoint or manifest differs");
+        }
+        await promotionLease.assertOwned();
+        await assertPreparationProcessOwned();
+        return current;
+      };
+      const verifyPromotedCheckout = async () => {
+        if ((await readPromotion()).oldCheckpoint) throw interruptedAwaitRefusal("new checkpoint was not confirmed");
+      };
       if (archive && journal?.phase === "published-notes-archived") journal = null;
       if (journal && journal.phase !== "completed" && journal.phase !== "rolled_back"
           && journal.manifestHash !== manifestHash) {
@@ -1499,7 +1702,7 @@ export class TaskIntegrationGitService {
         if (nativeAwaitRecovery) {
           const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
           if (remote.split(/\s/u)[0] !== nativeAwaitRecovery.originMainCommit) {
-            throw Object.assign(new Error("Original Await origin changed after archive"), { code: "AWAIT_PREPARATION_UNKNOWN" });
+            throw Object.assign(new Error("Original Await origin pin changed"), { code: "AWAIT_PREPARATION_UNKNOWN" });
           }
         }
       });
@@ -1513,12 +1716,13 @@ export class TaskIntegrationGitService {
         }
       };
       await validate();
-      let reused = checkpoint?.manifestHash === manifestHash && checkpoint?.preReleaseHead === composition.head;
+      const reused = !preparedPromotion && checkpoint?.manifestHash === manifestHash
+        && checkpoint?.preReleaseHead === composition.head;
       if (reused) {
         if (await git(["rev-parse", `${branchRef}^{commit}`]) !== composition.head) throw new Error("Native candidate ref changed");
         await requireCheckout(composition.head);
       } else {
-        await git(["fetch", "--no-tags", composition.root, composition.head]);
+        if (!preparedPromotion) await git(["fetch", "--no-tags", composition.root, composition.head]);
         if (!journal || ["completed", "rolled_back"].includes(journal.phase)) {
           const before = {
             head: await git(["rev-parse", "HEAD^{commit}"]),
@@ -1533,7 +1737,8 @@ export class TaskIntegrationGitService {
           await requireCheckout(before.head);
           journal = { version: 1, policy: NATIVE_RELEASE_POLICY, phase: "prepared",
             manifestHash, target: composition.head, targetTree: composition.tree, before,
-            ...(preflightRequestId ? { requestId: String(preflightRequestId) } : {}),
+            ...(preflightRequestId || awaitOperationId
+              ? { requestId: String(preflightRequestId ?? awaitOperationId) } : {}),
             ...(archive ? { requestId: nativeAwaitRecovery.operationId, publishedNotesArchive: archive.descriptor,
               ...(nativeAwaitRecovery.predecessor ? { awaitSuccessor: Object.fromEntries(
                 ["operationId", "taskId", "workspaceId", "argumentsHash", "resultCommit", "originMainCommit", "taskRevision"]
@@ -1551,26 +1756,37 @@ export class TaskIntegrationGitService {
         }
         await requireCheckout(head);
         await validate();
+        let promotionPhase = "checkout";
         try {
+        if (preparedPromotion) {
+          const current = await readPromotion();
+          if (current.journal.requestId == null) {
+            journal = { ...current.journal, requestId: awaitOperationId };
+            await writeJsonAtomic(journalFile, journal);
+            interruptedJournalHash = sha256(stableManifest(journal));
+          }
+        }
         // Git owns physical checkout and EOL. No reset, clean, force checkout,
         // per-file serializer or hard-link publication enters the ordinary path.
         if (head !== composition.head) await git(["checkout", "--detach", "--no-overwrite-ignore", composition.head]);
         await requireCheckout(composition.head);
+        promotionPhase = "post-checkout authority";
         await validate();
-        if (branch !== composition.head) await git(["update-ref", branchRef, composition.head, journal.before.branch || "0".repeat(40)]);
-        await git(["symbolic-ref", "HEAD", branchRef]);
+        const current = preparedPromotion ? await readPromotion() : null;
+        promotionPhase = "ref promotion";
+        if ((current ? current.branch : branch) !== composition.head) {
+          await git(["update-ref", branchRef, composition.head, journal.before.branch || "0".repeat(40)]);
+        }
+        if (preparedPromotion) await readPromotion();
+        if (current?.checkout !== branchRef) await git(["symbolic-ref", "HEAD", branchRef]);
         await requireCheckout(composition.head);
+        promotionPhase = "checkpoint persistence";
         await mkdir(clone.evidenceRoot, { recursive: true });
         if (!await fileExists(manifestFile)) await writeFile(manifestFile, manifestText, { flag: "wx", encoding: "utf8" });
         else if (sha256(await readFile(manifestFile)) !== manifestHash) throw new Error("Native manifest changed");
-        await writeJsonAtomic(clone.checkpointFile, {
-          schemaVersion: 2, phase: "prepared", compositionPolicy: NATIVE_RELEASE_POLICY,
-          planRevision: revision, manifestHash, manifestFile, baseCommit,
-          ...(provenance ? { baseProvenance: provenance } : {}), preReleaseHead: composition.head,
-          ...(preflightRequestId ? { preflightRequestId: String(preflightRequestId) } : {}),
-          ...(preparationGuard ? { preparationIdentity: manifest.preparationIdentity } : {}),
-        });
+        if (!current || current.oldCheckpoint) await writeJsonAtomic(clone.checkpointFile, nextCheckpoint);
         } catch (error) {
+          if (preparedPromotion) throw error;
           // A refused checkout is a known no-effect only after both native
           // identities and the complete index/worktree prove the old state.
           // A partial checkout or moved ref stays on the original journal.
@@ -1582,8 +1798,7 @@ export class TaskIntegrationGitService {
             journal.phase = "rolled_back";
             await writeJsonAtomic(journalFile, journal);
           } catch (readbackError) {
-            throw Object.assign(new Error(`Native promotion requires original readback: ${readbackError.message}`),
-              { code: "AWAIT_PREPARATION_UNKNOWN", cause: error });
+            throw awaitPromotionFailure(promotionPhase, error, readbackError);
           }
           throw error;
         }
@@ -1596,11 +1811,15 @@ export class TaskIntegrationGitService {
         independentGitCommonDir: !samePath(clone.releaseGitCommonDir, initial.commonDir),
         releaseGitCommonDir: clone.releaseGitCommonDir, primaryGitCommonDir: initial.commonDir,
         primaryPreserved: true, legacyLinkedHolders: initial.legacyLinkedHolders,
-        ...((nativeAwaitRecovery || localSource) ? { verifyNativeAwaitAuthority: validate } : {}),
+        ...((nativeAwaitRecovery || localSource) ? { verifyNativeAwaitAuthority: async () => {
+          await validate();
+          if (preparedPromotion) await verifyPromotedCheckout();
+        } } : {}),
       };
       try {
         await validate();
         await requireCheckout(composition.head);
+        if (preparedPromotion) await verifyPromotedCheckout();
         // Forward completion must not outlive unfinished native bookkeeping.
         // The same in-memory rollback boundary and lease remain live; on an
         // interrupted forward SQL write the exact candidate is adopted later.
@@ -1610,7 +1829,7 @@ export class TaskIntegrationGitService {
         }
         if (commitPrepared) await commitPrepared(result);
       } catch (error) {
-        if (AWAIT_UNKNOWN_OUTCOME_CODES.has(error?.code) || reused) throw error;
+        if (AWAIT_UNKNOWN_OUTCOME_CODES.has(error?.code) || reused || preparedPromotion) throw error;
         try {
           await requireCheckout(composition.head);
           if (await git(["rev-parse", `${branchRef}^{commit}`]) !== composition.head) throw new Error("Native rollback ref changed");
@@ -1628,7 +1847,7 @@ export class TaskIntegrationGitService {
           journal.phase = "rolled_back";
           await writeJsonAtomic(journalFile, journal);
         } catch (rollbackError) {
-          throw Object.assign(new Error(`Native rollback remains unknown: ${rollbackError.message}`), { code: "AWAIT_PREPARATION_UNKNOWN" });
+          throw awaitPromotionFailure("terminal authority or Task commit", error, rollbackError);
         }
         throw error;
       }

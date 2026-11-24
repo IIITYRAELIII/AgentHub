@@ -815,10 +815,13 @@ becomes a synthetic live run merely to make blocked admission observable.
 Original native Await recovery (ADR-0116) uses the existing RM reconciliation
 operation/CLI and the exact original arguments hash and workflow CAS. It adds no
 public approval flag, second receipt or replay identity. An owning proof of the
-bounded already-published-notes archive can substitute for a nonexistent process
-guard; every real guard still refuses. Drift remains UNKNOWN. The same durable
-workflow outcome settles the same receipt; repeated terminal reconciliation
-performs a read without re-composing or re-archiving.
+bounded already-published-notes archive or an exact interrupted native
+promotion can substitute for a nonexistent process guard; every real guard
+still refuses. Drift remains UNKNOWN. The same durable workflow outcome
+settles the same receipt; repeated terminal reconciliation performs a read.
+An interrupted promotion records the first failure with its phase separately
+from rollback/readback failure. Successful reconciliation retains the original
+error text as diagnostic evidence. See [ADR-HUB-530](../decisions/ADR-HUB-530-interrupted-await.md).
 
 
 ## Explicit forward custody of an unsealed claim
