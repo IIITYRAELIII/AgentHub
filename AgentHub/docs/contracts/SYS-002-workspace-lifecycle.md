@@ -77,6 +77,15 @@ membership remains in the original `settings.catalogFolder` field. Rename and
 member/name changes invalidate the revision; deleted identities remain
 tombstoned. A same-name replacement is a different destination.
 
+Schema 17 adds a non-null optional comment, defaulting existing folders to ""
+without changing their identity/revision. The existing folder command owner
+updates name (the existing 80-character normalization) and comment (at most
+1000 characters, matching Workspace) together under one identity/revision CAS
+and the same transaction/receipt. Comment-only edits and clearing are supported;
+comment changes advance the folder/catalog revision. Checked legacy rename
+preserves the comment and its original receipt identity. There is no second
+comment store, connection, transport route or mutation queue.
+
 Folder deletion requires an exact server preview of the folder identity,
 revision and all member IDs/names, including archived Workspaces. Confirmation
 removes only the folder and moves every member to the root, «Без папки».

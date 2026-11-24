@@ -69,8 +69,7 @@ html[data-mobile-dialogs-enabled] {
   --mobile-navigation-hover: var(--surface-1);
   --mobile-navigation-selected: var(--surface-2);
 }
-html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer,
-html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-drawer-rename-layer {
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer {
   background: var(--mobile-navigation-bg); color: var(--mobile-navigation-text);
   border-color: var(--mobile-navigation-line);
 }
@@ -148,18 +147,6 @@ html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-w
 }
 html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer [data-task-filter]::placeholder {
   color: var(--mobile-navigation-muted); opacity: 1;
-}
-html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-drawer-rename-layer {
-  width: min(356px, calc(100vw - 32px)); padding: 1rem;
-  border: 1px solid var(--mobile-navigation-line); border-radius: 12px; box-shadow: var(--card-shadow);
-}
-.mobile-drawer-rename-layer::backdrop { background: rgb(0 0 0 / 20%); }
-html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-drawer-rename-layer .text-dialog {
-  position: static; width: 100%; max-width: 100%; transform: none; margin: 0;
-  background: transparent; border: 0; border-radius: 0; box-shadow: none; padding: 0;
-}
-html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-drawer-rename-layer :is(input, button) {
-  min-height: 44px;
 }
 .mobile-navigation-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 48px; }
 .mobile-navigation-head strong { font-size: 1.2rem; }
@@ -324,9 +311,6 @@ html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-
 
 html[data-mobile-dialogs-enabled] .mobile-workspace-drawer::backdrop {
   background: color-mix(in srgb, var(--bg) 65%, transparent);
-}
-html[data-mobile-dialogs-enabled] .mobile-drawer-rename-layer::backdrop {
-  background: color-mix(in srgb, var(--bg) 20%, transparent);
 }
 html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .mobile-workspace-drawer :is(.task-count, .task-workspace-folder-count, .task-workspace-folder-glyph) {
   color: var(--mobile-navigation-soft);

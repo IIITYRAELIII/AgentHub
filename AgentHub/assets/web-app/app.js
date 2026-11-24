@@ -5444,8 +5444,8 @@ function ensureWorkspaceFolderContextMenu() {
     type: "button",
     role: "menuitem",
     class: "stream-context-action",
-    "data-workspace-folder-menu-action": "rename",
-    text: "Переименовать папку…",
+    "data-workspace-folder-menu-action": "edit",
+    text: "Редактировать папку…",
   }), el("span", { class: "resource-context-menu-divider", role: "separator" }),
   el("button", { type: "button", role: "menuitem", class: "stream-context-action folder-catalog-danger",
     "data-workspace-folder-menu-action": "remove", text: "Удалить папку…" })]);
@@ -5462,8 +5462,7 @@ function ensureWorkspaceFolderContextMenu() {
     if (action.dataset.workspaceFolderMenuAction === "remove") {
       await folderCatalogController.openRemove(folder.id, origin); return;
     }
-    if (surface === "mobile" && !vscodeMode) mobileDialogs?.renameFolder(folder.name, origin);
-    else await renameWorkspaceFolder(folder.name);
+    openFolderEditor(folder.name, origin);
   });
   return workspaceFolderContextMenu;
 }
@@ -5485,21 +5484,10 @@ function attachWorkspaceMenuKeyboard(menu,close) {
   });
 }
 
-async function renameWorkspaceFolder(folderName) {
-  const currentName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(folderName);
-  const folder = folderCatalogController?.folder(currentName);
+function openFolderEditor(folderName, origin = document.activeElement) {
+  const folder = folderCatalogController?.folder(window.AgentHubStreamTabs.normalizeWorkspaceFolderName(folderName));
   if (!folder || folderCatalogController.blocked({ folderId: folder.id })) return;
-  const requestedName = await askText({ title: "Новое название папки", value: currentName });
-  if (requestedName == null) return;
-  const plan = window.AgentHubStreamTabs.workspaceFolderRenamePlan(
-    state.workspaces, currentName, requestedName, workspaceFolderCatalogNames(),
-  );
-  if (!plan) return;
-  if (plan.duplicateFolderName) {
-    showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
-    return;
-  }
-  await folderCatalogController.renameFolder(folder, plan.toFolderName, document.activeElement);
+  folderCatalogController.openFolderEditor(folder.id, origin);
 }
 
 function openWorkspaceFolderContextMenu(event, folderName) {
@@ -18605,10 +18593,9 @@ mobileDialogs = window.AgentHubMobileDialogs.create({
   openSettings: openPanel,
   transientLayers: [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
     annotationContextMenu, resourceContextMenu, composerEmojiPicker?.layer, dialog, settingsPanel, workspaceMessageSearch],
-  openWorkspaceCard, workspaceDialog: workspaceCardModal, renameWorkspaceFolder,
+  openWorkspaceCard, workspaceDialog: workspaceCardModal,
   openWorkspaceMenu: (event, id) => openWorkspaceContextMenu(event, id),
   openFolderMenu: (event, name) => openWorkspaceFolderContextMenu(event, name),
-  textDialog: dialog, cancelTextDialog: () => closeDialog(null),
   createStream: (workspaceId) => emit("stream:new", { workspaceId }),
   retryConnection: () => emit("connection:retry", { taskId: state.selectedId }),
   closeNative: (opened) => {

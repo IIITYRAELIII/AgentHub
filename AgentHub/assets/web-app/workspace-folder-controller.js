@@ -33,8 +33,8 @@
     const byName = name => model?.folders.find(folder => folder.name === name);
     const workspace = id => getWorkspaces().find(item => item.id === id);
     function blocked({ folderId, workspaceId } = {}) {
-      return [...operations.values()].some(item => item.meta.workspaceId && item.meta.workspaceId === workspaceId
-        || item.meta.folderId && item.meta.folderId === folderId);
+      return [...operations.values()].some(item => item.state !== "draft" && (item.meta.workspaceId && item.meta.workspaceId === workspaceId
+        || item.meta.folderId && item.meta.folderId === folderId));
     }
     function clearDrag() {
       drag = null;
@@ -72,6 +72,18 @@
       const focusedId = document.activeElement?.closest("[data-folder-notice-id]")?.dataset.folderNoticeId;
       notices.replaceChildren();
       for (const record of operations.values()) {
+        if (record.state === "draft") {
+          const folderName = byId(record.meta.folderId)?.name || record.meta.draft?.name || record.meta.folderName;
+          const index = [...operations.values()].filter(item => item.state === "draft").indexOf(record) + 1;
+          const region = node("section","",{ role: "region", "aria-label": `Изменения папки не сохранены: «${folderName}», черновик ${index}`, "data-folder-notice-id": record.input.requestId });
+          const open = node("button","Открыть черновик",{ type: "button", class: "board-task-primary" });
+          open.onclick = () => {
+            if (modal) return;
+            record.restoreDraftRequested = true; void rejectedEditor(record,record.terminalReceipt);
+          };
+          region.append(node("strong","Изменения папки не сохранены"),node("p",`Папка «${folderName}»`),node("p","Черновик сохранён. Откройте его для проверки."),open);
+          notices.append(region); continue;
+        }
         const unknown = record.state === "unknown" || record.state === "checking";
         if (!unknown) continue;
         const title = unknown ? `Результат ${record.input.action === "remove" ? "удаления" : record.input.action === "move" ? "перемещения" : "операции"} пока не подтверждён` : record.input.action === "remove" ? "Удаляем папку…" : "Сохраняем каталог…";
@@ -100,11 +112,25 @@
       if (!transport) throw new Error("Каталог пока недоступен.");
       return transport.control(action,params);
     }
+    function focusAfter(detail) {
+      if (detail.record?.input.action !== "update") { focusResult(detail); return; }
+      const origin = detail.origin || detail.record.meta.origin;
+      const visible = item => item?.isConnected && item.checkVisibility();
+      const row = [...rail.querySelectorAll("[data-workspace-folder-id]")]
+        .find(item => item.dataset.workspaceFolderId === detail.record.meta.folderId);
+      const target = visible(origin) ? origin : row?.querySelector("[data-mobile-folder-rename]") || row?.querySelector("summary")
+        || notices.querySelector("button") || rail.querySelector("button,summary,[tabindex]");
+      if (visible(target)) target.focus({ preventScroll: true });
+    }
     function closeModal({ terminal = false } = {}) {
       if (!modal || modal.busy) return;
       const current = modal; modal = null;
+      if (!terminal && current.retainedRecord && current.mode === "edit") {
+        operations.delete(current.retainedRecord.input.requestId); persistAfterAdmission(); updateNotices();
+      }
       current.dialog.close(); current.dialog.remove();
-      if (!terminal) focusResult({ kind: "cancel", origin: current.origin, record: current.record });
+      if (!terminal) focusAfter({ kind: "cancel", origin: current.origin, record: current.record
+        || (current.base ? { input: { action: "update" }, meta: { folderId: current.base.id, origin: current.origin } } : null) });
     }
     function errorInModal(text) {
       if (!modal) return errorNotice(text);
@@ -114,10 +140,17 @@
       if (!modal || modal.record !== record) return;
       modal.busy = false; modal.mode = "unknown";
       modal.dialog.setAttribute("aria-busy","false");
-      modal.title.textContent = `Результат ${record.input.action === "remove" ? "удаления" : "перемещения"} пока не подтверждён`;
-      modal.summary.textContent = record.input.action === "remove" ? "Папка могла быть удалена. Повторная команда не отправлена." : "Workspace мог быть перемещён. Повторная команда не отправлена.";
-      modal.helper.textContent = `Проверка результата безопасна и не повторяет ${record.input.action === "remove" ? "удаление" : "перемещение"}.`;
-      modal.content.replaceChildren(); modal.error.hidden = true;
+      const operationName = record.input.action === "remove" ? "удаления" : record.input.action === "update" ? "сохранения" : "перемещения";
+      modal.title.textContent = `Результат ${operationName} пока не подтверждён`;
+      modal.summary.textContent = record.input.action === "remove" ? "Папка могла быть удалена. Повторная команда не отправлена." : record.input.action === "update" ? "Папка могла быть изменена. Повторная команда не отправлена." : "Workspace мог быть перемещён. Повторная команда не отправлена.";
+      modal.helper.textContent = `Проверка результата безопасна и не повторяет ${record.input.action === "remove" ? "удаление" : record.input.action === "update" ? "сохранение" : "перемещение"}.`;
+      if (modal.editor) {
+        for (const label of modal.labels) label.hidden = true;
+        modal.summary.hidden = modal.helper.hidden = false;
+        modal.close.disabled = false;
+        modal.confirm.setAttribute("type","button");
+      } else modal.content.replaceChildren();
+      modal.error.hidden = true;
       modal.cancel.textContent = "Закрыть"; modal.cancel.disabled = false;
       modal.confirm.removeAttribute("aria-disabled");
       modal.confirm.className = "board-task-primary";
@@ -136,7 +169,9 @@
       }
       if (record.argumentsHash && record.argumentsHash !== receipt.argumentsHash) throw new Error("Ответ относится к другой операции каталога.");
       record.argumentsHash = receipt.argumentsHash;
-      operations.delete(record.input.requestId); persistAfterAdmission(); updateNotices();
+      operations.delete(record.input.requestId);
+      if (receipt.status === "succeeded" && record.meta.retainedRequestId) operations.delete(record.meta.retainedRequestId);
+      persistAfterAdmission(); updateNotices();
       if (receipt.status === "succeeded") {
         if (record.input.action === "import") transport.onImported?.();
         if (modal?.record === record) { modal.busy = false; closeModal({ terminal: true }); }
@@ -144,11 +179,13 @@
           const text = record.input.action === "remove"
             ? `Папка «${record.meta.folderName}» удалена.${receipt.result.members.length ? ` ${receipt.result.members.length} ${plural(receipt.result.members.length)} ${singular(receipt.result.members.length) ? "перемещён" : "перемещены"} в «Без папки».` : ""}`
             : record.input.action === "move" ? `Workspace „${record.meta.workspaceName}“ перемещён ${record.meta.targetName ? `в папку „${record.meta.targetName}“` : "в «Без папки»"}.`
+            : record.input.action === "update" ? `Папка «${receipt.result.folder.name}» сохранена.`
             : record.input.action === "rename" ? `Папка переименована в «${receipt.result.folder.name}».` : `Папка «${receipt.result.folder.name}» создана.`;
           toast(text);
         }
-        if (record.meta.keyboard || record.readbackActivated) focusResult({ kind: "success", record, receipt });
+        if ((record.input.action !== "update" || !modal) && (record.meta.keyboard || record.readbackActivated)) focusAfter({ kind: "success", record, receipt });
       } else {
+        if (record.input.action === "update") { await rejectedEditor(record,receipt); return receipt; }
         const message = !["remove","move"].includes(record.input.action)
           ? receipt.error.message
           : receipt.error.code === "FOLDER_STALE" || receipt.error.code === "FOLDER_ABSENT"
@@ -190,10 +227,15 @@
       try { persist(); } catch (error) {
         operations.delete(input.requestId); errorInModal("Не удалось сохранить исходный запрос. Команда не отправлена."); return null;
       }
-      if (modal && ["remove","move","rename"].includes(action)) {
+      if (modal && ["remove","move","rename","update"].includes(action)) {
         modal.record = record; modal.busy = true; modal.dialog.setAttribute("aria-busy","true");
         modal.cancel.disabled = true; modal.confirm.setAttribute("aria-disabled","true");
-        modal.confirm.textContent = action === "remove" ? "Удаляем папку…" : action === "move" ? "Перемещаем…" : "Сохраняем…";
+        if (modal.editor) {
+          modal.name.disabled = modal.comment.disabled = modal.close.disabled = true;
+          modal.confirm.disabled = true;
+          modal.error.hidden = true;
+        }
+        modal.confirm.textContent = action === "remove" ? "Удаляем папку…" : action === "move" ? "Перемещаем…" : "Сохраняется…";
       }
       updateNotices();
       announce(action === "remove" ? "Удаляем папку…" : action === "move"
@@ -209,7 +251,7 @@
     }
     async function check(record) {
       if (inFlight.has(record.input.requestId)) return;
-      record.readbackActivated = true;
+      record.readbackActivated = true; record.restoreDraftRequested = false;
       inFlight.add(record.input.requestId); record.state = "checking"; updateNotices();
       if (modal?.record === record) { modal.confirm.setAttribute("aria-disabled","true"); modal.confirm.textContent = "Проверяем…"; }
       try {
@@ -330,6 +372,117 @@
         });
       };
     }
+    function editorReady(current) {
+      current.busy = false; current.refreshing = false; current.mode = "edit"; current.record = null;
+      current.dialog.setAttribute("aria-busy","false");
+      current.name.disabled = current.comment.disabled = current.close.disabled = current.cancel.disabled = false;
+      current.confirm.disabled = false; current.confirm.removeAttribute("aria-disabled");
+      current.confirm.setAttribute("type","submit"); current.confirm.onclick = null;
+      current.summary.hidden = current.helper.hidden = true;
+      for (const label of current.labels) label.hidden = false;
+      current.confirm.textContent = "Сохранить"; current.cancel.textContent = "Отмена";
+    }
+    async function refreshEditor(current, rejection = null) {
+      if (modal !== current || current.refreshing) return;
+      current.refreshing = true; current.confirm.disabled = true;
+      current.retry?.remove(); current.retry = null;
+      try {
+        const catalog = await read("workspace-folder-catalog",{});
+        if (modal !== current) return;
+        if (catalog?.version !== 1 || !Array.isArray(catalog.folders)) throw new Error("Incomplete folder catalog");
+        const latest = catalog.folders.find(folder => folder.id === current.base.id);
+        if (!latest) {
+          current.mode = "absent";
+          current.error.hidden = false; current.error.textContent = "Папка больше не существует";
+          current.name.disabled = current.comment.disabled = current.confirm.disabled = true;
+          current.cancel.textContent = "Закрыть"; current.cancel.focus({ preventScroll: true });
+          return;
+        }
+        if (!Number.isSafeInteger(latest.revision) || latest.revision < 1 || typeof latest.name !== "string") throw new Error("Invalid folder identity");
+        const commentChanged = String(latest.comment ?? "") !== String(current.base.comment ?? "");
+        const stale = latest.revision !== current.base.revision || ["FOLDER_STALE","FOLDER_ABSENT"].includes(rejection?.code);
+        current.base = { ...latest, comment: String(latest.comment ?? "") };
+        current.error.hidden = false;
+        current.error.textContent = stale ? "Папка изменилась в другом окне. Ваши значения сохранены. Проверьте их и нажмите „Сохранить изменения“ ещё раз." : rejection?.message || "Проверьте значения и сохраните изменения.";
+        current.summary.hidden = !stale; current.summary.textContent = `Сейчас: „${latest.name}“`;
+        current.helper.hidden = !commentChanged; current.helper.textContent = commentChanged ? "Комментарий в каталоге также изменён." : "";
+        current.confirm.textContent = stale ? "Сохранить изменения" : "Сохранить"; current.confirm.disabled = false;
+      } catch {
+        if (modal !== current) return;
+        current.error.hidden = false; current.error.textContent = "Не удалось обновить сведения о папке. Ваши значения сохранены.";
+        current.retry = node("button","Проверить снова",{ type: "button", class: "board-task-quiet" });
+        current.retry.onclick = () => void refreshEditor(current,rejection); current.content.append(current.retry);
+      } finally { current.refreshing = false; }
+    }
+    async function rejectedEditor(record,receipt) {
+      // Reload/readback restores only a notice. The explicit draft action may
+      // restore this editor; it never replays the rejected mutation.
+      let restored = false;
+      if (!modal && record.restoreDraftRequested) {
+        openFolderEditor(record.meta.folderId,record.meta.origin,record.meta);
+        if (modal?.editor && modal.base.id === record.meta.folderId) { modal.retainedRecord = record; restored = true; }
+      }
+      if (!modal?.editor || modal.base.id !== record.meta.folderId
+        || !restored && modal.record !== record && modal.retainedRecord !== record) {
+        record.state = "draft"; record.terminalReceipt = receipt;
+        operations.set(record.input.requestId,record); persistAfterAdmission(); updateNotices();
+        if (!record.draftAnnounced) { record.draftAnnounced = true; announce("Изменения папки не сохранены. Черновик сохранён."); persistAfterAdmission(); }
+        return;
+      }
+      const current = modal;
+      editorReady(current);
+      current.error.hidden = false; current.error.textContent = receipt.error.message;
+      if (restored || ["FOLDER_STALE","FOLDER_ABSENT"].includes(receipt.error.code)) await refreshEditor(current,receipt.error);
+      else if (["FOLDER_NAME_REQUIRED","FOLDER_NAME_EXISTS"].includes(receipt.error.code)) current.name.focus({ preventScroll: true });
+      else if (receipt.error.code === "FOLDER_COMMENT_INVALID") current.comment.focus({ preventScroll: true });
+    }
+    function openFolderEditor(id,origin,restored = null) {
+      const folder = byId(id) || restored?.base;
+      if (!folder || modal || blocked({ folderId: id })) return;
+      const dialog = node("dialog","",{ class: "workspace-card-modal", "data-folder-dialog": "edit", "aria-labelledby": "folder-editor-title" });
+      const form = node("form"), header = node("header"), titleBlock = node("div");
+      const title = node("h2","Редактирование папки",{ id: "folder-editor-title" });
+      titleBlock.append(node("p","Папка Workspace",{ class: "eyebrow" }),title);
+      const close = node("button","",{ type: "button", class: "icon-button", "aria-label": "Закрыть", "data-folder-edit-close": "" });
+      close.append(window.AgentHubModalOverlays.createPhosphorXIcon(document)); header.append(titleBlock,close);
+      const content = node("section","",{ class: "workspace-card-fields" });
+      const nameLabel = node("label"), commentLabel = node("label");
+      const name = node("input","",{ type: "text", required: "", maxlength: "80", "data-folder-edit-name": "" });
+      const comment = node("textarea","",{ rows: "4", maxlength: "1000", "data-folder-edit-comment": "" });
+      nameLabel.append(node("span","Наименование"),name); commentLabel.append(node("span","Комментарий"),comment);
+      const summary = node("p","",{ hidden: "" }), helper = node("p","",{ hidden: "" });
+      const error = node("p","",{ role: "alert", "aria-atomic": "true", class: "folder-catalog-alert", hidden: "" });
+      content.append(nameLabel,commentLabel,error,summary,helper);
+      const footer = node("footer"), cancel = node("button","Отмена",{ type: "button", class: "board-task-quiet" });
+      const confirm = node("button","Сохранить",{ type: "submit", class: "board-task-primary" });
+      footer.append(cancel,confirm); form.append(header,content,footer); dialog.append(form);
+      const base = { ...(restored?.base || folder), comment: String((restored?.base || folder).comment ?? "") };
+      name.value = restored?.draft?.name ?? base.name; comment.value = restored?.draft?.comment ?? base.comment;
+      const current = { dialog,form,title,content,summary,helper,error,cancel,confirm,close,name,comment,
+        labels: [nameLabel,commentLabel], base,origin,editor: true,mode: "edit",busy: false,record: null };
+      modal = current;
+      const closeEditor = () => closeModal();
+      cancel.onclick = close.onclick = closeEditor;
+      dialog.addEventListener("cancel",event => { event.preventDefault(); closeEditor(); });
+      dialog.addEventListener("click",event => {
+        const rect = dialog.getBoundingClientRect();
+        if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom)) closeEditor();
+      });
+      form.addEventListener("submit",event => {
+        event.preventDefault();
+        if (modal !== current || current.busy || current.refreshing || current.mode !== "edit" || current.confirm.disabled) return;
+        const draft = { name: name.value, comment: comment.value };
+        const normalizedName = window.AgentHubStreamTabs.normalizeWorkspaceFolderName(draft.name);
+        if (!normalizedName || draft.name.length > 80) { errorInModal("Введите наименование длиной не больше 80 символов."); name.focus(); return; }
+        if (draft.comment.length > 1000) { errorInModal("Комментарий должен содержать не больше 1000 символов."); comment.focus(); return; }
+        if (normalizedName === current.base.name && draft.comment.trim() === current.base.comment) { closeEditor(); return; }
+        void submit("update",{ folderId: id, expectedRevision: current.base.revision, ...draft },{
+          folderId: id, folderName: current.base.name, origin,keyboard: true,base: { ...current.base },draft,
+          retainedRequestId: current.retainedRecord?.input.requestId,
+        });
+      });
+      document.body.append(dialog); dialog.showModal(); name.focus();
+    }
     function validTarget(event) {
       if (!drag || !event.dataTransfer?.types.includes(MIME)) return null;
       const row = event.target.closest(".task-workspace-folder-summary");
@@ -415,7 +568,7 @@
       get revision() { return model?.revision ?? null; },
       names: () => model?.folders.map(folder => folder.name) ?? null,
       folders: () => model?.folders ?? [],
-      folder: byName, folderById: byId, blocked, decorate, openRemove, openMove,
+      folder: byName, folderById: byId, blocked, decorate, openRemove, openMove, openFolderEditor,
       hasPendingAction: action => [...operations.values()].some(record => record.input.action === action),
       keepClosed: name => heldClosed.has(byName(name)?.id),
       async createFolder(name) { return submit("create",{ name },{ folderName: name }); },

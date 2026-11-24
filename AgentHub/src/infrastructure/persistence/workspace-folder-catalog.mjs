@@ -9,7 +9,7 @@ const settingsOf = row => {
   try { const value = JSON.parse(row.settings_json); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
   catch { return {}; }
 };
-const folderOf = row => row ? { id: row.id, name: row.name, revision: row.revision } : null;
+const folderOf = row => row ? { id: row.id, name: row.name, comment: String(row.comment ?? ""), revision: row.revision } : null;
 const FOLDER_SQL = "json_extract(CASE WHEN json_valid(settings_json) THEN settings_json ELSE '{}' END,'$.catalogFolder')";
 
 export class WorkspaceFolderConflict extends Error {
@@ -23,7 +23,7 @@ export function configureWorkspaceFolders(database) {
   database.exec(`
     CREATE TABLE IF NOT EXISTS hub_workspace_folders (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT NOT NULL,
-      revision INTEGER NOT NULL CHECK(revision > 0), deleted_at_ms INTEGER
+      revision INTEGER NOT NULL CHECK(revision > 0), deleted_at_ms INTEGER, comment TEXT NOT NULL DEFAULT ''
     ) WITHOUT ROWID;
     CREATE UNIQUE INDEX IF NOT EXISTS hub_workspace_folder_live_name
       ON hub_workspace_folders(name_key) WHERE deleted_at_ms IS NULL;
@@ -35,6 +35,9 @@ export function configureWorkspaceFolders(database) {
     ) WITHOUT ROWID;
     CREATE INDEX IF NOT EXISTS hub_workspace_folder_members_idx ON hub_workspaces(${FOLDER_SQL});
   `);
+  if (!database.prepare("PRAGMA table_info(hub_workspace_folders)").all().some(column => column.name === "comment")) {
+    database.exec("ALTER TABLE hub_workspace_folders ADD COLUMN comment TEXT NOT NULL DEFAULT ''");
+  }
   if (!database.prepare("SELECT value FROM hub_workspace_catalog_meta WHERE key='workspace_folders_v1'").get()) {
     const find = database.prepare("SELECT name FROM hub_workspace_folders WHERE name_key=? AND deleted_at_ms IS NULL");
     const insert = database.prepare("INSERT INTO hub_workspace_folders(id,name,name_key,revision) VALUES(?,?,?,1)");
@@ -104,7 +107,7 @@ export class WorkspaceFolderCatalog {
     }
     const folder = this.row(id);
     if (!folder) refuse("FOLDER_ABSENT", "Папка изменилась или удалена.");
-    if (revision !== folder.revision) refuse("FOLDER_STALE", "Папка изменилась или удалена.");
+    if (revision !== folder.revision) refuse("FOLDER_STALE", "Папка изменилась или удалена.", { folder: folderOf(folder) });
     return folder;
   }
   create(name, { importing = false } = {}) {
@@ -137,19 +140,24 @@ export class WorkspaceFolderCatalog {
     this.db.prepare("UPDATE hub_workspaces SET settings_json=?,updated_at_ms=? WHERE id=?")
       .run(JSON.stringify(settings),this.now(),row.id);
   }
-  rename(folder, name) {
+  update(folder, name, comment) {
+    if (typeof name !== "string") refuse("FOLDER_NAME_REQUIRED", "Введите имя папки.");
     const normalized = workspaceFolderName(name);
     if (!normalized) refuse("FOLDER_NAME_REQUIRED", "Введите имя папки.");
+    if (typeof comment !== "string" || comment.length > 1000) refuse("FOLDER_COMMENT_INVALID", "Комментарий должен содержать не больше 1000 символов.");
+    const normalizedComment = comment.trim();
     const duplicate = this.named(normalized);
     if (duplicate && duplicate.id !== folder.id) refuse("FOLDER_NAME_EXISTS", "Папка с таким именем уже существует.");
-    if (folder.name === normalized) return { folder: folderOf(folder), workspaceCount: 0 };
-    const rows = this.rows(folder.name);
-    this.retireName(folder.name);
-    this.db.prepare("UPDATE hub_workspace_folders SET name=?,name_key=?,revision=revision+1 WHERE id=?")
-      .run(normalized,keyOf(normalized),folder.id);
+    if (folder.name === normalized && folder.comment === normalizedComment) return { folder: folderOf(folder), workspaceCount: 0 };
+    const renamed = folder.name !== normalized;
+    const rows = renamed ? this.rows(folder.name) : [];
+    if (renamed) this.retireName(folder.name);
+    this.db.prepare("UPDATE hub_workspace_folders SET name=?,name_key=?,comment=?,revision=revision+1 WHERE id=?")
+      .run(normalized,keyOf(normalized),normalizedComment,folder.id);
     for (const row of rows) this.updateMembership(row,normalized);
     return { folder: folderOf(this.row(folder.id)), workspaceCount: rows.length };
   }
+  rename(folder, name) { return this.update(folder, name, String(folder.comment ?? "")); }
   apply(action, payload) {
     if (action === "create") return { folder: this.create(payload.name) };
     if (action === "import") {
@@ -159,6 +167,7 @@ export class WorkspaceFolderCatalog {
       for (const name of payload.names) if (workspaceFolderName(name)) this.create(name,{ importing: true });
       return this.catalog();
     }
+    if (action === "update") return this.update(this.requireFolder(payload.folderId,payload.expectedRevision),payload.name,payload.comment);
     if (action === "rename") return this.rename(this.requireFolder(payload.folderId,payload.expectedRevision),payload.name);
     if (action === "remove") {
       const preview = this.preview(payload.folderId);

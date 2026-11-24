@@ -34,7 +34,7 @@ import {
 } from "../../domain/workspace-task-workflow.mjs";
 import { workspaceSettingsWithTaskPrefix } from "../../domain/task-number.mjs";
 
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 export const DEVELOPER_RULES_MAX_BYTES = 32 * 1024;
 const SOURCES = new Set(["created", "discovered", "migration", "rebirth"]);
 const DEVELOPER_RULE_SCOPES = new Set(["workspace", "stream"]);

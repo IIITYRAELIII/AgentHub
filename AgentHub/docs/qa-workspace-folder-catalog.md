@@ -86,3 +86,39 @@ after the verified combined result. Do not infer it from ancestry.
 Affected invariants: SYS-002 and UI-001 gain the explicit folder contract;
 PERF-001 retains one indexed catalog/SQLite owner; message, attachment, usage,
 Task custody and release boundaries remain unchanged. See ADR-HUB-121.
+
+## Folder editor correction
+
+The folder menu now opens the same `workspace-card-modal` / form / header /
+`workspace-card-fields` / footer shell as Workspace editing, with name80 and
+optional comment1000. The sole CSS addition aliases the existing comment-height
+selector; there are no folder-specific shell geometry/theme rules. The old
+Mobile rename wrapper is removed. One `update` command saves both fields;
+checked legacy rename preserves comment. Schema17 adds an empty default to
+schema16 records without identity/revision replacement. Existing immutable
+receipts are not rewritten.
+
+Focused non-GUI checks:
+
+```sh
+node --test tests/public/folder-editor.test.mjs
+node --test tests/infrastructure/persistence/workspace-folder-catalog.test.mjs
+```
+
+The Node DOM double executes complete production catalog, modal and folder
+controller modules with the real service/command/router/SQLite fixture. Static
+Workspace HTML is parsed into the same layout-free DOM for shell comparison.
+Logical Web1280, WebView390/520 and Mobile320/390/430 cover editing, cancel,
+pending, stale drafts, exact UNKNOWN recovery and multi-client snapshots.
+These checks do not establish rendered geometry, a browser/native focus trap,
+physical touch, installed extension or manual screen-reader conformance.
+The user explicitly restricted this correction to non-GUI checks. Existing
+browser scenarios are updated, but are not run under that restriction. The
+existing Dashboard integration scenario is retained from accepted dev326d26c4
+with only its editor selectors and checked update assertions adapted; it is a
+composition regression, not a second Dashboard implementation. Fresh-process persistence uses a separate Node
+process and the same durable receipt; installed runtime restart is not claimed.
+
+Previous screenshot/metric verdicts above remain historical and bound to their
+original hashes. A new exact source/behavior Design verdict, native corrective
+Test and checked composition are required; metadata records those outcomes.

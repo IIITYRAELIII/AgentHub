@@ -3,6 +3,8 @@ import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { WorkspaceCatalogStore } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
@@ -203,7 +205,7 @@ test("legacy settings folders migrate once under the schema transaction and keep
   const first = current.workspaceFolderCatalog();
   assert.equal(first.folders.length,1); assert.equal(first.folders[0].name,"Клиенты");
   assert.equal(current.workspace("legacy-a").settings.marker,"preserved");
-  assert.equal(current.meta("schema_version"),"16");
+  assert.equal(current.meta("schema_version"),"17");
   current.close(); current = new WorkspaceCatalogStore({ databaseFile }); await current.load();
   assert.deepEqual(current.workspaceFolderCatalog(),first);
 });
@@ -234,4 +236,66 @@ test("a known stale rejection remains the same receipt after restart and needs a
   const current=restarted.workspaceFolderCatalog().folders[0];
   assert.equal(command(restarted,"move",{...input.payload,target:{id:current.id,revision:current.revision}},"explicit-second").receipt.status,"succeeded");
   assert.equal(restarted.workspace(workspace.id).settings.catalogFolder,"Changed");
+});
+
+test("folder name and comment share one checked transaction, receipt and canonical revision", async t => {
+  const { store,open }=await fixture(t); const created=create(store,"Editable");
+  store.createWorkspace({id:"edit-member",name:"Member",settings:{catalogFolder:created.name,keep:true}});
+  const base=store.workspaceFolderCatalog().folders.find(folder=>folder.id===created.id);
+  const input={requestId:"edit-together",action:"update",payload:{folderId:base.id,expectedRevision:base.revision,name:"Renamed",comment:"  Comment\nkept  "}};
+  const receipt=store.workspaceFolderCommand(input);assert.equal(receipt.status,"succeeded");
+  assert.equal(receipt.result.folder.name,"Renamed");assert.equal(receipt.result.folder.comment,"Comment\nkept");
+  assert.equal(store.workspace("edit-member").settings.catalogFolder,"Renamed");assert.equal(store.workspace("edit-member").settings.keep,true);
+  const observer=await open();assert.deepEqual(observer.workspaceFolderCatalog(),store.workspaceFolderCatalog());
+  assert.deepEqual(observer.workspaceFolderCommand(input),receipt);
+  assert.throws(()=>observer.workspaceFolderCommand({...input,payload:{...input.payload,comment:"different"}}),/binding/);
+  const current=receipt.result.folder, revision=observer.workspaceFolderCatalog().revision;
+  const changed=command(store,"update",{folderId:current.id,expectedRevision:current.revision,name:current.name,comment:""});
+  assert.equal(changed.receipt.result.folder.comment,"");assert.equal(changed.receipt.result.workspaceCount,0);
+  assert.notEqual(observer.workspaceFolderCatalog().revision,revision);
+  assert.equal((await open()).workspaceFolderCatalog().folders.find(folder=>folder.id===base.id).comment,"");
+});
+
+test("folder update validates stale/duplicate/long comments before applying either field",async t=>{
+  const {store}=await fixture(t),a=create(store,"A");create(store,"B");
+  for(const [name,comment,revision,code] of [["B","new",a.revision,"FOLDER_NAME_EXISTS"],["C","x".repeat(1001),a.revision,"FOLDER_COMMENT_INVALID"],["C","new",a.revision+1,"FOLDER_STALE"]]){
+    const before=store.workspaceFolderCatalog();const receipt=command(store,"update",{folderId:a.id,expectedRevision:revision,name,comment}).receipt;
+    assert.equal(receipt.status,"rejected");assert.equal(receipt.error.code,code);assert.deepEqual(store.workspaceFolderCatalog(),before);
+  }
+});
+
+test("folder update persistence failure rolls back fields, memberships and the receipt",async t=>{
+  const {store,databaseFile}=await fixture(t),a=create(store,"A");
+  store.createWorkspace({id:"rollback-member",name:"Member",settings:{catalogFolder:a.name}});
+  const base=store.workspaceFolderCatalog().folders.find(folder=>folder.id===a.id),before=store.workspaceFolderCatalog();
+  const db=new DatabaseSync(databaseFile);
+  db.exec("CREATE TRIGGER fail_edit_receipt BEFORE INSERT ON hub_workspace_folder_operations WHEN NEW.request_id='edit-fail' BEGIN SELECT RAISE(ABORT,'injected edit receipt failure'); END");db.close();
+  const input={requestId:"edit-fail",action:"update",payload:{folderId:a.id,expectedRevision:base.revision,name:"Changed",comment:"Changed"}};
+  assert.throws(()=>store.workspaceFolderCommand(input),/injected edit receipt failure/);
+  assert.deepEqual(store.workspaceFolderCatalog(),before);assert.equal(store.workspace("rollback-member").settings.catalogFolder,"A");
+  assert.equal(store.workspaceFolderCommandResult(input).status,"unknown");
+});
+
+test("schema16 folder records migrate with empty comments and retain identity/revision",async t=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),"agent-hub-folder-schema16-")),databaseFile=path.join(root,"journal.sqlite");
+  const legacy=new DatabaseSync(databaseFile);
+  legacy.exec(`CREATE TABLE hub_workspace_folders(id TEXT PRIMARY KEY,name TEXT NOT NULL,name_key TEXT NOT NULL,revision INTEGER NOT NULL,deleted_at_ms INTEGER) WITHOUT ROWID;
+    INSERT INTO hub_workspace_folders VALUES('retained-id','Existing','existing',7,NULL);
+    CREATE TABLE hub_workspace_catalog_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    INSERT INTO hub_workspace_catalog_meta VALUES('schema_version','16');
+    INSERT INTO hub_workspace_catalog_meta VALUES('workspace_folders_v1','completed');`);legacy.close();
+  const store=new WorkspaceCatalogStore({databaseFile});await store.load();
+  t.after(async()=>{store.close();await rm(root,{recursive:true,force:true,maxRetries:3,retryDelay:100});});
+  assert.deepEqual(store.workspaceFolderCatalog().folders,[{id:"retained-id",name:"Existing",comment:"",revision:7}]);
+  assert.equal(store.meta("schema_version"),"17");
+});
+
+test("a fresh Node process reopens the same edited fields and original receipt",async t=>{
+  const {store,databaseFile}=await fixture(t),folder=create(store,"Before");
+  const input={requestId:"fresh-edit",action:"update",payload:{folderId:folder.id,expectedRevision:folder.revision,name:"After",comment:"Persisted"}};
+  const receipt=store.workspaceFolderCommand(input);
+  const result=JSON.parse(execFileSync(process.execPath,[fileURLToPath(new URL("../../fixtures/workspace-folder-edit-readback.mjs",import.meta.url)),databaseFile,folder.id,JSON.stringify(input)],{encoding:"utf8"}));
+  assert.equal(result.folder.name,"After");assert.equal(result.folder.comment,"Persisted");
+  assert.deepEqual(result.receipt,receipt);assert.deepEqual(result.replay,receipt);
+  assert.equal(store.workspaceFolderCatalog().folders[0].revision,result.folder.revision);
 });

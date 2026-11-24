@@ -97,9 +97,9 @@ for (const actorConfig of [
   if (await observedFolder.evaluate(node=>node.open)) await observedFolder.locator("summary").click();
   await capture(observer,key,"created-observed");
   await openFolderMenu(actor,actorConfig,"Общая пустая");
-  await actor.getByRole("menuitem",{ name:"Переименовать папку…" }).click();
-  await actor.locator("[data-text-dialog-input]").fill("Общая после переименования");
-  await actor.locator("[data-text-dialog-ok]").click();
+  await actor.getByRole("menuitem",{ name:"Редактировать папку…" }).click();
+  await actor.locator("[data-folder-edit-name]").fill("Общая после переименования");
+  await actor.locator('[data-folder-dialog="edit"] button[type="submit"]').click();
   await actor.locator('[data-workspace-folder-name="Общая после переименования"]').waitFor();
   await observer.locator('[data-workspace-folder-name="Общая после переименования"]').waitFor();
   assert.equal(await observer.locator('[data-workspace-folder-name="Общая пустая"]').count(),0);
@@ -217,7 +217,7 @@ for (const config of [
       await page.locator('[data-workspace-folder-name="Пустая"] summary').press("Shift+F10");
     }
     await capture(page,key,"menu");
-    assert.deepEqual(await page.getByRole("menuitem").allTextContents(),["Переименовать папку…","Удалить папку…"]);
+    assert.deepEqual(await page.getByRole("menuitem").allTextContents(),["Редактировать папку…","Удалить папку…"]);
     assert.equal(await page.getByRole("menuitem",{name:"Удалить папку…"}).evaluate(node=>node.previousElementSibling.getAttribute("role")),"separator");
     await page.getByRole("menuitem",{ name: "Удалить папку…" }).click();
     const dialog = page.locator("[data-folder-dialog]");
