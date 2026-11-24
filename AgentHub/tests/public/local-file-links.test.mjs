@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { webcrypto } from "node:crypto";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { MiniAppServer } from "../../src/interfaces/web/mini-app-server.mjs";
-import { deviceSessionMessage, TrustedDeviceStore } from "../../src/infrastructure/persistence/trusted-device-store.mjs";
 import { launchBrowser, snapshot } from "./composer-production.fixture.mjs";
 
 const journal = () => ({ subscribe: () => () => {}, version: "local-files", html: () => "" });
@@ -126,6 +124,8 @@ test("real Edge file-link menu downloads and reveals inside and outside files th
 });
 
 test("Android file-link save uses the HttpOnly device session and delivers the exact PNG to the existing save port", { timeout: 40_000 }, async () => {
+  const { webcrypto } = await import("node:crypto");
+  const { deviceSessionMessage, TrustedDeviceStore } = await import("../../src/infrastructure/persistence/trusted-device-store.mjs");
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-android-file-ui-"));
   const target = path.join(root, "Камень вне проекта.png");
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5WQAAAAASUVORK5CYII=", "base64");
