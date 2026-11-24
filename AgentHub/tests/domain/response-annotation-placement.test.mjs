@@ -1,6 +1,33 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { codexAssistantResponseProjection as project } from '../../src/domain/codex-response-annotation.mjs';
+import {
+  bindResponseAnnotationTarget, codexAssistantResponseProjection as project,
+  normalizedCodexResponseAnnotationReferences, responseAnnotationTargetForMessages,
+} from '../../src/domain/codex-response-annotation.mjs';
+
+test("bare indices bind only to a unique batch, preserving text and list structure", () => {
+  const users = [4, 1, 1].map((count, batch) => ({
+    role: "user", itemId: `user-${batch}`,
+    responseAnnotations: Array.from({ length: count }, () => ({ text: "Selected", annotation: "" })),
+  }));
+  const raw = [1, 2, 3, 4, 1, 1].map((index, offset) =>
+    `- :agent-annotation{index="${index}"} Answer ${offset + 1}`).join("\n");
+  const result = bindResponseAnnotationTarget(project(raw), responseAnnotationTargetForMessages(users));
+  assert.equal(result.text.split("\n").length, 6);
+  for (const [offset, line] of result.text.split("\n").entries()) {
+    assert.match(line, new RegExp(`^- (?:Цитата [1-4] )?Answer ${offset + 1}$`, "u"));
+  }
+  assert.deepEqual(result.responseAnnotationReferences.map(({ index, target }) =>
+    [index, target.itemId ?? target.unresolved]), [[1, true], [2, "user-0"], [3, "user-0"], [4, "user-0"]]);
+  assert.equal(raw.match(/:agent-annotation/gu).length, 6);
+});
+
+test("same-index references deduplicate only within their addressed batch", () => {
+  const first = { index: 1, target: { itemId: "first", batchScoped: true }, position: { start: 0, end: 8 } };
+  const second = { ...first, target: { itemId: "second", batchScoped: true }, position: { start: 9, end: 17 } };
+  assert.deepEqual(normalizedCodexResponseAnnotationReferences([first, first, second, second]), [first, second]);
+  assert.deepEqual(project("Цитата 1\nЦитата 1", [first, second]).responseAnnotationReferences, [first, second]);
+});
 
 export const fourAnswers = '# Зачем нужна история Git\n\nИстория Git сохраняет изменения. 🦊 :agent-annotation{index="2"}\n\nЗависимости можно переиспользовать. :codex-annotation{index="1"}\n\nВременные копии удаляются после проверки. :agent-annotation{index="3"}\n\nМедиа принадлежит открытой задаче. :codex-annotation{index="4"}';
 

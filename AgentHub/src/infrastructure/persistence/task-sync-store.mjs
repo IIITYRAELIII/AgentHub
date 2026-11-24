@@ -13,7 +13,7 @@ import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../../domain/interstream-message.mjs";
-import { normalizedCodexResponseAnnotationReferences, normalizedResponseAnnotationTarget, preferredResponseAnnotationTarget } from "../../domain/codex-response-annotation.mjs";
+import { normalizedCodexResponseAnnotationReferences, normalizedResponseAnnotationTarget, preferredResponseAnnotationTarget, retainedResponseAnnotationTarget } from "../../domain/codex-response-annotation.mjs";
 import { normalizedResponseAnnotations, normalizedResponseAnnotationItemId } from "../../domain/response-annotation-source.mjs";
 import {
   durableUserCommandItemId,
@@ -417,7 +417,7 @@ function preserveDurableResponseAnnotationReferences(existingHistory, incomingHi
           && candidate.role === message.role).length === 1 && Array.isArray(responseAnnotationReferences)) {
           const previous = cleanResponseAnnotationReferences(existingMessage.responseAnnotationReferences);
           responseAnnotationReferences = responseAnnotationReferences.map(reference => {
-            const target = preferredResponseAnnotationTarget(previous.find(item => item.index === reference.index)?.target,
+            const target = preferredResponseAnnotationTarget(retainedResponseAnnotationTarget(previous, reference),
               reference.target);
             return target ? { ...reference, target } : reference;
           });
