@@ -155,6 +155,8 @@ html[data-theme="orange"] .theme-atmosphere {
 }
 
 html[data-theme="orange"] .app-header,
+html[data-theme="orange"] .task-board-sidebar,
+html[data-theme="orange"] [data-task-board-scope-popover],
 html[data-theme="orange"] .task-rail {
   --surface-1: #211a20;
   --surface-2: #2b2229;

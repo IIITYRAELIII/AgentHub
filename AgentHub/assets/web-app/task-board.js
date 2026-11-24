@@ -394,6 +394,8 @@
       workspaces: Array.isArray(payload.workspaces) ? payload.workspaces : [],
       columnOrder: Array.isArray(payload.columnOrder) ? payload.columnOrder : [],
       notesComment: String(payload.notesComment ?? ""),
+      workspaceNavigation: Array.isArray(payload.workspaceNavigation) ? payload.workspaceNavigation : [],
+      folderNames: Array.isArray(payload.folderNames) ? payload.folderNames : [],
       selectedWorkspaceId: payload.selectedWorkspaceId ?? null,
       selectedStreamId: payload.selectedStreamId ?? null,
       provider: payload.provider === "claude" ? "claude" : "codex",
@@ -405,6 +407,8 @@
     const boardChanged = !initialized
       || tasksChanged
       || workspacesChanged
+      || !sameSnapshotValue(current.workspaceNavigation ?? [], next.workspaceNavigation)
+      || !sameSnapshotValue(current.folderNames ?? [], next.folderNames)
       || !sameSnapshotValue(current.columnOrder ?? [], next.columnOrder)
       || String(current.notesComment ?? "") !== next.notesComment;
     return {
@@ -878,7 +882,9 @@
   const board = document.querySelector("[data-task-board]");
   const columns = document.querySelector("[data-task-board-columns]");
   const scopeStrip = document.querySelector("[data-task-board-scopes]");
-  const scopeSelect = document.querySelector("[data-task-board-scope-select]");
+  const scopeTrigger = document.querySelector("[data-task-board-scope-trigger]");
+  const scopePopover = document.querySelector("[data-task-board-scope-popover]");
+  const scopeSidebar = document.querySelector(".task-board-sidebar");
   const statusFilter = document.querySelector("[data-task-board-status-filter]");
   const settingsToggle = document.querySelector("[data-task-board-settings-toggle]");
   const settingsPanel = document.querySelector("#task-board-settings");
@@ -970,6 +976,8 @@
   const state = {
     tasks: [],
     workspaces: [],
+    workspaceNavigation: [],
+    folderNames: [],
     columnOrder: [],
     notesComment: "",
     selectedWorkspaceId: null,
@@ -2377,109 +2385,114 @@
 
   const expandedBoardFolders = new Map();
 
-  function scopeButton(scope) {
-    const destination = scope.id === "notes" || scope.id.startsWith("workspace:");
+  const boardScopes = new Map();
+
+  function taskCountLabel(count) {
+    const remainder = count % 100;
+    const ending = remainder >= 11 && remainder <= 14 ? "задач"
+      : count % 10 === 1 ? "задача" : count % 10 >= 2 && count % 10 <= 4 ? "задачи" : "задач";
+    const mode = state.completedOnly ? (ending === "задача" ? "закрытая" : ending === "задачи" ? "закрытые" : "закрытых")
+      : (ending === "задача" ? "текущая" : ending === "задачи" ? "текущие" : "текущих");
+    return `${count} ${mode} ${ending}`;
+  }
+
+  function scopeButton(scope, { folder = false } = {}) {
     return node("button", {
-      type: "button",
-      class: `task-board-scope${state.boardScope === scope.id ? " is-selected" : ""}`,
-      "aria-pressed": String(state.boardScope === scope.id),
+      type: "button", class: `task-board-scope ${folder ? "task-board-folder-navigation" : "task-workspace-item"}`,
+      "aria-current": state.boardScope === scope.id ? "page" : null,
+      "aria-label": `${scope.label}, ${taskCountLabel(scope.count)}`,
       "data-board-scope": scope.id,
-      "data-board-destination": destination ? scope.id : null,
-      draggable: destination ? "true" : null,
-      ondragstart: destination ? (event) => {
-        state.draggingColumnId = scope.id;
-        event.dataTransfer.setData(COLUMN_MIME, scope.id);
-        event.dataTransfer.effectAllowed = "move";
-      } : null,
-      ondragend: () => { state.draggingColumnId = null; },
-      ondragover: (event) => {
-        if (!destination) return;
-        event.preventDefault();
-        event.currentTarget.classList.add("is-dragover");
-      },
-      ondragleave: (event) => event.currentTarget.classList.remove("is-dragover"),
-      ondrop: (event) => {
-        if (!destination) return;
-        event.preventDefault();
-        event.currentTarget.classList.remove("is-dragover");
-        const columnId = draggedColumnId(event.dataTransfer);
-        if (columnId) {
-          if (columnId !== scope.id) emit("move-column", { columnId, beforeColumnId: scope.id });
-          return;
-        }
-        const taskId = TaskReferences.fromTransfer(event.dataTransfer)?.taskId;
-        const task = state.tasks.find((item) => item.id === taskId);
-        if (task && task.status !== "done") moveTask(task, scope.id);
-      },
-      text: `${scope.label} · ${scope.count}`,
+      "data-selected": state.boardScope === scope.id ? "" : null,
+      title: scope.label,
       onclick: () => {
         state.boardScope = scope.id;
         state.creatingWorkspaceId = null;
         renderBoard();
+        closeScopePopover();
       },
-    });
+    }, [node("span", { class: folder ? "task-workspace-folder-name" : "task-workspace-name", text: scope.label }),
+      node("span", { class: "task-workspace-folder-count", "aria-hidden": "true", text: String(scope.count) })]);
   }
 
   function renderScopeStrip() {
     if (!scopeStrip) return;
+    const focused = scopeStrip.contains(document.activeElement) ? document.activeElement : null;
+    const focusScope = focused?.dataset.boardScope;
+    const focusFolder = focused?.dataset.boardFolderToggle;
+    const focusParentScope = focused?.closest("[data-board-folder]")?.dataset.boardFolder;
+    const previousFocusOrder = [...(focused?.closest("ul") ?? scopeStrip).querySelectorAll("[data-board-scope]")].map(n => n.dataset.boardScope);
+    const previousFocusIndex = previousFocusOrder.indexOf(focusScope);
+    const oldScroll = scopeStrip.scrollTop;
     const workspaceCount = document.querySelector("[data-task-board-workspace-count]");
     if (workspaceCount) workspaceCount.textContent = String(state.workspaces.length);
-    const openTasks = (predicate) => tasksForMode(state.tasks, { completedOnly: state.completedOnly }).filter(predicate).length;
-    const scopes = [
-      { id: "all", label: "Все задачи", count: openTasks(() => true) },
-      { id: "backlog", label: "Бэклог", count: openTasks((task) => task.bucket === "backlog") },
-      ...state.workspaces.map((workspace) => ({
-        id: `workspace:${workspace.id}`,
-        label: workspace.name,
-        folder: workspaceFolder(workspace),
-        count: openTasks((task) => task.bucket === "workspace" && task.workspaceId === workspace.id),
-      })),
-      { id: "notes", label: "Заметки", count: openTasks((task) => task.bucket === "notes") },
+    const modeTasks = tasksForMode(state.tasks, { completedOnly: state.completedOnly });
+    const counts = new Map();
+    for (const task of modeTasks) if (task.bucket === "workspace") counts.set(task.workspaceId, (counts.get(task.workspaceId) ?? 0) + 1);
+    const globals = [
+      { id: "all", label: "Все задачи", count: modeTasks.length },
+      { id: "backlog", label: "Бэклог", count: modeTasks.filter(t => t.bucket === "backlog").length },
+      { id: "notes", label: "Заметки", count: modeTasks.filter(t => t.bucket === "notes").length },
     ];
-    const scopeById = new Map(scopes.map((scope) => [scope.id, scope]));
-    const orderedScopes = [...new Set(["all", ...state.columnOrder, ...scopes.map((scope) => scope.id)])]
-      .map((id) => scopeById.get(id)).filter(Boolean);
-    const folders = new Set();
-    const groups = [];
-    for (const scope of orderedScopes) {
-      if (!scope.folder) { groups.push(scopeButton(scope)); continue; }
-      if (folders.has(scope.folder)) continue;
-      folders.add(scope.folder);
-      const members = orderedScopes.filter((candidate) => candidate.folder === scope.folder);
-      const selectedMember = members.find((candidate) => candidate.id === state.boardScope);
-      const folderScope = { id: `folder:${scope.folder}`, label: scope.folder,
-        count: members.reduce((sum, member) => sum + member.count, 0) };
-      const main = scopeButton(folderScope);
-      main.title = `Все Workspace папки ${scope.folder}`;
-      const expanded = expandedBoardFolders.get(scope.folder) ?? true;
-      const memberList = node("div", {
-        class: "task-workspace-folder-list", hidden: expanded ? null : "",
-      }, members.map(scopeButton));
-      const toggle = node("button", {
-        type: "button", class: "task-board-folder-toggle", text: expanded ? "⌄" : "›",
-        "aria-label": `Выбрать Workspace в папке ${scope.folder}`,
-        "aria-expanded": String(expanded),
+    const groups = window.AgentHubStreamTabs.workspaceCatalogGroups(state.workspaces, state.workspaceNavigation);
+    const sections = window.AgentHubStreamTabs.workspaceSections(groups, { folderNames: state.folderNames });
+    boardScopes.clear();
+    for (const scope of globals) boardScopes.set(scope.id, scope);
+    const workspaceScope = group => {
+      const scope = { id: `workspace:${group.id}`, label: group.name, count: counts.get(group.id) ?? 0 };
+      boardScopes.set(scope.id, scope);
+      return node("li", {}, [scopeButton(scope)]);
+    };
+    const items = sections.active.map(workspaceScope);
+    for (const entry of sections.catalog) {
+      if (entry.type === "workspace") { items.push(workspaceScope(entry.group)); continue; }
+      const scope = { id: entry.key, label: entry.name, count: entry.items.reduce((sum, group) => sum + (counts.get(group.id) ?? 0), 0) };
+      boardScopes.set(scope.id, scope);
+      const memberNodes = entry.items.map(workspaceScope);
+      const selectedId = state.boardScope.startsWith("workspace:") ? state.boardScope.slice(10) : "";
+      const collapsed = [...expandedBoardFolders].filter(([, expanded]) => !expanded).map(([key]) => key);
+      // The canonical owner auto-opens the selected ancestor. Counts alone do not.
+      const expanded = window.AgentHubStreamTabs.workspaceFolderOpen({ ...entry, items: entry.items.map(group => ({ ...group, tasks: [] })) }, collapsed, selectedId);
+      const listId = `board-folder-${encodeURIComponent(entry.name)}`;
+      const members = node("ul", { id: listId, class: "task-workspace-folder-list", hidden: expanded ? null : "" }, memberNodes.length ? memberNodes
+        : [node("li", { class: "task-workspace-folder-empty", text: "Папка пуста" })]);
+      const icons = window.AgentHubStreamTabs.workspaceFolderSummaryIcons(document);
+      const toggle = node("button", { type: "button", class: "task-board-folder-toggle",
+        "data-board-folder-toggle": entry.key, "aria-expanded": String(expanded), "aria-controls": listId,
+        "aria-label": `${expanded ? "Свернуть" : "Раскрыть"} папку ${entry.name}`,
         onclick: () => {
-          const open = memberList.hidden;
-          memberList.hidden = !open;
-          expandedBoardFolders.set(scope.folder, open);
+          const open = members.hidden;
+          members.hidden = !open;
+          expandedBoardFolders.set(entry.key, open);
+          row.dataset.expanded = String(open);
           toggle.setAttribute("aria-expanded", String(open));
-          toggle.textContent = open ? "⌄" : "›";
+          toggle.setAttribute("aria-label", `${open ? "Свернуть" : "Раскрыть"} папку ${entry.name}`);
         },
-      });
-      groups.push(node("div", {
-        class: `task-board-folder task-workspace-folder-details${selectedMember || state.boardScope === folderScope.id ? " is-selected" : ""}`,
-      }, [node("div", { class: "task-board-folder-heading" }, [main, toggle]), memberList]));
+      }, [icons[0]]);
+      const navigation = scopeButton(scope, { folder: true });
+      navigation.prepend(icons[1]);
+      const row = node("div", { class: "task-workspace-folder-summary task-board-folder-heading", "data-expanded": String(expanded) }, [toggle, navigation]);
+      items.push(node("li", { class: "task-workspace-folder task-board-folder", "data-board-folder": entry.key, "data-selected": entry.items.some(group => group.id === selectedId) ? "" : null }, [
+        node("div", { class: "task-workspace-folder-details" }, [row, members]),
+      ]));
     }
-    scopeStrip.replaceChildren(...groups);
-    if (scopeSelect) {
-      const options = [
-        ...orderedScopes,
-        ...[...folders].map((folder) => ({ id: `folder:${folder}`, label: `Папка: ${folder}` })),
-      ];
-      scopeSelect.replaceChildren(...options.map((scope) => node("option", { value: scope.id, text: scope.label })));
-      scopeSelect.value = state.boardScope;
+    scopeStrip.replaceChildren(node("ul", { class: "task-board-global-scopes" }, globals.map(scope => node("li", {}, [scopeButton(scope)]))),
+      node("ul", { class: "task-board-workspace-catalog", "aria-label": "Каталог воркспейсов" }, items));
+    if (scopeTrigger) {
+      const scope = boardScopes.get(state.boardScope) ?? globals[0];
+      scopeTrigger.replaceChildren(node("span", { text: scope.label }), node("span", { class: "task-workspace-folder-count", "aria-hidden": "true", text: String(scope.count) }),
+        window.AgentHubStreamTabs.workspaceFolderSummaryIcons(document)[0]);
+      scopeTrigger.setAttribute("aria-label", `Раздел Dashboard: ${scope.label}, ${taskCountLabel(scope.count)}`);
     }
+    if (focused) {
+      const controls = [...scopeStrip.querySelectorAll("button")].filter(n => n.checkVisibility());
+      const replacement = controls.find(n => focusScope ? n.dataset.boardScope === focusScope : n.dataset.boardFolderToggle === focusFolder)
+        ?? controls.find(n => n.dataset.boardScope && n.dataset.boardScope === previousFocusOrder[previousFocusIndex + 1])
+        ?? controls.find(n => n.dataset.boardScope && n.dataset.boardScope === previousFocusOrder[previousFocusIndex - 1])
+        ?? controls.find(n => n.dataset.boardScope && n.dataset.boardScope === focusParentScope)
+        ?? controls[0];
+      replacement?.focus({ preventScroll: true });
+    }
+    scopeStrip.scrollTop = oldScroll;
   }
 
   function renderBoard() {
@@ -2493,7 +2506,7 @@
       .filter((task) => state.statusFilter === "all" || taskWorkflowStatus(task) === state.statusFilter);
     const emptyText = state.completedOnly ? "Нет закрытых задач" : "Нет задач";
     if ((state.boardScope.startsWith("workspace:") && !workspaceById(state.boardScope.slice(10)))
-      || (state.boardScope.startsWith("folder:") && !state.workspaces.some((workspace) => workspaceFolder(workspace) === state.boardScope.slice(7)))) {
+      || (state.boardScope.startsWith("folder:") && !state.folderNames.includes(state.boardScope.slice(7)) && !state.workspaces.some((workspace) => workspaceFolder(workspace) === state.boardScope.slice(7)))) {
       state.boardScope = "all";
     }
     board.classList.toggle("has-workspace-context", showsWorkspaceContext());
@@ -2580,7 +2593,7 @@
     if (state.boardView === "list") {
       const listTasks = state.boardScope === "all" ? visibleTasks : scopedTasks;
       rendered.splice(0, rendered.length, renderColumn({
-        id: "task-list", title: scopeSelect?.selectedOptions?.[0]?.textContent || "Задачи",
+        id: "task-list", title: boardScopes.get(state.boardScope)?.label || "Задачи",
         tasks: listTasks, acceptsTaskDrops: false, emptyText,
         workspace: state.boardScope.startsWith("workspace:") ? workspaceById(state.boardScope.slice(10)) : null,
       }));
@@ -2626,11 +2639,39 @@
     state.statusFilter = "all";
     renderBoard();
   });
-  scopeSelect?.addEventListener("change", () => {
-    state.boardScope = scopeSelect.value;
-    state.creatingWorkspaceId = null;
-    renderBoard();
+  function closeScopePopover() {
+    if (scopePopover?.matches(":popover-open")) {
+      scopePopover.hidePopover();
+      scopeTrigger?.focus({ preventScroll: true });
+    }
+  }
+  function positionScopePopover() {
+    if (!scopePopover?.matches(":popover-open")) return;
+    const rect = scopeTrigger.getBoundingClientRect();
+    scopePopover.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - scopePopover.offsetWidth - 8))}px`;
+    scopePopover.style.top = `${Math.max(8, Math.min(rect.bottom + 4, innerHeight - scopePopover.offsetHeight - 8))}px`;
+  }
+  scopePopover?.addEventListener("toggle", event => {
+    scopeTrigger.setAttribute("aria-expanded", String(event.newState === "open"));
+    if (event.newState === "open") {
+      positionScopePopover();
+      const selected = scopeStrip.querySelector('[aria-current="page"]');
+      const target = selected?.checkVisibility() ? selected : scopeStrip.querySelector("[data-board-scope]");
+      target?.focus({ preventScroll: true });
+      target?.scrollIntoView({ block: "nearest" });
+    } else if (scopeTrigger.checkVisibility()) scopeTrigger.focus({ preventScroll: true });
   });
+  function syncScopePresentation() {
+    const narrow = window.matchMedia("(max-width: 959px)").matches;
+    const parent = narrow ? scopePopover : scopeSidebar;
+    if (scopeStrip?.parentElement !== parent) {
+      closeScopePopover();
+      parent?.append(scopeStrip);
+    }
+    positionScopePopover();
+  }
+  window.addEventListener("resize", syncScopePresentation, { passive: true });
+  syncScopePresentation();
   statusFilter?.addEventListener("change", () => {
     state.statusFilter = statusFilter.value;
     renderBoard();
