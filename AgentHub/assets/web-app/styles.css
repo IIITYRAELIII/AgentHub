@@ -4953,6 +4953,171 @@ html[data-view="dashboard"] .task-board-view.is-list-view .task-board-columns {
   flex: 0 1 11rem;
 }
 
+/* Card lifecycle is separate from launch/destination, on every host surface. */
+.task-card-modal > [data-task-card-actions] {
+  display: grid;
+  align-items: stretch;
+}
+
+.task-primary-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.task-primary-actions > button,
+.task-primary-actions > select {
+  min-height: 44px;
+}
+
+.task-lifecycle-actions {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding-block: 12px;
+}
+
+.task-lifecycle-actions h3 {
+  color: var(--text-soft);
+  font-size: 0.76rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.task-lifecycle-row {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.task-lifecycle-row p {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-lifecycle-button {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.76rem;
+  min-height: 44px;
+  min-inline-size: 144px;
+  padding: 0.5rem 0.75rem;
+}
+
+.task-lifecycle-actions,
+[data-task-delete-modal],
+[data-task-cleanup-action="remove"] {
+  --task-lifecycle-danger: var(--danger, var(--dialog-danger));
+  --task-lifecycle-danger: oklch(from var(--danger, var(--dialog-danger)) l c 25);
+}
+
+.task-lifecycle-button.is-danger {
+  border-color: var(--task-lifecycle-danger);
+  color: color-mix(in srgb, var(--task-lifecycle-danger) 80%, var(--text));
+}
+
+.task-lifecycle-button:hover { background: var(--surface-2); }
+.task-lifecycle-button:disabled { cursor: default; opacity: 0.6; }
+
+.task-lifecycle-button:focus-visible,
+:is([data-task-delete-modal], [data-task-cleanup-modal]) button:focus-visible,
+.task-cleanup-technical > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+:is([data-task-delete-modal], [data-task-cleanup-modal]) {
+  box-sizing: border-box;
+  max-height: min(80dvh, 44rem);
+  width: min(26rem, calc(100% - 24px));
+}
+
+:is([data-task-delete-modal], [data-task-cleanup-modal])[open] { display: flex; flex-direction: column; }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) > section { min-height: 0; overflow: auto; }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) p { overflow-wrap: anywhere; }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) > footer { flex: none; padding-bottom: max(1rem, env(safe-area-inset-bottom)); }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) button { min-height: 44px; min-width: 44px; }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) .eyebrow,
+:is([data-task-delete-modal], [data-task-cleanup-modal]) .board-task-quiet { color: var(--text-soft); }
+:is([data-task-delete-modal], [data-task-cleanup-action="remove"]) .task-delete-confirm {
+  background: color-mix(in srgb, var(--task-lifecycle-danger) 18%, var(--bg));
+  border-color: var(--task-lifecycle-danger);
+  color: color-mix(in srgb, var(--task-lifecycle-danger) 80%, var(--text));
+}
+[data-task-delete-modal] .task-delete-error { color: color-mix(in srgb, var(--task-lifecycle-danger) 80%, var(--text)); }
+:is([data-task-delete-modal], [data-task-cleanup-modal]) [hidden] { display: none; }
+
+[data-task-cleanup-action="complete"] .board-task-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+}
+
+[data-task-cleanup-action="complete"] .board-task-primary:hover {
+  background: color-mix(in srgb, var(--accent) 92%, var(--text));
+}
+
+.task-cleanup-technical {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  min-width: 0;
+}
+
+.task-cleanup-technical > summary {
+  align-content: center;
+  cursor: pointer;
+  font-size: 0.78rem;
+  min-height: 44px;
+  padding: 0.5rem;
+}
+
+.task-cleanup-technical > pre {
+  border-top: 1px solid var(--line);
+  color: var(--text-soft);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  max-height: none;
+  overflow: visible;
+  padding: 0.6rem;
+}
+
+[data-task-cleanup-modal] #task-cleanup-summary,
+[data-task-cleanup-modal] #task-cleanup-helper,
+[data-task-cleanup-modal] .task-cleanup-error {
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+[data-task-cleanup-modal] .task-cleanup-error { border-inline-start: 2px solid var(--accent); padding-inline-start: 0.5rem; }
+
+.task-lifecycle-status {
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+@media (max-width: 600px) {
+  .task-lifecycle-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .task-lifecycle-button { width: 100%; }
+  :is([data-task-delete-modal], [data-task-cleanup-modal]) > footer { align-items: stretch; flex-direction: column; }
+  :is([data-task-delete-modal], [data-task-cleanup-modal]) > footer > button { width: 100%; }
+}
+
 .task-card-modal h2,
 .task-card-modal p {
   margin: 0;
