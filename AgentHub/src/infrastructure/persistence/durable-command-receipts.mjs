@@ -75,30 +75,42 @@ export class DurableCommandReceipts {
     this.#onTrace = typeof onTrace === "function" ? onTrace : null;
   }
 
-  async #load({ fresh = false } = {}) {
-    if (this.#loaded && !fresh) return;
-    const records = new Map();
+  async #readJournal() {
     try {
       const value = JSON.parse(await readFile(this.#file, "utf8"));
       if (value?.version !== 1 || !Array.isArray(value.records)) {
         throw new Error("invalid durable command receipt journal");
       }
-      for (const sourceRecord of value.records) {
-        let record = sourceRecord;
+      for (const record of value.records) {
         if (!record || typeof record.id !== "string" || typeof record.fingerprint !== "string") {
           throw new Error("invalid durable command receipt record");
         }
-        if (this.#projectResult && ["completed", "reconciled"].includes(record.phase)) {
-          const result = this.#projectResult(record.result, record);
-          if (result !== record.result) {
-            record = { ...record, result };
-            this.#migrationPending = true;
-          }
-        }
-        records.set(record.id, record);
       }
+      return value.records;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
+      return [];
+    }
+  }
+
+  // A read-only view of the last atomically published journal, for routing
+  // request IDs which must remain under a previous transport's receipt owner.
+  async ids() {
+    return (await this.#readJournal()).map(({ id }) => id);
+  }
+
+  async #load({ fresh = false } = {}) {
+    if (this.#loaded && !fresh) return;
+    const records = new Map();
+    for (let record of await this.#readJournal()) {
+      if (this.#projectResult && ["completed", "reconciled"].includes(record.phase)) {
+        const result = this.#projectResult(record.result, record);
+        if (result !== record.result) {
+          record = { ...record, result };
+          this.#migrationPending = true;
+        }
+      }
+      records.set(record.id, record);
     }
     this.#records = records;
     this.#loaded = true;

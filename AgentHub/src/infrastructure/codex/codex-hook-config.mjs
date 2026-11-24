@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { runtimeCommandRoot } from "../../../codex-stop-hook-launcher.mjs";
+import { encodeRuntimeRootArgument, runtimeCommandRoot } from "../../../codex-stop-hook-launcher.mjs";
 import { isMainModule } from "../process/main-module.mjs";
 import {
   runtimeLayout,
@@ -39,8 +39,9 @@ function quoteCommandArgument(value) {
   return `"${String(value).replaceAll("\"", "\\\"")}"`;
 }
 
-function handlerFor({ nodeExecutable, launcherFile }) {
-  const command = `${quoteCommandArgument(nodeExecutable)} ${quoteCommandArgument(launcherFile)}`;
+function handlerFor({ nodeExecutable, launcherFile, runtimeRoot }) {
+  const rootArgument = encodeRuntimeRootArgument(runtimeRoot);
+  const command = `${quoteCommandArgument(nodeExecutable)} ${quoteCommandArgument(launcherFile)} ${rootArgument}`;
   return {
     type: "command",
     command,
@@ -125,7 +126,7 @@ export async function installCodexStopHook({
   await mkdir(path.dirname(launcherFile), { recursive: true });
   await writeTextAtomic(launcherFile, await readFile(sourceLauncher, "utf8"));
   const current = await readConfig(hooksFile);
-  const updated = mergeCodexStopHookConfig(current, { nodeExecutable, launcherFile });
+  const updated = mergeCodexStopHookConfig(current, { nodeExecutable, launcherFile, runtimeRoot });
   await mkdir(path.dirname(hooksFile), { recursive: true });
   await writeTextAtomic(hooksFile, `${JSON.stringify(updated, null, 2)}\n`);
   return { hooksFile, launcherFile, sourceLauncherFile: sourceLauncher };
@@ -154,7 +155,7 @@ export async function codexStopHookStatus({
   const launcherCurrent = sourceLauncherAvailable && launcherAvailable
     ? await sameFileContents(sourceLauncher, launcherFile)
     : false;
-  const expectedHandlerOptions = { nodeExecutable, launcherFile };
+  const expectedHandlerOptions = { nodeExecutable, launcherFile, runtimeRoot };
   const events = Object.fromEntries(["UserPromptSubmit", "Stop"].map((eventName) => [
     eventName,
     (current.hooks?.[eventName] ?? []).some((group) => (

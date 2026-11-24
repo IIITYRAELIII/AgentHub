@@ -2,16 +2,19 @@
 
 The Codex lifecycle launcher and runtime command client resolve a common spool
 under the installation's runtime data. The repository only supplies the cwd
-inside the request. The runtime command server keeps its durable receipt journal
+inside the request. Hook installation binds its commands to the selected runtime
+root. A copied launcher can therefore run from a separate Codex environment.
+The runtime command server keeps the new durable receipt journal
 outside the writable spool, and the managed Codex workspace-write policy allows
 the spool directory alongside the existing project root. The pipe name and
 downstream authorization are unchanged.
 
-The listening owner carries the previous server's journal to the new location
-before draining its configured legacy spool. It uses one durable command journal
-for both queues. Legacy responses and acknowledgements remain at the original
-addresses for existing clients. Only the previous server's configured queue is
-read, excluding abandoned directories written under unrelated working folders.
+The listening owner processes commands already in the previous configured spool
+through their original journal. The same journal guards effects if installation
+rolls back before Ready. A request appearing in both queues uses its original
+receipt. Legacy replies and acknowledgements retain the addresses existing
+clients use. The previous server's configured queue excludes abandoned
+directories written under unrelated working folders.
 The legacy reader can be retired when the installed hooks have been refreshed
 and the last old writer and pending request have been accounted for.
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const FORWARDED_ENVIRONMENT = ["CODEX_HOME"];
+const RUNTIME_ROOT_ARGUMENT = "--runtime-root=";
 
 export function runtimeCommandRoot(environment = process.env) {
   if (environment.AGENT_HUB_RUNTIME_ROOT) return path.resolve(environment.AGENT_HUB_RUNTIME_ROOT);
@@ -23,6 +24,20 @@ export function runtimeCommandSpoolDirectory(runtimeRoot = runtimeCommandRoot(),
   return temporaryRoot
     ? path.join(temporaryRoot, `agent-hub-command-${runtimeCommandId(runtimeRoot)}`)
     : path.join(runtimeRoot, "data", "runtime-command");
+}
+
+export function encodeRuntimeRootArgument(runtimeRoot) {
+  return RUNTIME_ROOT_ARGUMENT + Buffer.from(path.resolve(runtimeRoot), "utf8").toString("base64url");
+}
+
+function boundRuntimeRoot(argument, environment) {
+  if (argument === undefined) return runtimeCommandRoot(environment);
+  const encoded = argument.startsWith(RUNTIME_ROOT_ARGUMENT) ? argument.slice(RUNTIME_ROOT_ARGUMENT.length) : "";
+  const decoded = Buffer.from(encoded, "base64url").toString("utf8");
+  if (!path.isAbsolute(decoded) || encodeRuntimeRootArgument(decoded) !== argument) {
+    throw new Error("Invalid installed Hub runtime root");
+  }
+  return decoded;
 }
 
 function forwardedEnvironment(environment, threadId) {
@@ -104,6 +119,7 @@ export function lifecycleRequest(value, environment = process.env) {
 }
 
 export async function main({
+  runtimeRootArgument,
   environment = process.env,
   enqueueRequest = enqueueLifecycleRequest,
   input = process.stdin,
@@ -113,14 +129,14 @@ export async function main({
   input.setEncoding("utf8");
   for await (const chunk of input) chunks.push(chunk);
   const { request } = lifecycleRequest(JSON.parse(chunks.join("")), environment);
-  await enqueueRequest(request, runtimeCommandRoot(environment));
+  await enqueueRequest(request, boundRuntimeRoot(runtimeRootArgument, environment));
   output.write("{}\n");
 }
 
 const isMain = process.argv[1]
   && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
 if (isMain) {
-  main().catch((error) => {
+  main({ runtimeRootArgument: process.argv[2] }).catch((error) => {
     console.error(`Cannot launch Codex lifecycle hook: ${error.message}`);
     process.exitCode = 1;
   });
