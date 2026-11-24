@@ -10,6 +10,8 @@ const AGGREGATE_STAGES = new Set([...AGGREGATE_AWAITS, "git-child", "owned-comma
   "dependency-installed-lock-proof", "lock-local-acquire", "task-binding", "mcp:receipt",
   "native-retire:owned-setup", "native-retire:current", "native-retire:source-pins", "native-retire:archive-read",
   "native-retire:archive-lease-wait", "native-retire:archive-intake", "native-retire:archive-verification", "native-retire:native-call",
+  "native:object-pool", "native:object-import", "native:object-inventory", "native:object-pack-indexes", "native:object-aliases",
+  "native:object-closure", "native:object-connectivity", "native:merge", "native:prefix-recheck",
   "repository-guards", "release:git-command", "release:git-input", "release:base-evidence",
   "release:integration-evidence", "native:history-authority", "native:task-histories",
   "native:cutover", "native:promotion-authority", "lock-native-bootstrap", "lock-native-publish",

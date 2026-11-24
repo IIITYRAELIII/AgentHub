@@ -458,6 +458,7 @@
       "document": "REL-001-task-backed-release.md",
       "paths": [
         "docs/decisions/ADR-HUB-254-github-account.md",
+        "docs/decisions/ADR-HUB-511-github-token-refresh.md",
         "src/application/github-account-service.mjs",
         "src/infrastructure/filesystem/github-account-vault.mjs",
         "src/infrastructure/filesystem/github-git-profile.mjs",
@@ -469,6 +470,7 @@
         "assets/web-app/github-account-panel.js",
         "tests/application/github-account-service.test.mjs",
         "tests/application/github-browser-authorization.test.mjs",
+        "tests/application/github-account-refresh.test.mjs",
         "tests/interfaces/web/worker/github-oauth-workerd.test.mjs",
         "tests/interfaces/web/github-account-control.test.mjs",
         "tests/public/github-account-dom.test.mjs",

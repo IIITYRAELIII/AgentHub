@@ -103,6 +103,31 @@ test("history uses one metadata diff and retains equal-base object validation an
     tasks: [{ taskId: "missing", baseCommit: missing, resultCommit: missing }] }), /main-based result/u);
 });
 
+test("three selected results share only immutable metadata reads inside each fresh proof", async t => {
+  const f = await fixture(t);
+  await f.save("CHANGELOG.md", "published notes\n");
+  await f.save("nested/package.json", JSON.stringify({ version: "3.0.0" }));
+  const published = await f.commit();
+  const tasks = [];
+  for (let i = 0; i < 3; i++) {
+    await f.git(["checkout", "--detach", published]);
+    await f.save(`result-${i}.txt`, "selected\n");
+    tasks.push({ taskId: `selected-${i}`, baseCommit: f.base, resultCommit: await f.commit() });
+  }
+  const authority = { bases: [published], metadataBases: [published], adoptions: [] };
+  const check = () => assertNativeTaskHistories({ git: f.git, baseCommit: published, tasks, historyAuthority: authority });
+  f.calls.length = 0;
+  await check();
+  assert.equal(f.calls.filter(args => args[0] === "cat-file" && args.includes("--batch")).length, 1);
+  assert.equal(f.calls.filter(args => args.includes("ls-tree") && args.includes(published)).length, 1);
+  assert.equal(f.calls.filter(args => args[0] === "merge-base" && args[2] === f.base && args[3] === published).length, 1);
+  await f.save("nested/package.json", JSON.stringify({ version: "9.0.0" }));
+  tasks[2] = { ...tasks[2], resultCommit: await f.commit() };
+  f.calls.length = 0;
+  await assert.rejects(check(), /selected-2 changes release-owned package-version metadata/u);
+  assert.equal(f.calls.filter(args => args.includes("ls-tree") && args.includes(published)).length, 1);
+});
+
 for (const directory of ["CHANGELOG.md", "package.json", "package-lock.json"]) {
   test(`combined diff retains literal root-directory ownership for ${directory}`, async t => {
     const f = await fixture(t, directory);

@@ -11,7 +11,10 @@ export async function githubCredential({ directory, id, operation, input, vault 
   if (operation === "erase") {
     // Git supplies the rejected credential. A late rejection cannot expire a
     // newly connected account or another credential used by the same Git run.
-    if (fields.password && fields.password === await vault.token(row)) await vault.reject(id);
+    if (fields.password) {
+      const current = await vault.access(row, { refresh: false }).catch(() => null);
+      if (fields.password === current?.token) await vault.reject(current.row);
+    }
     return "";
   }
   if (operation !== "get") return "";

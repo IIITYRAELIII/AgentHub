@@ -2,8 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, opendir, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { isDeepStrictEqual } from "node:util";
 
-import { reuseTaskDependencyInputs, retainSharedTaskDependencies } from "./task-dependency-inputs.mjs";
+import {
+  DIRECTORY_INPUT, reuseTaskDependencyInputs, retainSharedTaskDependencies, snapshotInstalledDependencies,
+} from "./task-dependency-inputs.mjs";
 
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
@@ -720,6 +723,68 @@ async function hasProjectNpmConfiguration(packageRoot, projectRoot) {
   return false;
 }
 
+function withoutVersion({ version, ...value }) {
+  return value;
+}
+
+function dependencyLockInputs(lock) {
+  const { packages, ...fields } = withoutVersion(lock);
+  return { ...fields, packages: packages?.[""] ? { ...packages, "": withoutVersion(packages[""]) } : packages };
+}
+
+async function seedFromInstalledMain({ mainProjectRoot, relativeProject, manifest, lock, root, fingerprint, limits,
+  fileSystem, expectedPackages, rootOptionalPackages, lease }) {
+  const packageRoot = path.resolve(mainProjectRoot, relativeProject);
+  const modules = path.join(packageRoot, "node_modules");
+  const modulesEntry = await optionalLstat(modules);
+  if (!modulesEntry?.isDirectory() || modulesEntry.isSymbolicLink()) return false;
+  const resolvedProject = await realpath(mainProjectRoot);
+  const resolvedPackage = await realpath(packageRoot);
+  if (!pathInside(resolvedProject, resolvedPackage) || await hasProjectNpmConfiguration(packageRoot, mainProjectRoot)) return false;
+  const readMetadata = async (name, maxBytes) => {
+    const file = path.join(packageRoot, name);
+    const expectedEntry = await optionalLstat(file);
+    if (!expectedEntry?.isFile() || expectedEntry.isSymbolicLink()) return null;
+    try {
+      return JSON.parse((await readBoundedFile(file, {
+        maxBytes, expectedEntry, label: "Main dependency source", fileSystem,
+      })).toString("utf8"));
+    } catch (error) {
+      if (error instanceof SyntaxError || error.code === "ENOENT") return null;
+      throw error;
+    }
+  };
+  const mainManifest = await readMetadata("package.json", MAX_PACKAGE_METADATA_BYTES);
+  const mainLock = await readMetadata("package-lock.json", limits.maxPackageLockBytes);
+  if (!mainManifest || !mainLock || !isDeepStrictEqual(withoutVersion(manifest), withoutVersion(mainManifest))
+      || !isDeepStrictEqual(dependencyLockInputs(lock), dependencyLockInputs(mainLock))) return false;
+  const originalLockHash = await installedLockHash(packageRoot, limits, fileSystem);
+  if (!originalLockHash || !(await validateInstalledState({
+    projectRoot: resolvedProject, packageRoot, resolvedPackageRoot: resolvedPackage,
+    expectedPackages, rootOptionalPackages, limits, fileSystem,
+  })).valid) return false;
+
+  await assertLeaseOwned(lease);
+  const destination = path.join(root, "node_modules");
+  await measureTaskOperation("dependency-reuse-installed-main", () => snapshotInstalledDependencies({
+    projectRoot: resolvedProject, source: path.join(resolvedPackage, "node_modules"),
+    destination, limits, signal: lease?.signal,
+  }), { detail: true });
+  const validation = await validateInstalledState({
+    projectRoot: root, packageRoot: root, resolvedPackageRoot: await realpath(root),
+    expectedPackages, rootOptionalPackages, limits, fileSystem,
+  });
+  const installedLockSha256 = await installedLockHash(root, limits, fileSystem);
+  if (!validation.valid || originalLockHash !== installedLockSha256
+      || originalLockHash !== await installedLockHash(packageRoot, limits, fileSystem)) {
+    throw new Error("Installed main dependencies changed during reuse");
+  }
+  await writeJsonAtomically(path.join(destination, MARKER_NAME), {
+    policy: INSTALL_POLICY, lockfileSha256: fingerprint, installedStateSha256: validation.fingerprint, installedLockSha256,
+  }, { maxBytes: MAX_MARKER_BYTES, fileSystem, lease });
+  return true;
+}
+
 async function prepareNpmProject({
   ...options
 }) {
@@ -736,6 +801,8 @@ async function prepareNpmProjectTraced({
   lease,
   verify,
   sharedDependencies = null,
+  directoryReuse = false,
+  resolveMainProjectRoot = null,
 }) {
   await assertLeaseOwned(lease);
   const packageRoot = path.dirname(lockfile);
@@ -799,22 +866,36 @@ async function prepareNpmProjectTraced({
     && !manifest.workspaces && [...expectedPackages.values()].every(value => !value.link
       && !/^(?:file:|link:|workspace:)/u.test(String(value.resolved ?? "")));
   let nodeModulesExists = await assertLocalNodeModules(packageRoot, resolvedPackageRoot);
-  const existingShared = await readMarker(packageRoot, MARKER_NAME, { fileSystem });
+  let existingShared = await readMarker(packageRoot, MARKER_NAME, { fileSystem });
   if (existingShared?.sharedStorage && !reusable) {
     await assertLeaseOwned(lease);
-    await retainSharedTaskDependencies(packageRoot, existingShared);
+    await retainSharedTaskDependencies(packageRoot, existingShared, () => assertLeaseOwned(lease));
     nodeModulesExists = false;
+    existingShared = null;
     await assertLeaseOwned(lease);
   }
   if (sharedDependencies && reusable && (!nodeModulesExists
       || existingShared?.sharedStorage)) {
     const result = await reuseTaskDependencyInputs({ packageRoot, fingerprint, manifestContent, lockfileContent,
-      withOwner: sharedDependencies, lease, limits,
+      withOwner: sharedDependencies, lease, limits, verify,
+      directoryReuse: directoryReuse || existingShared?.sharedStorage?.kind === DIRECTORY_INPUT,
+      previousDependencyMarker: existingShared,
       assertSourceContext: async () => {
         if (await hasProjectNpmConfiguration(packageRoot, projectRoot)) throw new Error("Task npm configuration changed during shared input preparation");
       },
+      prepareFromMain: resolveMainProjectRoot ? async (root, sharedLease) => {
+        const mainProjectRoot = await resolveMainProjectRoot();
+        return !!mainProjectRoot && seedFromInstalledMain({
+          mainProjectRoot, relativeProject, manifest, lock, root, fingerprint, limits, fileSystem,
+          expectedPackages, rootOptionalPackages, lease: sharedLease,
+        });
+      } : null,
       prepare: (root, sharedLease) => prepareNpmProject({ projectRoot: root, resolvedProjectRoot: root,
-        lockfile: path.join(root, "package-lock.json"), runNpm, limits, fileSystem, lease: sharedLease, verify: true }) });
+        lockfile: path.join(root, "package-lock.json"), runNpm, limits, fileSystem, lease: sharedLease, verify: true }),
+    });
+    if (result.sharedStorage.kind === DIRECTORY_INPUT) {
+      return { manager: "npm", project: relativeProject, lockfile: "package-lock.json", fingerprint, ...result };
+    }
     const validated = await prepareNpmProject({ projectRoot, resolvedProjectRoot, lockfile,
       runNpm: null, limits, fileSystem, lease, verify: true });
     return { ...validated, ...result };
@@ -929,6 +1010,8 @@ export async function prepareTaskWorktreeDependencies({
   fileSystem: fileSystemOverrides = {},
   verify = true,
   sharedDependencies = null,
+  directoryReuse = false,
+  resolveMainProjectRoot = null,
 } = {}) {
   if (lockPath && lease) {
     throw new Error("Task dependency caller must combine its owner with the dependency lock lease");
@@ -958,6 +1041,8 @@ export async function prepareTaskWorktreeDependencies({
         lease: activeLease,
         verify,
         sharedDependencies,
+        directoryReuse,
+        resolveMainProjectRoot,
       }));
       await assertLeaseOwned(activeLease);
     }

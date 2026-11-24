@@ -282,12 +282,13 @@ html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .chat-sto
   border: 1px solid var(--warning, var(--line-strong));
 }
 html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-main {
-  grid-template-columns: 44px 44px 24px minmax(0, 1fr) auto;
+  grid-template-columns: 44px 44px 24px minmax(44px, 1fr) auto;
   grid-template-rows: auto 44px;
   column-gap: 3px;
 }
 html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-slash,
 html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-attach,
+html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-emoji,
 html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .context-usage,
 html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .chat-stop-bottom,
 html[data-view][data-surface][data-theme][data-mobile-dialogs-enabled] .composer-send {

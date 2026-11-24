@@ -72,7 +72,7 @@ test("browser requests exact scopes and binds outbound polls to the local PKCE v
   f.advance(flow.intervalMs);
   f.replies.push({ status: "pending" });
   assert.equal((await f.oauth.poll(flow)).waitMs, flow.intervalMs);
-  assert.deepEqual(f.requests.at(-1).body, { state, verifier: flow.verifier });
+  assert.deepEqual(f.requests.at(-1).body, { state, verifier: flow.verifier, refresh: true });
   f.advance(flow.intervalMs - 1);
   assert.equal((await f.oauth.poll(flow)).status, "pending");
   assert.equal(f.requests.length, 2);
