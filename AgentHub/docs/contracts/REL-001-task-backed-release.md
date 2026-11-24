@@ -18,8 +18,17 @@ request matches the existing Git and GitHub CLI scope set
 `gist read:org repo workflow`. Actual permissions are the intersection of the grant,
 account rights, and organization policies. No separate private email scope is
 requested; the authenticated account's numeric noreply address is the fallback.
-Persisted expiry is enforced at the shared Git/gh/API credential owner and requires
-sign-in again. Application registration and real grants are owner actions, not tests.
+The shared Git/gh/API credential owner enforces expiry and renews an expired
+access token on demand when the connection has a valid refresh grant. Authenticated
+sign-in can return both tokens to a compatible Hub. Both tokens are protected by
+DPAPI and rotated atomically under the same Git profile identity. The refresh
+operation uses the Worker's existing durable owner. It retains a short-lived
+encrypted result so a lost response can be read back using the same attempt.
+An uncertain GitHub exchange cannot trigger another exchange of the same grant.
+The account stays selected on temporary failures. A legacy connection without
+a refresh grant, an expired or rejected grant, or an unrecoverable exchange
+requires explicit sign-in. Application registration and real grants belong to
+the deployment owner.
 Cancellation/replacement invalidate pending authorization immediately, but replies
 join the existing credential writer through publication/readback and cleanup.
 Pre-publication cancellation preserves the original selection; a publication that
@@ -32,8 +41,9 @@ that same profile for new work. A persistent provider reads the latest atomic pr
 on each Git invocation; reconnect does not restart a turn. GitHub HTTPS credentials
 go only to Git's credential pipe; the gh launcher supplies its token only to its own
 GitHub CLI child and redacts accidental token output. Foreign hosts receive no Hub
-credential. HTTP 401/rejected credentials require reconnect; permission refusals are
-not retried publicly or treated as successful authentication.
+credential. HTTP 401 and Git rejection apply only to the exact credential used.
+An earlier credential cannot reject a newer pair. Authenticated requests are
+never repeated after a permission refusal.
 
 Global Git configuration, existing keys, original commit objects/authors/hashes,
 Task ownership/CAS and native content/history guards are unchanged. New synthetic
@@ -198,6 +208,18 @@ forward fence does not reserve the working copy against ordinary claims. Task
 Git uses the established Task checkout and its existing locks. The withdrawn
 request remains fenced from assignment and result writes. A new ordinary binding
 also supersedes an unconsumed declared successor.
+
+Dependency ensure reuses the existing installed set by exact dependency
+compatibility under the shared input owner. That source remains stable across
+updates of a regular checkout's `node_modules`. Each Task keeps a local
+`node_modules` directory and its own cache. A warm attachment publishes
+package directory references once without rehashing or linking individual
+package payload files. Explicit verify still validates the installed source.
+When the shared input is absent, a compatible installation already in the
+registered main checkout seeds it once without running npm. The shared input
+owns its own bytes so an update of main cannot change a running Task's
+packages. Replaced per-file attachments retain their local files and cache. A
+project with task-local install inputs keeps its local npm path.
 
 Test integrates the addressed Task result into dev through the existing native
 Git owner. A conflict issues a bound native checkout; a normal resolution commit

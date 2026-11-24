@@ -13,7 +13,7 @@ async function run(context, kind, environmentOverrides = {}) {
   const ledger = path.join(root, "effects.txt");
   const result = runCodexAppServerCompatibilityCanary({ path: process.execPath }, {
     dataDir: path.join(root, "data"),
-    executableArgs: [fixture, `--command-case=${kind}`, `--tool-ledger=${ledger}`],
+    executableArgs: [fixture, "--exec-case=unsupported", `--command-case=${kind}`, `--tool-ledger=${ledger}`],
     environment: { ...process.env, CODEX_HOME: path.join(root, "home"), ...environmentOverrides }, protectDirectory: async () => {},
     rpcTimeoutMs: 3000, totalTimeoutMs: 15000, logger: { error() {} },
   });

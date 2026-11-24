@@ -202,8 +202,10 @@ test("production app returns the exact queued draft to the main composer and exp
 
     const first = page.locator("[data-queue-id='queued-1']");
     const second = page.locator("[data-queue-id='queued-2']");
-    assert.equal(await first.getByRole("button", { name: "Изменить" }).textContent(), "✎");
-    for (const label of ["В текущий ход", "Пауза", "Отменить"]) {
+    for (const label of [
+      "В текущий ход", "Изменить", "Поднять сообщение в очереди",
+      "Опустить сообщение в очереди", "Пауза", "Отменить",
+    ]) {
       const button = first.getByRole("button", { name: label, exact: true });
       assert.equal(await button.getAttribute("title"), label);
       const frame = await button.boundingBox();

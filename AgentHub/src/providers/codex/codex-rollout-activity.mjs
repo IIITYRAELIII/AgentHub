@@ -30,6 +30,7 @@ import { codexRolloutLatestAnswer } from "./codex-turn-answers.mjs";
 import {
   pinCodexRolloutActivityCacheInWorker,
   readCodexRolloutActivityInWorker,
+  readCodexAdmissionActivityInWorker,
 } from "./codex-rollout-activity-worker-client.mjs";
 
 const CODEX_ACTIVE_FRESHNESS_MS = 10 * 60 * 1000;
@@ -1461,6 +1462,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     reparseTail = false,
     pinCacheState = null,
     exactTerminalTurnId = "",
+    activityOnly = false,
   } = {},
 ) {
   if (String(rolloutPath ?? "").trim()) assertCodexRolloutReadAllowed("readCodexRolloutActivityOnCurrentThread");
@@ -1495,6 +1497,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
   } catch (error) {
     if (error?.code === "ENOENT") {
       return {
+        ...(activityOnly ? { sourceUnavailable: true } : {}),
         running: false,
         activeTurnIds: [],
         activeVscodeTurnIds: [],
@@ -1517,6 +1520,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     }
     throw error;
   }
+  if (activityOnly && (!info.isFile() || info.size === 0)) return { sourceUnavailable: true };
   if (nowMs - info.mtimeMs > freshnessMs) {
     const cached = cachedActivity(normalized, shouldPinCache());
     return ({
@@ -1676,7 +1680,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
   // Cold history projection remains bounded to the configured raw tail. On the
   // first read of a source, older bytes are streamed only for generated-image
   // ownership/path metadata; oversized base64 payloads are sampled, not kept.
-  const scanGeneratedImagesBeforeTail = !appendOnly
+  const scanGeneratedImagesBeforeTail = !activityOnly && !appendOnly
     && !generatedImageCacheReusable
     && observationStart > 0;
   const scanExactTerminalBeforeTail = !appendOnly
@@ -1940,6 +1944,7 @@ export async function readCodexRolloutActivityOnCurrentThread(
     suffix: await rolloutSuffix(normalized, info.size),
   }, shouldPinCache());
   return ({
+    ...(activityOnly ? { scanBytes: info.size - inputStart } : {}),
     ...withoutStalePromptlessTurns(
       activity,
       metadata.userMessages,
@@ -1996,6 +2001,11 @@ function codexActivityReadKey(rolloutPath, {
     `reparse:${reparseTail === true}`,
     `terminal:${String(exactTerminalTurnId ?? "").trim()}`,
   ].join("\u0000");
+}
+
+export function readCodexAdmissionActivity(rolloutPath) {
+  assertCodexRolloutReadAllowed("readCodexAdmissionActivity");
+  return readCodexAdmissionActivityInWorker(rolloutPath, codexActivityReadPathKey(rolloutPath));
 }
 
 export function readCodexRolloutActivity(rolloutPath, options = {}) {

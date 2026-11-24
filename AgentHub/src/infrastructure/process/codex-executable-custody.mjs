@@ -8,13 +8,14 @@ const script = [
   "$ErrorActionPreference='Stop'", "$ProgressPreference='SilentlyContinue'",
   "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)",
   "Add-Type -Path $env:AGENT_HUB_CODEX_CUSTODY_SOURCE",
-  "$b=ConvertFrom-Json ([Console]::ReadLine())", "$lease=$null",
+  "$reader=[IO.StreamReader]::new([Console]::OpenStandardInput(),[Text.UTF8Encoding]::new($false,$true),$false)",
+  "$b=ConvertFrom-Json ($reader.ReadLine())", "$lease=$null",
   "try {",
   "  $lease=[AgentHubCodexBundleCustody]::Acquire([string]$b.root,[string]$b.installRoot,[string[]]$b.names,[string[]]$b.hashes)",
   "  [Console]::WriteLine('{\"ready\":true}'); [Console]::Out.Flush()",
-  "  while ($null -ne [Console]::ReadLine()) {}",
+  "  while ($null -ne $reader.ReadLine()) {}",
   "} catch { [Console]::Error.WriteLine('Codex bundle custody refused'); exit 1 }",
-  "finally { if ($null -ne $lease) { $lease.Dispose() } }",
+  "finally { if ($null -ne $lease) { $lease.Dispose() }; $reader.Dispose() }",
 ].join("\n");
 
 export function validBundleMemberName(name) {
@@ -73,6 +74,6 @@ export function acquireCodexExecutableCustody(bundle, { platform = process.platf
     }, timeoutMs);
     timer.unref?.();
     child.stdin.write(`${JSON.stringify({ root: bundle.root, installRoot: bundle.installRoot ?? bundle.root,
-      names: bundle.files.map(file => file.name), hashes: bundle.files.map(file => file.sha256) })}\n`);
+      names: bundle.files.map(file => file.name), hashes: bundle.files.map(file => file.sha256) })}\n`, "utf8");
   });
 }

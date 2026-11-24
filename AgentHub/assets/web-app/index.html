@@ -30,6 +30,7 @@
   <script src="/chat-surface-preference.js" defer></script>
   <script src="/theme-preference.js" defer></script>
   <script src="/composer-shortcuts.js" defer></script>
+  <script src="/composer-emoji-picker.js" defer></script>
   <script src="/background-motion-preference.js" defer></script>
   <script src="/activity-rail-preference.js" defer></script>
   <script src="/background-image-resolver.js" defer></script>
@@ -676,6 +677,9 @@
               data-bars="0" title="Связь: подключение" aria-label="Связь: подключение">
               <i></i><i></i><i></i><i></i>
             </span>
+            <button type="button" class="icon-button composer-emoji" data-composer-emoji-toggle
+              title="Вставить смайлик" aria-label="Вставить смайлик"
+              aria-controls="composer-emoji-picker" aria-expanded="false">😊</button>
             <label class="composer-input" data-composer-grow>
               <textarea data-composer-input rows="1"
                 placeholder="Сообщение агенту…"
@@ -711,6 +715,15 @@
               </svg>
             </button>
           </div>
+          <section id="composer-emoji-picker" class="composer-emoji-picker" data-composer-emoji-picker
+            aria-labelledby="composer-emoji-title" hidden>
+            <header>
+              <strong id="composer-emoji-title">Смайлики</strong>
+              <button type="button" data-composer-emoji-close>Закрыть</button>
+            </header>
+            <div class="composer-emoji-categories" data-composer-emoji-categories role="group" aria-label="Категории"></div>
+            <div class="composer-emoji-grid" data-composer-emoji-grid role="group" aria-label="Смайлики"></div>
+          </section>
           <input type="file" multiple data-file-input hidden aria-hidden="true">
         </form>
 
@@ -754,20 +767,22 @@
           <section class="activity-streams" aria-label="Потоки, требующие внимания">
             <header class="activity-section-head">
               <strong data-activity-rail-count>Активно</strong>
-              <button type="button" class="activity-read-button" data-action="clear-ready-interstream"
-                title="Снять отметки с межпоточных ответов" aria-label="Снять отметки с межпоточных ответов">
-                <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                  <path d="M16 8s-3-5.5-8-5.5S0 8 0 8s3 5.5 8 5.5S16 8 16 8M1.173 8a13 13 0 0 1 1.66-2.043C4.12 4.668 5.88 3.5 8 3.5s3.879 1.168 5.168 2.457A13 13 0 0 1 14.828 8q-.086.13-.195.288c-.335.48-.83 1.12-1.465 1.755C11.879 11.332 10.119 12.5 8 12.5s-3.879-1.168-5.168-2.457A13 13 0 0 1 1.172 8z"/>
-                  <path d="M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5M4.5 8a3.5 3.5 0 1 1 7 0 3.5 3.5 0 0 1-7 0"/>
-                </svg>
-              </button>
-              <button type="button" class="activity-read-button" data-action="clear-ready-all"
-                title="Снять отметки со всех готовых ответов" aria-label="Снять отметки со всех готовых ответов">
-                <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                  <path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0"/>
-                  <path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8m8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7"/>
-                </svg>
-              </button>
+              <span class="activity-read-pair" role="group" aria-label="Снять отметки готовности">
+                <button type="button" class="activity-read-button" data-action="clear-ready-interstream"
+                  title="Снять отметки с межпоточных ответов" aria-label="Снять отметки с межпоточных ответов">
+                  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                    <path d="M16 8s-3-5.5-8-5.5S0 8 0 8s3 5.5 8 5.5S16 8 16 8M1.173 8a13 13 0 0 1 1.66-2.043C4.12 4.668 5.88 3.5 8 3.5s3.879 1.168 5.168 2.457A13 13 0 0 1 14.828 8q-.086.13-.195.288c-.335.48-.83 1.12-1.465 1.755C11.879 11.332 10.119 12.5 8 12.5s-3.879-1.168-5.168-2.457A13 13 0 0 1 1.172 8z"/>
+                    <path d="M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5M4.5 8a3.5 3.5 0 1 1 7 0 3.5 3.5 0 0 1-7 0"/>
+                  </svg>
+                </button>
+                <button type="button" class="activity-read-button" data-action="clear-ready-all"
+                  title="Снять отметки со всех готовых ответов" aria-label="Снять отметки со всех готовых ответов">
+                  <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                    <path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0"/>
+                    <path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8m8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7"/>
+                  </svg>
+                </button>
+              </span>
             </header>
             <div class="activity-stream-list" data-activity-stream-list></div>
             <p class="activity-stream-empty" data-activity-stream-empty>Нет активных потоков</p>
@@ -1786,6 +1801,8 @@
             <summary class="root-agents-summary">Hub Agent Guide</summary>
             <div class="root-agents-body">
               <p class="root-agents-note">Обязательные инструкции текущей версии Agent Hub. Обновляются вместе с релизом.</p>
+              <p class="root-agents-note"><a href="https://github.com/IIITYRAELIII/AgentHub/blob/main/AgentHub/docs/recurring-errors.md"
+                target="_blank" rel="noopener noreferrer">Реестр повторяющихся ошибок разработки Agent Hub</a></p>
               <textarea class="root-agents-input" data-agent-hub-guide-input spellcheck="false"
                 aria-label="Hub Agent Guide" readonly disabled></textarea>
               <div class="root-agents-actions">

@@ -177,7 +177,19 @@ export class CodexTurnService {
       });
       const applicationContext = buildCodexApplicationContext(developerInstructions, run.id);
       markProviderTurnRequested(run, { provider: "codex" });
-      await d.saveState();
+      const requestSave = d.commandTrace?.startBestEffortSpan?.({
+        commandId: String(run.clientUserMessageId ?? ""),
+        stage: "provider-request-state-save",
+        transport: "codex-app-server",
+      });
+      try {
+        const scoped = d.checkpointDeferredRun?.(run) === true;
+        if (!scoped) await d.saveState();
+        requestSave?.finish({ outcome: "succeeded", metadata: { scoped } });
+      } catch (error) {
+        requestSave?.finish({ outcome: "failed" });
+        throw error;
+      }
       rpcSpan = d.commandTrace?.startBestEffortSpan?.({
         commandId: String(run.clientUserMessageId ?? ""),
         stage: "provider-rpc",
