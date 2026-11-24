@@ -105,6 +105,26 @@ function normalizedModel(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
+export function isGpt62UsageModel(model) {
+  const id = normalizedModel(model);
+  return id === "gpt-6.2-sol" || id === "gpt-6.2-astra";
+}
+
+function isReportedTokenCount(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function hasCompleteGpt62Usage(usage, normalized) {
+  const { inputTokens, cachedInputTokens, outputTokens, totalTokens } = usage;
+  if (totalTokens === 0 && !Object.values(normalized).some(value => value > 0)) return true;
+  return isReportedTokenCount(inputTokens) && isReportedTokenCount(outputTokens)
+    && (isReportedTokenCount(cachedInputTokens) || (inputTokens === 0 && cachedInputTokens === undefined))
+    && normalized.cachedInputTokens + (normalized.cacheWriteInputTokens ?? 0) <= inputTokens
+    && normalized.reasoningOutputTokens <= outputTokens
+    && (!Object.hasOwn(usage, "totalTokens")
+      || (isReportedTokenCount(totalTokens) && totalTokens === inputTokens + outputTokens));
+}
+
 export function normalizeServiceTier(value) {
   const tier = String(value ?? "").trim().toLowerCase();
   return ["fast", "priority"].includes(tier) ? "fast" : "default";
@@ -257,8 +277,7 @@ export function turnCreditBreakdown(usage, {
     };
   }
   const pricedModel = canonicalPricedModel(model);
-  if ((pricedModel === "gpt-6.2-sol" || pricedModel === "gpt-6.2-astra")
-    && normalized.totalTokens > 0 && normalized.inputTokens === 0 && normalized.outputTokens === 0) {
+  if (isGpt62UsageModel(pricedModel) && usage != null && !hasCompleteGpt62Usage(usage, normalized)) {
     return { ...emptyCreditBreakdown(), estimate, total: estimate, priced: false, missingTokenBreakdown: true };
   }
   const multiplier = fastModeCreditMultiplier(model, serviceTier);
@@ -380,6 +399,14 @@ export function normalizeTokenUsage(usage) {
     }
   }
   return normalized;
+}
+
+// Preserve which counters were actually supplied for models that require a
+// complete breakdown. General token arithmetic keeps using the dense shape.
+export function normalizeJournalTokenUsage(usage, model) {
+  const normalized = normalizeTokenUsage(usage);
+  if (!isGpt62UsageModel(model)) return normalized;
+  return Object.fromEntries(Object.entries(normalized).filter(([field]) => isReportedTokenCount(usage?.[field])));
 }
 
 export function tokenUsageDelta(current, previous, fallback) {

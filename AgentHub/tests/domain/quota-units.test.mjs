@@ -74,6 +74,17 @@ test("both GPT-6.2 models are provisional, with no empirical QU rate", () => {
     assert.equal(estimate.total, credits * 8);
     assert.equal(estimate.basis, "api-estimate");
     assert.equal(estimate.uncalibrated, true);
+    for (const incomplete of [
+      { totalTokens: 1_000_000 }, { cachedInputTokens: 500_000 },
+      { inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000 },
+    ]) {
+      const unknown = turnQuotaBreakdown(incomplete, { model });
+      assert.equal(unknown.basis, "unknown");
+      assert.equal(unknown.uncalibrated, true);
+      assert.equal(unknown.apiEstimateCredits, 0);
+      assert.equal(unknown.total, 0);
+    }
+    assert.equal(turnQuotaBreakdown({ totalTokens: 0 }, { model }).basis, "zero");
   }
 });
 

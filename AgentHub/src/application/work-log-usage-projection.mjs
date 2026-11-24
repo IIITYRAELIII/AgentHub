@@ -24,6 +24,8 @@ import {
   fastModeCreditMultiplier,
   formatCredits,
   formatTaskCreditBreakdown,
+  isGpt62UsageModel,
+  normalizeJournalTokenUsage,
   normalizeServiceTier,
   normalizeTokenUsage,
   turnCreditBreakdown,
@@ -293,7 +295,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       turns[key] = {
         workLogId,
         projectRoot: normalizeProjectRoot(record?.projectRoot, defaultProjectRoot),
-        usage: normalizeTokenUsage(record?.usage),
+        usage: normalizeJournalTokenUsage(record?.usage, record?.model),
         usageReported,
         estimatedCredits,
         estimateKind,
@@ -1479,7 +1481,7 @@ function ledgerByWorkLogId(turns = {}) {
     if (!record?.workLogId) continue;
     const id = normalizeWorkLogId(record?.workLogId);
     if (records.has(id)) throw new Error(`WORK_LOG placeholder ${id} is assigned more than once`);
-    records.set(id, { ...record, usage: normalizeTokenUsage(record?.usage) });
+    records.set(id, { ...record, usage: normalizeJournalTokenUsage(record?.usage, record?.model) });
   }
   return records;
 }
@@ -1591,7 +1593,7 @@ function formatTurnEntry(
     : record?.usageReported === false || quota.basis === "unknown"
       ? " · неполное покрытие" : " · предварительная оценка";
   const modelId = String(record?.model ?? "").trim().toLowerCase();
-  const gpt62 = modelId === "gpt-6.2-sol" || modelId === "gpt-6.2-astra";
+  const gpt62 = isGpt62UsageModel(modelId);
   const usage = gpt62 && record?.usageReported !== false ? record?.usage : null;
   const tokenParts = usage ? [
     ["Вход", usage.inputTokens], ["Из кэша", usage.cachedInputTokens],
@@ -3135,7 +3137,7 @@ export function incomingLedgerRecord({
   return {
     workLogId,
     projectRoot: normalizeProjectRoot(projectRoot),
-    usage: normalizeTokenUsage(usage),
+    usage: normalizeJournalTokenUsage(usage, model),
     usageReported: usageReported === true,
     estimatedCredits: normalizedEstimatedCredits,
     estimateKind: normalizedEstimateKind,

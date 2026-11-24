@@ -16,6 +16,7 @@ import { COMMAND_TRACE_OUTCOMES } from "../../src/domain/command-trace-span.mjs"
 import { WORK_LOG_PRICING_PROJECTION_VERSION } from "../../src/domain/token-usage.mjs";
 import { WORK_LOG_ACCOUNTING_PROJECTION_VERSION } from "../../src/domain/quota-units.mjs";
 import {
+  incomingLedgerRecord,
   normalizePersistedWorkLog,
   projectWorkLogUsage,
   WORK_LOG_ACCOUNT_USAGE_PROJECTION_VERSION,
@@ -66,6 +67,50 @@ test("GPT-6.2 pricing refreshes durable journal rows and Statistics without touc
     assert.equal(history.totalQuotaUnits, 4480);
     assert.equal(history.totalApiEstimateCredits, 560);
     assert.equal(history.uncalibratedCount, 4);
+
+    const incomplete = [
+      ["total-only", "gpt-6.2-sol", { totalTokens: 1_000_000 }, "Всего 1\\s000\\s000", ["Вход", "Из кэша", "Выход"]],
+      ["cached-only", "gpt-6.2-astra", { cachedInputTokens: 1_000_000 }, "Из кэша 1\\s000\\s000", ["Вход", "Выход", "Всего"]],
+      ["mismatched-total", "gpt-6.2-sol", { inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 0,
+        totalTokens: 1_000_000 }, "Вход 100\\s000", []],
+    ];
+    const measuredZero = incomingLedgerRecord({
+      ...record("gpt-6.2-astra", "measured-zero"), usage: { inputTokens: 0, cachedInputTokens: 0,
+        outputTokens: 0, totalTokens: 0 },
+    });
+    const unreported = { ...record("gpt-6.2-sol", "unreported"), usage: {}, usageReported: false };
+    await journal.upsertRecords([
+      ...incomplete.map(([turnId, model, usage], index) => {
+        const saved = { ...record(model, turnId), usage };
+        return index === 0 ? incomingLedgerRecord(saved) : saved;
+      }),
+      measuredZero, unreported,
+    ]);
+    await worker.projectJournal(options);
+    for (const [turnId, , , present, absent] of incomplete) {
+      const { turns: [indexed] } = await journal.turnPage({ threadId: turnId });
+      assert.doesNotMatch(indexed.html, /data-work-log-turn-credits="/u);
+      assert.match(indexed.html, /data-work-log-turn-quota-incomplete="1"/u);
+      const details = await journal.fragment("turn", indexed.turnRef);
+      const shown = details.match(/<div data-work-log-turn-tokens>([^<]*<strong>[^<]+<\/strong>[^<]*)<\/div>/u)?.[1];
+      assert.ok(shown);
+      assert.match(shown, new RegExp(present, "u"));
+      for (const label of absent) assert.equal(shown.includes(label), false);
+      assert.match(details, /— QU · неполное покрытие/u);
+      assert.doesNotMatch(details, /API-основа/u);
+    }
+    const { turns: [zero] } = await journal.turnPage({ threadId: "measured-zero" });
+    assert.match(zero.html, /data-work-log-turn-credits="0"/u);
+    assert.match(zero.html, /data-work-log-turn-quota-incomplete="0"/u);
+    const { turns: [unknown] } = await journal.turnPage({ threadId: "unreported" });
+    assert.doesNotMatch(unknown.html, /data-work-log-turn-credits="/u);
+    assert.doesNotMatch(await journal.fragment("turn", unknown.turnRef), /data-work-log-turn-tokens/u);
+    const corrected = await worker.usageHistory({ now: options.now, range: "24h" });
+    assert.equal(corrected.totalCredits, 560);
+    assert.equal(corrected.totalQuotaUnits, 4480);
+    assert.equal(corrected.totalApiEstimateCredits, 560);
+    assert.equal(corrected.unpricedCount, 4);
+    assert.equal(corrected.uncalibratedCount, 8);
   } finally {
     await worker.close();
     journal.close();
