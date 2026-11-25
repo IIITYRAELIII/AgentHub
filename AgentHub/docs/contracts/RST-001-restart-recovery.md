@@ -556,9 +556,16 @@ measure local disposition and Ready/new input without message content.
 - Restart UI appears only for a real persisted restart phase and cannot hide a
   final response.
   A disconnected health request alone never asserts a restart. While waiting
-  for connection or replacement, the screen shows no stage progress inherited
-  from the previous health sample and does not claim readiness. It shows the
-  measured time since the wait began and says the previous process still
+  for replacement, the screen shows no stage progress inherited
+  from the previous process and does not claim readiness. During transient
+  connection loss in the same startup, its last confirmed stages remain visible
+  with explicit stale status and frozen observed elapsed time. A newer positive
+  startup generation replaces that observation; an online event or an older
+  response cannot establish replacement. The replacement wait shows the
+  measured time since this replacement wait began, independently of a preceding
+  transient connection loss. Repeated events for the same wait preserve that
+  boundary; a canonical terminal predating it cannot settle the new wait.
+  The screen says the previous process still
   answers only after a successful health response. A snapshot served after a
   failed restart carries its recent persisted reason, shown once per operation,
   until a later restart settles successfully; elapsed time is not delivery and

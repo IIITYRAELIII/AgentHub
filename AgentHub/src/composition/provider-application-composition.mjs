@@ -11,6 +11,7 @@ import { processIsAlive } from "../providers/claude/claude-run-io.mjs";
 import { readClaudeSessionSnapshot } from "../providers/claude/claude-session-reader.mjs";
 import { ClaudeRunAdmissionGate, ClaudeRuntimeOwner } from "../providers/claude/claude-runtime-owner.mjs";
 import { readCodexTurnUsage } from "../providers/codex/codex-turn-usage.mjs";
+import { prepareCodexVisualizationDirectory } from "../providers/codex/codex-visualization.mjs";
 import {
   codexObservedRuntimeActive, resolveCodexObservedExecutionOwner, resolveCodexTaskActivity,
 } from "../providers/codex/codex-runtime-owner.mjs";
@@ -471,6 +472,8 @@ export async function createProviderApplicationComposition({
     sendRpc: api.sendRpc,
     activeProjectRoot: selectedProjectRoot,
     codexSandboxMode: () => config.codexSandboxMode,
+    prepareVisualizationDirectory: config.testContourRecording ? null
+      : (threadId) => prepareCodexVisualizationDirectory(infrastructure.attachmentDirectory, threadId),
     codexModel: () => agentPreferences.codexModel,
     invalidateTaskCatalog,
     restoreCodexTaskSettings: api.restoreCodexTaskSettings,

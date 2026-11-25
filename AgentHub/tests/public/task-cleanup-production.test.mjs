@@ -52,13 +52,14 @@ test("Complete and Delete show exact cleanup confirmation inside the VS Code san
       await dialog.waitFor({ state: "visible" });
       assert.match(await dialog.textContent(), /FIXTURE-35/u);
       assert.match(await dialog.textContent(), /Exact server cleanup preview <not markup>/u);
-      assert.match(await dialog.textContent(), /\[branch\] FIXTURE-35 \(repo: fixture\/repo\)/u);
-      assert.match(await dialog.textContent(), /Игнорируемые данные \(сохранить\):\s+- WIP\/evidence\.txt/u);
-      assert.match(await dialog.textContent(), /Состояние: clean/u);
+      assert.match(await dialog.textContent(), /Тип: branch\s+Имя: FIXTURE-35\s+Репозиторий: fixture\/repo/u);
+      assert.match(await dialog.textContent(), /Игнорируемые данные \(будут сохранены\):\s+- WIP\/evidence\.txt/u);
+      assert.match(await dialog.textContent(), /Состояние: без изменений/u);
+      await frame.locator(".task-cleanup-technical > summary").click();
       const previewText = frame.locator(".task-cleanup-preview");
       await previewText.hover();
       await page.mouse.wheel(0, 200);
-      await frame.waitForFunction(() => document.querySelector(".task-cleanup-preview").scrollTop > 0);
+      await frame.waitForFunction(() => document.querySelector("[data-task-cleanup-modal] > section").scrollTop > 0);
       if (action === "board-task-complete" && process.env.AGENT_HUB_QA_SCREENSHOT_DIR) {
         await page.screenshot({ path: path.join(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, "ignored-wip-preview-scrolled.png"), fullPage: false });
       }
