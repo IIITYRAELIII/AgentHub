@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { TaskCleanupConfirmationRejectedError } from "../domain/task-cleanup-confirmation.mjs";
+import { TaskCleanupConfirmationRejectedError, taskCleanupIsConfirmed } from "../domain/task-cleanup-confirmation.mjs";
 import { selectedCompositionFields, selectedAbsorptionHandoff, normalizedSelectedAbsorption,
   assertSelectedAbsorptionTasks } from "../domain/task-selected-composition.mjs";
 import { realpathSync } from "node:fs";
@@ -1392,9 +1392,6 @@ export class TaskLifecycleService {
         text: absorptionInput.text }).declaration.sourceTaskId;
     }
     const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
-    if (workspace?.settings?.releaseWorkflowEnabled !== true || !this.releasePreflight) {
-      throw new Error("Unknown workflow reconciliation requires an enabled release workflow");
-    }
     requiredMethod(this.taskGitWorkspaces, "withTaskRecoveryLock");
     if (sourceTaskId) requiredMethod(this.taskGitWorkspaces, "withTaskRecoveryLocks");
     requiredMethod(this.taskGitWorkspaces, "withTaskRepositoryRecoveryLock");
@@ -1411,7 +1408,11 @@ export class TaskLifecycleService {
           task.id, projectRoot, taskLease, operation,
         )
         )));
-    return this.releasePreflight.withAwaitTransition(workspace.id, locked);
+    if (workspace && typeof this.releasePreflight?.withAwaitTransition === "function") {
+      return this.releasePreflight.withAwaitTransition(workspace.id, locked);
+    }
+    if (workspace?.settings?.releaseWorkflowEnabled === true) throw new Error("Release operation owner is unavailable");
+    return locked();
   }
 
   async refuseUnadmittedAwaitOwned({ taskId, receipt, projectRoot, lease, beforeRecord = () => {} } = {}) {
@@ -2037,7 +2038,7 @@ export class TaskLifecycleService {
     });
   }
 
-  async #completeAbandonedReleaseService({ taskId, operationId, confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments, releaseActor }) {
+  async #completeAbandonedReleaseService({ taskId, operationId, confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments }) {
     requiredMethod(this.taskGitWorkspaces, "abandonedReleaseServiceEvidenceOwned");
     requiredMethod(this.releasePreflight, "withAwaitTransition");
     const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
@@ -2050,13 +2051,7 @@ export class TaskLifecycleService {
     return this.releasePreflight.withAwaitTransition(workspaceId, () => this.#withLock(taskId, async lease => {
       const task = this.#task(taskId), resumed = this.taskBoard.lifecycleTransition?.(operationId), prior = resumed?.evidence;
       if (task.status === "done" || !["new", "in_progress", "blocked"].includes(task.workflowStatus)) throw new Error("Abandoned release service must remain open outside Test/Await");
-      const read = async () => {
-        const actor = releaseActor && this.workspaceCatalog.stream(releaseActor.streamId);
-        if (!actor || releaseActor.workspaceId !== task.workspaceId || actor.workspaceId !== task.workspaceId
-            || actor.settings?.releaseManager !== true) throw new Error("Abandoned release requires its current Workspace RM actor");
-        const proof = await this.taskGitWorkspaces.abandonedReleaseServiceEvidenceOwned({ source: task, input: abandonedRelease, lease, actor: releaseActor });
-        return proof;
-      };
+      const read = () => this.taskGitWorkspaces.abandonedReleaseServiceEvidenceOwned({ source: task, input: abandonedRelease, lease });
       const releaseService = await read();
       const cleanup = { taskId, workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [],
         preserving: releaseService.preserving, releaseService };
@@ -2200,7 +2195,7 @@ export class TaskLifecycleService {
       if (!confirmCleanup) return preview;
       if (expectedCleanupToken !== (prior?.confirmationToken ?? preview.cleanupToken)) throw new TaskCleanupConfirmationRejectedError(taskId, "complete");
       if (originalArguments?.task_id !== taskId || originalArguments.request_id !== operationId
-          || originalArguments.completion_mode !== "manual_delivery" || originalArguments.confirm_cleanup !== true) {
+          || originalArguments.completion_mode !== "manual_delivery" || !taskCleanupIsConfirmed(originalArguments)) {
         throw Error("Manual completion requires its exact original business arguments");
       }
       if (legacy && JSON.stringify(prior.manualDelivery) !== JSON.stringify(retained)) throw Error("Manual completion original changed");
@@ -2307,7 +2302,7 @@ export class TaskLifecycleService {
   async complete({
     taskId, operationId, confirmCleanup = false, expectedCleanupToken = null, retainArtifacts = false,
     absorbedIntoTaskId = null, absorptionMode = null, completionMode = null, publishedDelivery = null, manualDelivery = null, retainedRepositories = [], originalArguments = null, completedOperationRequestId = null,
-    abandonedRelease = null, releaseActor = null,
+    abandonedRelease = null,
   } = {}) {
     if (completionMode != null && !["published_release_service", "published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"].includes(completionMode)) {
       throw new Error("Unsupported Task completion mode");
@@ -2322,7 +2317,7 @@ export class TaskLifecycleService {
     if (retainArtifacts && completionMode !== "archive") throw Error("Artifact retention requires archive mode");
     if (abandonedRelease && completionMode !== "abandoned_release_service") throw Error("Abandoned release proof requires its explicit completion mode");
     if (completionMode === "abandoned_release_service") return this.#completeAbandonedReleaseService({ taskId, operationId,
-      confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments, releaseActor });
+      confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments });
     if (completionMode === "archive") return this.#archiveTask({
       taskId, operationId, confirmCleanup, expectedCleanupToken, retainArtifacts, originalArguments,
     });

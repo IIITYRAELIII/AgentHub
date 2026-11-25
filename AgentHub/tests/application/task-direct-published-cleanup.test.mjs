@@ -136,7 +136,8 @@ test("direct publication cleanup refuses stale evidence, wrong membership, later
   const worker = await f.catalog.runMutation(() => f.catalog.createStream({ workspaceId: f.board.task(f.task.id).workspaceId,
     name: "Worker", settings: { workingDirectory: f.primary } }));
   await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "worker", streamId: worker.id }));
-  await assert.rejects(f.preview({ context_token: f.hub.contextToken({ provider: "codex", threadId: "worker" }) }), /Release Manager/);
+  const ordinary = await f.preview({ context_token: f.hub.contextToken({ provider: "codex", threadId: "worker" }) });
+  assert.equal(ordinary.confirmationRequired, true);
   await assert.rejects(f.preview({ published_delivery: { ...f.input, publicationRunSha256: "b".repeat(64) } }), /journal changed/);
   f.run.progress.publicationState.tasks = ["foreign-task"];
   await writeFile(f.runFile, JSON.stringify(f.run));

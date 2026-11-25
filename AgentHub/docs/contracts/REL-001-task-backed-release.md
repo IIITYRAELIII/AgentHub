@@ -283,7 +283,7 @@ worker or new publication authority. Missing, ambiguous, foreign or tampered
 facts refuse; reads never create a database or settle historical outcomes.
 Legacy database tables, archived artifacts and retained runtime records remain.
 
-A Release Manager may preview and confirm an archive-only Complete for the
+The existing Complete command can preview and confirm an archive-only closure for the
 service card of an explicitly abandoned attempt. The historical owner checks
 the exact original revision, idle FAILED state, immutable generation, actor and
 original selection against the service checklist. The confirmation binds the

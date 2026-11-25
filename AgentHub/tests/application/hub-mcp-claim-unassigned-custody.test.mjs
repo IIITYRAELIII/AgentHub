@@ -199,8 +199,8 @@ test("two unassigned intents have one winner and foreign or historical claims ca
   assert.equal(outcomes.filter(r => r.status === "fulfilled").length, 1);
   const winner = outcomes.find(r => r.status === "fulfilled").value;
   const consume = { ...f.consume, request_id: winner.successorClaimRequestId, forward_custody_request_id: winner.requestId };
-  await assert.rejects(f.hub.call("hub_task_claim", { ...consume, context_token: f.managerToken }), /Successor claim differs/);
-  assert.equal(f.catalog.mcpOperation(consume.request_id), null, "foreign intake cannot occupy the declared successor ID");
+  await assert.rejects(f.hub.call("hub_task_claim", { ...consume, dependency_mode: "skip" }), /Successor claim differs/);
+  assert.equal(f.catalog.mcpOperation(consume.request_id), null, "changed arguments cannot occupy the declared successor ID");
   await assert.rejects(f.hub.call("hub_task_claim", { ...f.originalArgs, context_token: f.successorToken }), /future continuation was withdrawn/);
   // A null prior owner does not make an unrelated deferred input its executor.
   f.hub.setDeferredInputs(() => [{ streamId: null, provider: "codex", threadId: "unrelated" }]);

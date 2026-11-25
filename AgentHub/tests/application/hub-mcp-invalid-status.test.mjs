@@ -110,11 +110,10 @@ test("same legacy malformed original settles through the existing RM owner and p
   }
 });
 
-test("malformed reconciliation refuses foreign actor, changed hash/CAS and a present process guard",async t=>{
+test("malformed reconciliation refuses changed hash/CAS and a present process guard",async t=>{
   const f=await fixture(t), before=await f.seedLegacy();
   const foreign=f.hub.contextToken({provider:"codex",threadId:f.successor.id+"-thread"});
   const variants=[
-    {context_token:foreign},
     {expected_arguments_hash:"f".repeat(64)},
     {expected_task_revision:f.task.revision+1},
     {expected_workflow_status:"in_progress"},
@@ -129,6 +128,8 @@ test("malformed reconciliation refuses foreign actor, changed hash/CAS and a pre
   await assert.rejects(f.hub.call("hub_task_operation_reconcile",{...f.reconcile,request_id:"guard-refusal"}),/guard/);
   f.workspaces.assertNoProcessTreeGuardOwned=guard;
   assert.deepEqual(f.catalog.mcpOperation(f.args.request_id),before);
+  const resolved=await f.hub.call("hub_task_operation_reconcile",{...f.reconcile,context_token:foreign,request_id:"other-stream"});
+  assert.equal(resolved.outcome,"failed");
 });
 
 test("a validation-looking exception after a valid owner effect stays UNKNOWN and cannot gain malformed authority",async t=>{

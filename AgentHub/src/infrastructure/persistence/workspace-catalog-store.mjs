@@ -3,13 +3,14 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { archivedArtifactCapsule, cleanupConfirmationCapsule, cleanupConfirmationOriginal } from "../../domain/task-cleanup-confirmation.mjs";
+import { archivedArtifactCapsule, cleanupConfirmationCapsule, cleanupConfirmationOriginal, taskCleanupIsConfirmed } from "../../domain/task-cleanup-confirmation.mjs";
 import { AsyncSqliteMutationQueue, sqliteContention } from "./async-sqlite-mutation-queue.mjs";
 import { McpAdmissionContentionError } from "../../domain/mcp-admission-contention.mjs";
 import { claimCustodyHash, claimCustodyState, assertClaimCustodyOriginal, TaskClaimCustodyRejectedError, TaskClaimContinuationWithdrawnError } from "../../domain/claim-forward-custody.mjs";
 import { readClaimCustodyFence, readClaimCustodySuccessor, configureClaimCustodyBindingFences, configureClaimCustodyNamespaceFences,
   claimCustodyNamespaces, claimCustodyTaskSnapshot, assertNoPendingClaimCustodyWriters } from "./claim-custody-fence.mjs";
 import { claimAdmissionNoEffectEvidence } from "../../domain/task-board-task.mjs";
+import { mcpArgumentsHash } from "../../domain/mcp-arguments-hash.mjs";
 
 import { normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
 
@@ -1046,8 +1047,7 @@ export class WorkspaceCatalogStore {
     }
     const successor = readClaimCustodySuccessor(this.#database, id);
     if (successor && (successor.phase !== "fenced" || tool !== "hub_task_claim"
-        || successor.workspaceId !== workspace || successor.original.streamId !== stream
-        || successor.original.provider !== normalizedProvider || successor.original.threadId !== normalizedThreadId
+        || successor.workspaceId !== workspace
         || successor.successorArgumentsHash !== hash)) {
       throw new TaskClaimCustodyRejectedError("MCP request_id was already used for another operation: declared successor authority");
     }
@@ -1213,8 +1213,8 @@ export class WorkspaceCatalogStore {
         return receipt;
       }
       const actor = this.stream(receipt.streamId);
-      if (actor?.settings?.releaseManager !== true || actor.workspaceId !== state.workspaceId
-          || !["pending", "unknown"].includes(receipt.status) || receipt.operationStatus !== "pending") throw new TaskClaimCustodyRejectedError("Exact Release Manager intake required");
+      if (!actor || actor.workspaceId !== state.workspaceId
+          || !["pending", "unknown"].includes(receipt.status) || receipt.operationStatus !== "pending") throw new TaskClaimCustodyRejectedError("Exact custody intake required");
       const original = this.mcpOperation(state.original.requestId);
       assertClaimCustodyOriginal(original, state.envelope, state.taskId, state.original.requestId);
       if (claimCustodyHash(original) !== state.originalHash) throw new TaskClaimCustodyRejectedError("Historical original changed");
@@ -1576,6 +1576,22 @@ export class WorkspaceCatalogStore {
     return mcpOperationFromRow(this.#database.prepare(
       "SELECT * FROM hub_mcp_operations WHERE request_id = ?",
     ).get(id));
+  }
+
+  findDeletePreviewForOriginal(original, taskId) {
+    const args = original.taskExecution?.arguments;
+    if (!args || args.task_id !== taskId || !taskCleanupIsConfirmed(args)
+        || typeof args.expected_cleanup_token !== "string" || mcpArgumentsHash(args) !== original.argumentsHash) return null;
+    const rows = this.#database.prepare(`
+      SELECT request_id FROM hub_mcp_operations
+      WHERE workspace_id = ? AND tool_name = 'hub_task_delete' AND status = 'succeeded'
+        AND json_extract(result_json, '$.task.id') = ?
+        AND json_extract(result_json, '$.cleanupToken') = ?
+        AND json_extract(result_json, '$.action') = 'delete'
+        AND json_extract(result_json, '$.confirmationRequired') = 1
+      LIMIT 2
+    `).all(original.workspaceId, taskId, args.expected_cleanup_token);
+    return rows.length === 1 ? rows[0].request_id : null;
   }
 
   // Exact persisted receipt for release recovery evidence: the parsed

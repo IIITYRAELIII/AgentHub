@@ -166,10 +166,6 @@ export class DesktopTaskBoardController {
   }
 
   checklist(params) {
-    if (params.releaseReference != null
-        || this.taskBoard.task(params.id).checklist?.find(item => item.id === params.itemId)?.releaseReference) {
-      throw new Error("Release references require the authenticated Release Manager tool");
-    }
     return this.#mutate(() => this.taskBoard.updateChecklist(params));
   }
 
@@ -209,7 +205,7 @@ export class DesktopTaskBoardController {
 
   async cancelOperation(params) {
     const owner = this.hubMcpService?.taskOperationInterruption;
-    if (!owner || params.confirmCancel !== true) throw new Error("Подтверди прерывание операции");
+    if (!owner) throw new Error("Сервис прерывания операции недоступен");
     const task = this.taskBoard.task(params.id);
     const cancellation = await owner.cancel({ actor: { user: true, workspaceId: task.workspaceId },
       taskId: task.id, operationRequestId: params.operationRequestId,
@@ -244,7 +240,7 @@ export class DesktopTaskBoardController {
     if (!this.taskLifecycle) throw new Error("Task lifecycle service is unavailable");
     const operationId = String(params.operationId ?? context.commandId ?? "").trim();
     const parameters = {
-      confirm_cleanup: params.confirmCleanup === true,
+      confirm_cleanup: params.confirmCleanup ?? Boolean(params.expectedCleanupToken),
       expected_cleanup_token: params.expectedCleanupToken ?? null,
       ...(params.completionMode === "archive" ? { completion_mode: "archive", retain_artifacts: params.retainArtifacts === true } : {}),
     };
@@ -269,12 +265,12 @@ export class DesktopTaskBoardController {
     const operationId = String(params.operationId ?? context.commandId ?? "").trim();
     const run = () => this.taskLifecycle.delete({
       taskId: params.id, operationId,
-      confirmCleanup: params.confirmCleanup === true,
+      confirmCleanup: params.confirmCleanup ?? Boolean(params.expectedCleanupToken),
       expectedCleanupToken: params.expectedCleanupToken ?? null,
     });
     if (context.taskOperationReceipt && this.hubMcpService) return this.hubMcpService.runDesktopTaskOperation(
       this.taskBoard.task(params.id), operationId, null, run,
-      { receiptOnly: true, toolName: "hub_task_delete", parameters: { confirm_cleanup: params.confirmCleanup === true,
+      { receiptOnly: true, toolName: "hub_task_delete", parameters: { confirm_cleanup: params.confirmCleanup ?? Boolean(params.expectedCleanupToken),
         expected_cleanup_token: params.expectedCleanupToken ?? null } });
     const result = await run();
     return { ...await this.snapshot({ refresh: true }), lifecycleResult: result };

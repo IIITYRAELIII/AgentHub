@@ -156,10 +156,10 @@ See [Task operation interruption](../decisions/ADR-HUB-368-task-operation-interr
 
 ## Archive the service card of an abandoned attempt
 
-Release Manager-only `hub_task_complete completion_mode=abandoned_release_service`
+`hub_task_complete completion_mode=abandoned_release_service`
 requires `abandoned_release` with the exact original operation ID, revision and
-generation. Its preview reads retained facts and binds the same actor, Task,
-custody and original selection for a separate confirmation. It archives the
+generation. Its preview binds the original release actor, Task, custody and
+selection. The receipt separately records the authenticated caller. It archives the
 service card with its existing workflow status. Original release outcomes,
 member Tasks and any retained source are preserved. Confirmed reconciliation
 requires the same admitted original and lifecycle evidence; unproven historical
@@ -167,7 +167,7 @@ outcomes remain unknown.
 
 ## Historical direct publication cleanup
 
-Release Manager-only `hub_task_complete completion_mode=published_delivery`
+`hub_task_complete completion_mode=published_delivery`
 uses the existing cleanup preview/confirm. Its `published_delivery` binds the
 original runtime journal SHA-256, prepared artifact SHA-256, source base/result
 and immediate publication parent. The owner verifies terminal published Task
@@ -215,9 +215,9 @@ today's publication. The owner binds that exact Task's existing release-service
 outcome, preserved source HEAD and published revision; it does not reconstruct
 or insert a publication. The archived card and completion time stay unchanged.
 
-For an already admitted failed/partial Delete, the existing RM reconciliation
+For an already admitted failed/partial Delete, reconciliation
 accepts `cleanup_preview_request_id` and optional `cleanup_preserved_files`.
-The original successful preview must have the same actor/Task and reproduce
+The original successful preview must match the Task and reproduce
 the confirmed original's complete arguments hash. The existing Delete
 transition, prior/current Task revision, workflow, executor and results must
 match. Ignored artifacts must be retired first. Every remaining dirty or
@@ -299,14 +299,13 @@ automatic consequence of starting a turn. Claim/launch preserve Test/Await/Block
 workflow status.
 
 `hub_task_complete` additionally accepts the exact enum
-`absorption_mode=published_duplicate` only with `absorbed_into_task_id` and only
-from a Release Manager Stream. This mode is for an open Task whose own managed
+`absorption_mode=published_duplicate` with `absorbed_into_task_id`. This mode is for an open Task whose own managed
 checkout is exactly current durable published main while the named survivor is
 already Done with an exact published result. It does not infer delivery from an
 ancestor relation, a clean checkout, response text or manual history. The
 preview/confirmation token binds source and survivor revisions, repository Git
-identities, publication generation and a preserve-only cleanup plan. Ordinary
-callers cannot select the mode, unknown modes are rejected, and omission retains
+identities, publication generation and a preserve-only cleanup plan. Unknown
+modes are rejected, and omission retains
 the existing open/tested-survivor contract.
 
 The published-duplicate result records durable `absorbedInto` evidence without
@@ -391,7 +390,15 @@ readback:
 - `unknown` is an explicit terminal receipt state when authoritative readback is
   unavailable or an effect completed but its receipt could not be committed.
 
-Release Manager workflow reconciliation reconstructs the exact original
+`hub_task_operation_reconcile` accepts `operation_request_id` and the caller's
+ordinary authenticated context. It creates a control receipt for the actual
+caller. The original receipt and lifecycle records establish the target Workspace,
+Task, argument hash, CAS, repository, process guard and cleanup preview where
+available. A caller can address an original from another Stream or Workspace.
+Optional legacy arguments are checked against the original. Unproved outcomes
+return UNKNOWN with the missing evidence.
+
+Workflow reconciliation reconstructs the exact original
 `hub_task_status_update` argument family before inspecting terminal state:
 plain status, ordinary status with either or both optional Task revision/current
 workflow CAS fields, or a complete cutover identity. An ordinary CAS is checked
@@ -415,12 +422,12 @@ The MCP receipt records `failed` with structural `NO_EFFECT` evidence. A crash
 after outcome commit but before receipt settlement is recovered by pending-startup
 readback or canonical original-ID reconciliation of an unknown receipt, without
 Git/status replay. Reconciliation retains the exact optional CAS argument shape
-and original identity. Its own identity/confirmation/active-worker refusal before
+and original identity. Its own identity or active-worker refusal before
 effects terminalizes only its own receipt; the ambiguous original remains unknown.
 An exact immutable admission refusal settles through the existing SQLite receipt
 CAS only, before release/Git reconciliation locks: database-only workspaces are
-supported with release workflow disabled. `project_root` may be omitted only when
-that owner proof records a null root; a supplied locator in that case grants no
+supported with release workflow disabled. A uniquely recorded root is used when
+`project_root` is omitted. A supplied locator for a null-root proof grants no
 Git authority. A recorded non-null root still requires an exact locator. Ordinary
 Git recovery still requires its configured root, enabled workflow and owner locks.
 Failures once recovery/settlement begins retain ordinary unknown semantics.
@@ -481,8 +488,8 @@ finish after a metadata-only Task revision advance. Its original argument hash
 must match its original explicit CAS and optional authenticated single native
 review exactly; cutover, absorption and initial-source families stay excluded.
 The original revision identifies admission, never the current metadata revision.
-Review custody must belong to the original RM actor; the existing native
-composition verifier repeats receipt authentication and full Git binding checks.
+The existing native composition verifier repeats review receipt authentication
+and exact recipient, content and Git binding checks.
 Recovery
 compares the unchanged Task/Workspace/executor/status/workflow/result state,
 the original native intent, ordered merge parents, source and dev trees and
@@ -561,12 +568,12 @@ The owners expose explicit read, short-mutation and internally managed-effect
 allowlists only; an unclassified raw member is not bound into application code.
 The existing checklist `link` operation additionally accepts `release_reference`
 with the exact accepted Task revision and full canonical Git references
-(ADR-HUB-415). This is a Release Manager-only reference in the same release-enabled
-Workspace, rechecked inside the queued Task transaction. It preserves the unique
+(ADR-HUB-415). The linked Task and parent must belong to the same Workspace.
+Evidence is rechecked inside the queued Task transaction. It preserves the unique
 decomposition owner and all archived rows. The existing request hash includes
 this binding only when supplied; old receipt identities remain unchanged.
 No alternate CLI, historical UNKNOWN replay, publication or absorption credit is
-introduced. Desktop checklist mutations cannot author or change this RM relation.
+introduced. Desktop checklist commands route through the same reference checks.
 For an already canonical manual Done without Test refs, the same reference may
 instead name `manualDelivery: { requestId, argumentsHash }` with the fresh Task
 revision. The existing successful status-operation receipt and workflow outcome
@@ -639,11 +646,9 @@ origin recovery requires the successful tool, exact `mcp:<request_id>`, stored
 arguments hash and stored content hash; absent pre-migration content hashes fail
 closed and are not reconstructed from message text or ordering.
 
-`hub_task_launch_cancel` is a Release Manager-only terminal reconciliation, not a
-replay lease. It may change an original start receipt from `pending`,
+`hub_task_launch_cancel` reconciles a prepared launch. It may change an original start receipt from `pending`,
 `reconciling` or `unknown` to a structured failed/cancelled result only when the
-same caller Workspace, Stream, provider and provider Thread presents the exact
-Task/start-request owner and Task revision, the Task is still `starting`, the
+call addresses the exact Task/start request and Task revision, the Task is still `starting`, the
 planned destination Stream is absent and no inter-Stream content hash was ever
 admitted. The original receipt is terminalized before Task launch ownership is
 cleared. Before either write, cancellation must win the Task-row
@@ -672,7 +677,7 @@ are not an in-flight attempt or provider acceptance.
 
 ## Exact squash transfer
 
-`hub_task_status_update` exposes the Release Manager-only Test-to-Test squash
+`hub_task_status_update` exposes the Test-to-Test squash
 transfer through `squash_*` fields. All identity fields are supplied together.
 The first request omits `expected_squash_transfer_hash` and returns a read-only
 preview. A later request uses a new request ID and the exact returned hash to
@@ -763,7 +768,7 @@ Both Tasks are reserved through the existing lifecycle intent and recovery
 locks; the same proof is persisted and compared at terminal CAS.
 
 For a Task based on accepted local main that diverges from an already published
-repository history, the Release Manager may use the `selected_*` argument family
+repository history, the historical receipt may contain the `selected_*` argument family
 of `hub_task_status_update` with status `testing`, exact Task revision and
 expected status `in_progress`. The caller supplies one reviewed Git bundle path,
 its SHA-256 and the exact ordered-parent proof commit. A request without
@@ -851,7 +856,7 @@ nonce-bound pipe, not caller-supplied retirement flags. A lost witness before th
 fence commit refuses; the committed positive certificate survives later collector
 exit. There is no forced stop or automatic independent launch mechanism.
 
-An explicitly scoped RM authorization may instead select
+An explicit prepare envelope may instead select
 `claim_custody.admission=isolated-source-v1` in the prepare envelope. The existing
 Task Git owner stages full independent Git objects and hash-verified WIP under a
 new custody epoch outside legacy source/ref/cleanup paths. The existing catalog
@@ -945,7 +950,7 @@ An ordinary Await original with its canonical execution binding and exact five
 business arguments may fail before lifecycle admission. A genuine low-level
 Await-lock admission refusal is recorded by the existing lifecycle/outcome owner
 only when its callback was not entered; an error code or message is not proof.
-For an already UNKNOWN original without lifecycle state, explicit RM reconciliation
+For an already UNKNOWN original without lifecycle state, reconciliation
 uses the existing Await/Task/repository leases and process guard. In one existing
 Task-store transaction it rechecks the canonical MCP identity, complete arguments,
 current Task CAS and absence of a transition/outcome, then records its terminal
@@ -953,8 +958,8 @@ admission refusal. The existing lifecycle BEGIN checks that outcome before Git:
 a concurrent BEGIN either won first and reconciliation refuses, or cannot start
 after the refusal. This atomic fence, not unchanged Task fields or a missing PID,
 establishes the unadmitted disposition. The complete previous UNKNOWN receipt is
-retained in the outcome. Existing admitted/partial/guarded/STOPPED or foreign
-originals do not gain this authority. No Git action or original mutation is replayed.
+retained in the outcome. This refusal proof applies only before admission with
+no guarded execution. No Git action or original mutation is replayed.
 
 The external source API host exposes the existing `hub_task_operation_reconcile`
 through the same capability and addressed-worker close/join. The external CLI
@@ -962,9 +967,9 @@ through the same capability and addressed-worker close/join. The external CLI
 the addressed old Await and the reconciliation command have separate outcomes.
 
 If that ordinary reconciliation control itself is UNKNOWN, an explicit SAME
-control invocation with its unchanged actor, arguments hash and ordinary Await
-identity re-enters only the existing reconciliation owner. It does not resubmit
-the Await. The owner repeats its normal leases and exact original validation;
+control invocation with its unchanged actor, arguments hash and target request
+re-enters only the existing reconciliation owner. The owner repeats its
+normal leases and exact original validation;
 an already settled admission refusal is read only from its matching durable
 outcome and canonical failure receipt. The control retains its previous UNKNOWN
 receipt when completed. A refusal during this continuation leaves that earlier

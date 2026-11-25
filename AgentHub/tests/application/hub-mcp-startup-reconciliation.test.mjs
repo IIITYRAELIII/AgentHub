@@ -133,6 +133,10 @@ test("exact cancel fences an in-flight launch before Stream and provider effects
   const releaseManager = await current.workspaceCatalog.createStream({
     workspaceId: workspace.id, name: "Release Manager", settings: { releaseManager: true },
   });
+  const ordinary = await current.workspaceCatalog.createStream({ workspaceId: workspace.id, name: "Ordinary" });
+  await current.workspaceCatalog.bindThread({
+    streamId: ordinary.id, provider: "claude", threadId: "ordinary-launch-cancellation", projectRoot: root,
+  });
   await current.workspaceCatalog.bindThread({
     streamId: releaseManager.id, provider: "codex", threadId: "thread-release-manager-race", projectRoot: root,
   });
@@ -151,7 +155,6 @@ test("exact cancel fences an in-flight launch before Stream and provider effects
     new_stream_name: "Must not exist",
     provider: "codex",
     message: "Must not be delivered.",
-    confirm_launch: true,
   };
   const original = service.call("hub_task_start", input);
   await barrier.entered.promise;
@@ -160,15 +163,15 @@ test("exact cancel fences an in-flight launch before Stream and provider effects
   const retry = service.call("hub_task_start", input);
 
   const cancelled = await service.call("hub_task_launch_cancel", {
-    context_token: token,
+    context_token: service.contextToken({ provider: "claude", threadId: "ordinary-launch-cancellation" }),
     request_id: "cancel-in-flight-launch",
     task_id: task.id,
     launch_request_id: input.request_id,
     expected_task_revision: prepared.revision,
-    confirm_cancel: true,
   });
   assert.equal(cancelled.task.status, "open");
   assert.equal(cancelled.cancelledLaunch.receiptStatus, "failed");
+  assert.equal(current.workspaceCatalog.mcpOperation("cancel-in-flight-launch").streamId, ordinary.id);
   assert.equal(current.workspaceCatalog.stream(prepared.startDestinationStreamId), null);
   assert.deepEqual(evidence.threadCreates, []);
   assert.deepEqual(evidence.deliveries, []);
@@ -400,17 +403,6 @@ test("real launch recovery cancels an unknown prepared owner before existing-Str
 
   await assert.rejects(
     service.call("hub_task_launch_cancel", {
-      context_token: foreignToken,
-      request_id: "cancel-from-foreign",
-      task_id: task.id,
-      launch_request_id: input.request_id,
-      expected_task_revision: prepared.revision,
-      confirm_cancel: true,
-    }),
-    /does not retain the exact prepared launch owner/u,
-  );
-  await assert.rejects(
-    service.call("hub_task_launch_cancel", {
       context_token: exactToken,
       request_id: "cancel-stale-revision",
       task_id: task.id,
@@ -424,7 +416,7 @@ test("real launch recovery cancels an unknown prepared owner before existing-Str
   assert.deepEqual(evidence.deliveries, []);
 
   const cancelled = await service.call("hub_task_launch_cancel", {
-    context_token: exactToken,
+    context_token: foreignToken,
     request_id: "cancel-original-launch",
     task_id: task.id,
     launch_request_id: input.request_id,

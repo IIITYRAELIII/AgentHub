@@ -1898,7 +1898,7 @@
         text: operation.cancellation ? "Проверить остановку" : "Прервать операцию",
         onclick: () => emit("operation-cancel", { id: task.id,
           operationRequestId: operation.requestId, argumentsHash: operation.argumentsHash,
-          expectedRevision: task.revision, requestId: crypto.randomUUID(), confirmCancel: true }),
+          expectedRevision: task.revision, requestId: crypto.randomUUID() }),
       }));
     }
     if (task.status !== "done" && taskWorkflowStatus(task) !== "done" && task.bucket === "workspace") {

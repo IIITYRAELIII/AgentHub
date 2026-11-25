@@ -292,6 +292,45 @@ test("ordinary Await with no lifecycle intent is fenced by its canonical outcome
   assert.equal(f.effects(), 0);
 });
 
+test("ordinary MCP reconciles a foreign original Await using only the request id", async context => {
+  const f = await fixture(context);
+  const input = await unadmittedAwait(f);
+  const original = f.catalog.mcpOperation(input.request_id);
+  const callerWorkspace = await f.catalog.createWorkspace({ name: "Caller" });
+  const caller = await f.catalog.createStream({ workspaceId: callerWorkspace.id, name: "Ordinary" });
+  await f.catalog.bindThread({ streamId: caller.id, provider: "claude", threadId: "foreign-caller", projectRoot: f.root });
+  const token = f.hub.contextToken({ provider: "claude", threadId: "foreign-caller" });
+  const args = { context_token: token, operation_request_id: input.request_id };
+  const reply = await f.hub.call("hub_task_operation_reconcile", args);
+  assert.equal(reply.resolved, true);
+  assert.equal(reply.reconciliation.outcome, "NO_EFFECT");
+  const control = f.catalog.mcpOperations(callerWorkspace.id).find(row => row.toolName === "hub_task_operation_reconcile");
+  assert.equal(control.workspaceId, callerWorkspace.id);
+  assert.equal(control.threadId, "foreign-caller");
+  assert.equal(f.catalog.mcpOperation(input.request_id).streamId, original.streamId);
+  assert.deepEqual(f.tasks.lifecycleOutcome(input.request_id).result.noEffect.previousReceipt, original);
+  assert.equal(f.effects(), 0);
+});
+
+test("ID-only reconciliation reads an authoritative database-only outcome without Git", async context => {
+  const f = await fixture(context, { releaseWorkflowEnabled: false, configuredRoot: false });
+  const complete = f.rawCatalog.completeMcpOperation.bind(f.rawCatalog);
+  f.rawCatalog.completeMcpOperation = (id, value) => {
+    if (id === f.input.request_id) throw new Error("lost workflow receipt completion");
+    return complete(id, value);
+  };
+  await assert.rejects(f.hub.call("hub_task_status_update", f.input), /receipt reconciliation/);
+  const before = f.catalog.mcpOperation(f.input.request_id);
+  assert.equal(before.status, "unknown");
+  const hub = f.service(await f.open());
+  const reply = await hub.call("hub_task_operation_reconcile", { context_token: f.token, operation_request_id: f.input.request_id });
+  assert.equal(reply.resolved, true);
+  assert.equal(reply.result.workflowStatus, "in_progress");
+  assert.equal(f.catalog.mcpOperation(f.input.request_id).status, "succeeded");
+  assert.equal(f.effects(), 0);
+  assert.equal(f.recoveryLocks(), 0);
+});
+
 test("an Await lifecycle BEGIN winning first preserves UNKNOWN instead of creating an unadmitted outcome", async context => {
   const f = await fixture(context);
   const input = await unadmittedAwait(f);
@@ -378,13 +417,9 @@ for (const [configuredRoot, suppliedRoot] of [[false, true], [false, false], [tr
     for (const required of schema.required) assert.notEqual(args[required], undefined);
     if (configuredRoot) {
       const wrongRoot = { ...args, request_id: "database-only-wrong-root", project_root: path.join(f.root, "other") };
-      const missingRoot = { ...args, request_id: "database-only-missing-root" };
-      delete missingRoot.project_root;
-      for (const invalid of [wrongRoot, missingRoot]) {
-        await assert.rejects(hub.call("hub_task_operation_reconcile", invalid), /identity/);
-        assert.equal(reopened.catalog.mcpOperation(invalid.request_id).status, "failed");
-        assert.deepEqual(reopened.catalog.mcpOperation(f.input.request_id), original);
-      }
+      await assert.rejects(hub.call("hub_task_operation_reconcile", wrongRoot), /identity/);
+      assert.equal(reopened.catalog.mcpOperation(wrongRoot.request_id).status, "failed");
+      assert.deepEqual(reopened.catalog.mcpOperation(f.input.request_id), original);
     }
     const result = await hub.call("hub_task_operation_reconcile", args);
     assert.equal(result.resolved, true);
@@ -452,13 +487,13 @@ test("database-only ordinary admitted state cannot bypass release owner through 
   const args = { context_token: f.token, request_id: "disabled-workflow-reconcile", task_id: f.task.id,
     operation_request_id: f.input.request_id, project_root: f.root, confirm_reconcile: true,
     expected_task_revision: 17, expected_workflow_status: "testing" };
-  await assert.rejects(f.hub.call("hub_task_operation_reconcile", args), /enabled release workflow/);
+  await assert.rejects(f.hub.call("hub_task_operation_reconcile", args), /guard id or original native Git intent/);
   assert.equal(f.catalog.mcpOperation(args.request_id).status, "failed");
   assert.equal(f.catalog.mcpOperation(args.request_id).result.outcome, "NO_EFFECT");
   assert.deepEqual(f.catalog.mcpOperation(f.input.request_id), original);
   assert.equal(f.tasks.lifecycleOutcome(f.input.request_id), null);
   assert.equal(f.effects(), 0);
-  assert.equal(f.recoveryLocks(), 0);
+  assert.equal(f.recoveryLocks(), 1);
 });
 
 test("SQL refusal settlement failure cannot certify the reconciler's own receipt as NO_EFFECT", async (context) => {

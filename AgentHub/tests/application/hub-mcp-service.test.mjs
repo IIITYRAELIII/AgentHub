@@ -925,7 +925,7 @@ async function fixture(context, {
   };
 }
 
-test("release reference MCP preserves archived ownership and requires exact RM Workspace authority", async (t) => {
+test("ordinary Stream updates release membership while preserving archived ownership", async (t) => {
   const f = await fixture(t, { releaseWorkflowEnabled: true });
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub-reference-mcp-"));
   const databaseFile = path.join(directory, "runtime.sqlite");
@@ -951,12 +951,8 @@ test("release reference MCP preserves archived ownership and requires exact RM W
   const item = await owner.updateChecklist({ id: parent.id, operation: "add", text: "Member", requestId: "new-add", expectedRevision: parent.revision });
   const input = { task_id: parent.id, expected_task_revision: item.task.revision, operation: "link",
     item_id: item.itemId, linked_task_id: child.id, release_reference: { taskRevision: childBefore.revision, gitReferences: refs } };
-  for (const [thread, name] of [["thread-2", "non-RM"], ["thread-3", "foreign-RM"]]) {
-    await assert.rejects(f.service.call("hub_task_checklist_update", { ...input, request_id: name,
-      context_token: f.service.contextToken({ provider: "codex", threadId: thread }) }), /Release Manager/u);
-    assert.equal(f.workspaceCatalog.mcpOperation(name), null);
-  }
-  const request = { ...input, request_id: "new-release-reference", context_token: f.token };
+  const token = f.service.contextToken({ provider: "codex", threadId: "thread-2" });
+  const request = { ...input, request_id: "new-release-reference", context_token: token };
   const result = await f.service.call("hub_task_checklist_update", request);
   assert.equal(result.task.checklist[0].linkedTaskId, child.id);
   assert.equal(result.task.checklist[0].releaseReference.gitReferences[0].resultCommit, refs[0].resultCommit);
@@ -964,20 +960,7 @@ test("release reference MCP preserves archived ownership and requires exact RM W
   assert.deepEqual(owner.task(old.id), archived);
   assert.deepEqual(owner.task(child.id), childBefore);
   assert.equal(f.workspaceCatalog.mcpOperation(request.request_id).status, "succeeded");
-  const another = await owner.updateChecklist({ id: parent.id, operation: "add", text: "Queue boundary",
-    requestId: "queue-add", expectedRevision: owner.task(parent.id).revision });
-  const hierarchy = f.workspaceCatalog.hierarchy;
-  f.taskBoard.updateChecklist = payload => {
-    f.workspaceCatalog.hierarchy = () => hierarchy().map(workspace => ({ ...workspace,
-      streams: workspace.streams.map(stream => ({ ...stream, settings: { ...stream.settings, releaseManager: false } })),
-    }));
-    return owner.updateChecklist(payload);
-  };
-  try {
-    await assert.rejects(f.service.call("hub_task_checklist_update", { ...input, context_token: f.token,
-      item_id: another.itemId, expected_task_revision: another.task.revision, request_id: "role-drift" }), /Release Manager/u);
-    assert.equal(owner.task(parent.id).checklist.find(item => item.id === another.itemId).linkedTaskId, null);
-  } finally { f.workspaceCatalog.hierarchy = hierarchy; }
+  assert.equal(f.workspaceCatalog.mcpOperation(request.request_id).streamId, "stream-2");
   const props = f.service.tools().find(tool => tool.name === "hub_task_checklist_update").inputSchema.properties;
   assert.equal(props.release_reference.additionalProperties, false);
 });
@@ -1063,7 +1046,7 @@ test("absorption composition refusal is terminal and exact retry cannot close th
   assert.equal(calls, 1);
 });
 
-test("Release Manager adopts exact terminal legacy evidence without accepting arbitrary HEAD", async (context) => {
+test("ordinary Stream adopts exact terminal legacy evidence without accepting arbitrary HEAD", async (context) => {
   const {
     service, token, tasks, historyRecordsByThread, targetWorkingDirectory, legacyAdoptionCalls,
   } = await fixture(context, { releaseWorkflowEnabled: true });
@@ -1086,14 +1069,13 @@ test("Release Manager adopts exact terminal legacy evidence without accepting ar
   }]);
 
   const result = await service.call("hub_task_legacy_git_adopt", {
-    context_token: token,
+    context_token: service.contextToken({ provider: "codex", threadId: "thread-2" }),
     request_id: "adopt-legacy-1",
     task_id: "task-legacy",
     expected_task_revision: 12,
     evidence_turn_id: "turn-legacy",
     reported_result_commit: reportedResultCommit,
     main_result_commit: mainResultCommit,
-    confirm_adoption: true,
   });
 
   assert.equal(result.gitReferences[0].resultCommit, mainResultCommit);
@@ -1110,7 +1092,7 @@ test("Release Manager adopts exact terminal legacy evidence without accepting ar
     reported_result_commit: reportedResultCommit,
     main_result_commit: mainResultCommit,
     confirm_adoption: true,
-  }), /requires a Release Manager Stream/u);
+  }), /already has Git evidence/u);
 });
 
 test("HubMcpService lists and changes Dashboard Tasks across Workspaces", async (context) => {
@@ -2083,14 +2065,14 @@ test("HubMcpService sends attributed messages to another current-Workspace Strea
 
 
 
-test("Release Manager reconciliation forwards one exact unknown operation and requires confirmation", async (context) => {
+test("reconciliation forwards legacy proof fields and uses the original hash", async (context) => {
   const calls = [];
-  const omittedNativeArguments = { expectedArgumentsHash: undefined, runtimeWitness: undefined,
+  const omittedNativeArguments = { expectedArgumentsHash: "c".repeat(64), runtimeWitness: undefined,
     initialNativeTest: undefined, nativeResolutionReview: undefined,
     selectedBundlePath: undefined, selectedBundleSha256: undefined, selectedPublishedResolution: undefined,
     selectedAbsorptionHandoff: undefined, selectedProofCommit: undefined, selectedPreviewRequestId: undefined,
     expectedSelectedPreviewHash: undefined };
-  const { service, token } = await fixture(context, {
+  const { service, token, workspaceCatalog } = await fixture(context, {
     taskOperationReconciliation: {
       reconcileUnknownWorkflow: async (value) => {
         calls.push(value);
@@ -2098,6 +2080,10 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
       },
     },
   });
+  const readReceipt = workspaceCatalog.mcpOperation;
+  workspaceCatalog.mcpOperation = id => id === "original-status-request" ? {
+    requestId: id, status: "unknown", workspaceId: "workspace-1", toolName: "hub_task_status_update", argumentsHash: "c".repeat(64),
+  } : readReceipt(id);
   const args = {
     context_token: token,
     request_id: "reconcile-command-1",
@@ -2130,9 +2116,7 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
     confirmed: true,
   }]);
   const schema = service.tools().find((tool) => tool.name === "hub_task_operation_reconcile").inputSchema;
-  assert.deepEqual(schema.required, [
-    "context_token", "request_id", "task_id", "operation_request_id", "confirm_reconcile",
-  ]);
+  assert.deepEqual(schema.required, ["context_token", "operation_request_id"]);
   const terminalArgs = { ...args, request_id: "reconcile-command-terminal" };
   delete terminalArgs.guard_id;
   delete terminalArgs.proof_kind;
@@ -2190,22 +2174,22 @@ test("Release Manager reconciliation forwards one exact unknown operation and re
     cutoverSourceTaskRevision: undefined,
     confirmed: true,
   });
-  await assert.rejects(service.call("hub_task_operation_reconcile", {
+  await service.call("hub_task_operation_reconcile", {
     ...args, request_id: "reconcile-command-unconfirmed", confirm_reconcile: false,
-  }), /requires explicit confirmation/u);
-  await assert.rejects(service.call("hub_task_operation_reconcile", {
+  });
+  await service.call("hub_task_operation_reconcile", {
     ...args,
     context_token: service.contextToken({ provider: "codex", threadId: "thread-2" }),
     request_id: "reconcile-command-non-releaseManager",
-  }), /requires a Release Manager Stream/u);
-  assert.equal(calls.length, 3);
+  });
+  assert.equal(calls.length, 5);
   const witness = { sourcePath: "D:/isolated/native-witness.json", rawSha256: "d".repeat(64) };
   assert.deepEqual(await service.call("hub_task_operation_reconcile", {
     ...ordinaryCasArgs, request_id: "reconcile-command-exact-witness",
     expected_arguments_hash: "c".repeat(64), runtime_witness: witness,
   }), { resolved: true, outcome: "succeeded" });
-  assert.deepEqual(calls[3], { ...calls[2], expectedArgumentsHash: "c".repeat(64), runtimeWitness: witness });
-  assert.equal(calls.length, 4);
+  assert.deepEqual(calls[5], { ...calls[2], runtimeWitness: witness });
+  assert.equal(calls.length, 6);
 
 });
 
@@ -2274,7 +2258,8 @@ test("claim forwards an explicit user dependency exception and complete forwards
   assert.equal(result.cleanupToken, "preview");
   const schema = service.tools().find((tool) => tool.name === "hub_task_complete").inputSchema;
   assert.deepEqual(schema.properties.absorption_mode.enum, ["published_duplicate"]);
-  assert.deepEqual(schema.properties.completion_mode.enum, ["published_release_service", "published_delivery", "operational", "manual_delivery"]);
+  assert.deepEqual(schema.properties.completion_mode.enum,
+    ["published_release_service", "published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"]);
   await service.call("hub_task_complete", { context_token: token,
     request_id: "release-service-preview", task_id: "task-current",
     completion_mode: "published_release_service" });
@@ -2285,20 +2270,23 @@ test("claim forwards an explicit user dependency exception and complete forwards
   assert.deepEqual(received.manualDelivery, manual);
   assert.equal(received.completionMode, "manual_delivery");
   const otherToken = service.contextToken({ provider: "codex", threadId: "thread-2" });
-  await assert.rejects(service.call("hub_task_complete", { context_token: otherToken,
+  await service.call("hub_task_complete", { context_token: otherToken,
     request_id: "manual-non-manager", task_id: "task-current", completion_mode: "manual_delivery",
-    manual_delivery: manual }), /requires a Release Manager Stream/u);
-  await assert.rejects(service.call("hub_task_complete", {
+    manual_delivery: manual });
+  assert.deepEqual(received.manualDelivery, manual);
+  await service.call("hub_task_complete", {
     context_token: otherToken,
     request_id: "absorb-published-non-manager",
     task_id: "task-current",
     absorbed_into_task_id: "task-survivor",
     absorption_mode: "published_duplicate",
-  }), /requires a Release Manager Stream/u);
-  await assert.rejects(service.call("hub_task_complete", {
+  });
+  assert.equal(received.absorptionMode, "published_duplicate");
+  await service.call("hub_task_complete", {
     context_token: otherToken, request_id: "release-service-non-manager",
     task_id: "task-current", completion_mode: "published_release_service",
-  }), /requires a Release Manager Stream/u);
+  });
+  assert.equal(received.completionMode, "published_release_service");
 });
 
 test("HubMcpService describes Stream current-or-queue steering with unknown acceptance reconciliation", async (context) => {

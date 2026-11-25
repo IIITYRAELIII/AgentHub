@@ -191,9 +191,34 @@ for (const toolName of ["hub_task_complete", "hub_task_delete"]) test(`${toolNam
   const reopened = await f.open();
   assert.deepEqual(await f.read(reopened.hub), first);
   const confirmed = await reopened.hub.call(toolName, { task_id: f.task.id, request_id: "confirm",
-    confirm_cleanup: true, expected_cleanup_token: first.result.cleanupToken, context_token: f.token(reopened.hub) });
+    expected_cleanup_token: first.result.cleanupToken, context_token: f.token(reopened.hub) });
   assert.equal(toolName === "hub_task_complete" ? confirmed.status : confirmed.deleted, toolName === "hub_task_complete" ? "done" : true);
 });
+
+for (const toolName of ["hub_task_complete", "hub_task_delete"]) {
+  test(`${toolName} ID-only recovery reads committed cleanup without a second effect`, async t => {
+    const f = await fixture(t);
+    const context_token = f.token(f.hub);
+    const preview = await f.hub.call(toolName, { ...f.args, context_token });
+    const complete = f.rawCatalog.completeMcpOperation.bind(f.rawCatalog);
+    f.rawCatalog.completeMcpOperation = (id, result) => {
+      if (id === "cleanup-lost-ack") throw new Error("controlled lost receipt completion");
+      return complete(id, result);
+    };
+    await assert.rejects(f.hub.call(toolName, { request_id: "cleanup-lost-ack", task_id: f.task.id,
+      expected_cleanup_token: preview.cleanupToken, context_token }), /receipt reconciliation/);
+    const previous = f.catalog.mcpOperation("cleanup-lost-ack");
+    assert.equal(previous.status, "unknown");
+    const outcome = f.tasks.lifecycleOutcome(previous.requestId);
+    const reopen = await f.open();
+    const reply = await reopen.hub.call("hub_task_operation_reconcile", {
+      context_token: f.token(reopen.hub), operation_request_id: previous.requestId,
+    });
+    assert.equal(reply.resolved, true);
+    assert.equal(reopen.catalog.mcpOperation(previous.requestId).status, "succeeded");
+    assert.deepEqual(reopen.tasks.lifecycleOutcome(previous.requestId), outcome);
+  });
+}
 
 test("missing and stale confirmations are definite pre-admission failures; lawful later closure still works", async t => {
   const f = await fixture(t), before = f.tasks.task(f.task.id);

@@ -18,7 +18,7 @@ const WORKSPACE_MUTATIONS = new Set([
 ]);
 
 const WORKSPACE_READS = new Set([
-  "archivedWorkspaces", "releaseWorkflowEnabledForThread", "workspaceDeveloperRules", "workspaceEvents",
+  "archivedWorkspaces", "releaseWorkflowEnabledForThread", "workspaceDeveloperRules", "workspaceEvents", "findDeletePreviewForOriginal",
   "claimCustodyForOriginal", "claimCustodyForTask", "claimCustodyNamespaceForTask", "claimCustodyTaskSnapshot", "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage", "preparationIsolationAuthority",
   "workspace", "workspaceBySystemKey", "stream", "streamDeveloperRules", "developerRulesForThread",
   "developerRulesForStream", "thread", "activeThread", "threadsForStream", "resolveThread", "resolveThreads", "hierarchy",
