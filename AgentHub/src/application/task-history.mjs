@@ -23,7 +23,8 @@ import {
   userMessageSnapshotAuthority,
 } from "../domain/canonical-user-messages.mjs";
 
-export const EMPTY_TURN_COMPLETION_TEXT = "Ход завершён без текстового ответа.";
+import { EMPTY_TURN_COMPLETION_TEXT } from "../domain/history-page-visibility.mjs";
+export { EMPTY_TURN_COMPLETION_TEXT };
 
 export function withoutMisclassifiedSubagentUsers(currentMessages, observedMessages) {
   const current = Array.isArray(currentMessages) ? currentMessages : [];

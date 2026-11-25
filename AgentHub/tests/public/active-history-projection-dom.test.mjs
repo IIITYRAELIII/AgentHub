@@ -5,7 +5,7 @@ import { mergeActiveTaskHistory, mergeCompletedTaskHistory } from "../../src/app
 import { launchBrowser, snapshot, submit, bridgeCalls, applyFixtureSnapshot } from "./composer-production.fixture.mjs";
 import { openClientEventFixture } from "./client-event.fixture.mjs";
 
-for (const count of [1, 25]) {
+for (const count of [1, 35]) {
   test(`complete client retains the accepted live-only question across paged refresh (${count} durable turns)`, { timeout: 30_000 }, async () => {
     const browser = await launchBrowser();
     const identity = { streamId: "stream-a", provider: "codex", threadId: "thread-a" };
@@ -33,7 +33,7 @@ for (const count of [1, 25]) {
       const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
       const initial = snapshot();
       const errors = await openClientEventFixture(page, { surface: "web", fixtureSnapshot: initial,
-        fixtureHistory: await backend({ ...identity, limit: 20 }) });
+        fixtureHistory: await backend({ ...identity, limit: 30 }) });
       await page.route("**/api/control", async route => {
         const request = route.request().postDataJSON();
         if (request.action !== "task-history" || request.params.streamId !== identity.streamId) return route.fallback();
@@ -52,7 +52,7 @@ for (const count of [1, 25]) {
       await applyFixtureSnapshot(page, active);
       await page.evaluate(() => window.__dispatchClientFixture("task:select", { id: "stream-a" }));
       await page.waitForFunction(id => window.__clientProjectionFixture.messages["stream-a"]?.some(m => m.clientUserMessageId === id && m.projectionAuthority === "canonical"), clientId);
-      if (count > 20) {
+      if (count > 30) {
         await page.locator("[data-history-load]").evaluate(button => button.click());
         await page.waitForFunction(total => window.__clientProjectionFixture.messages["stream-a"]?.length === total, count+1);
       }
@@ -70,7 +70,8 @@ for (const count of [1, 25]) {
       assert.equal(after.pagination["stream-a"].hasOlder, before.pagination["stream-a"].hasOlder);
       assert.equal(after.messages["stream-a"].filter(m => m.role === "agent").length, 0, "unfinished response remains on the live surface");
       assert.equal(await page.getByText("Accepted question", { exact: true }).count(), 1);
-      if (count > 20) assert.ok(reads.some(read => read.before === count - 20 && read.limit === 20), "older button sends the exact cursor and bound through the real Desktop read factory");
+      if (count > 30) assert.ok(reads.some(read => read.before === count - 30 && read.limit === 30),
+        `older button sends the exact cursor and bound through the real Desktop read factory: ${JSON.stringify(reads)}`);
       assert.deepEqual(errors, []);
     } finally { await browser.close(); }
   });
@@ -103,7 +104,7 @@ test("older page refuses a cursor crossing reply, then prepends the valid page w
     await page.evaluate(() => window.__dispatchClientFixture("history:load-older", { taskId: "stream-a" }));
     assert.equal(requests.length, 1);
     assert.equal(requests[0].before, 20);
-    assert.equal(requests[0].limit, 20);
+    assert.equal(requests[0].limit, 30);
     assert.deepEqual(await page.evaluate(() => window.__clientProjectionFixture.messages["stream-a"].map(item => item.id)), before);
     assert.equal(await page.getByText("Must not enter history", { exact: true }).count(), 0);
     await page.evaluate(() => { document.querySelector("[data-chat-pane] .chat-scroll").scrollTop = 200; });
@@ -115,7 +116,7 @@ test("older page refuses a cursor crossing reply, then prepends the valid page w
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     assert.equal(requests.length, 2);
     assert.equal(requests[1].before, 20);
-    assert.equal(requests[1].limit, 20);
+    assert.equal(requests[1].limit, 30);
     assert.ok(Math.abs(await anchor.evaluate(node => node.getBoundingClientRect().top) - top) < 2, "the same retained message stays at the same reader offset");
     const after = await page.evaluate(() => window.__clientProjectionFixture.messages["stream-a"]);
     assert.deepEqual(after.slice(20).map(item => item.id), before);

@@ -14,6 +14,22 @@ test("truncateUtf8 preserves valid Russian UTF-8", () => {
   assert.doesNotMatch(value, /\uFFFD/u);
 });
 
+test("oversized cold history preserves the snapshot final across colliding Thread turn IDs", () => {
+  const item = (threadId, revision, answer) => ({
+    provider: "codex", threadId, id: "same-id", terminalRevision: revision, completed: true,
+    prompt: "request", answer, messages: [],
+  });
+  const known = item("a", 2, "Complete final");
+  const newer = item("b", 2, "other answer");
+  const payload = { start: 7, end: 10, total: 10, nextBefore: 7, items: [
+    known, newer, { id: "pending", prompt: '\\"🌧️'.repeat(20_000) },
+  ] };
+  const result = fitTaskHistoryPayload(payload, { maxBytes: 65_536, preferCompleteTail: true,
+    knownFinal: { provider: "codex", threadId: "a", turnId: "same-id", revision: 2 } });
+  assert.deepEqual(result.items, [known]);
+  assert.deepEqual([result.start, result.end, result.nextBefore, result.total], [7, 8, 7, 10]);
+});
+
 test("an oversized complete annotation reports a typed budget failure without altering quote or locator", () => {
   const payload = { items: [{ id: "turn", messages: [{ itemId: "item", role: "user", text: "comment",
     responseAnnotations: [{ text: "quote".repeat(20_000), source: { messageKey: "exact-source", contentHash: "retained-hash" } }],
