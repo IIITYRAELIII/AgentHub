@@ -12,7 +12,7 @@ const {
 } = require("./agent-hub-bridge.js");
 const { openEditorFromActivityBar } = require("./activity-bar-launch.js");
 const { loadExtensionProfile } = require("./extension-profile.js");
-const { sharedWebviewHtml } = require("./shared-webview.js");
+const { serveVisualizationFrame, sharedWebviewHtml } = require("./shared-webview.js");
 
 const EXTENSION_PROFILE = loadExtensionProfile(__dirname);
 const VIEW_ID = EXTENSION_PROFILE.viewId;
@@ -138,6 +138,9 @@ class WorkLogViewProvider {
     this.sharedPanel = false;
     this.panelRuntimeRoot = null;
     this.panelRuntimePreparationRoot = null;
+    this.panelVisualizationFrame = null;
+    this.panelRender = null;
+    this.disposed = false;
     this.themes = new Set(["orbit"]);
     this.theme = String(context.globalState.get(THEME_KEY) ?? "orbit");
   }
@@ -170,6 +173,7 @@ class WorkLogViewProvider {
   }
 
   async openPanel() {
+    if (this.disposed) return;
     if (this.panel) {
       this.panel.reveal(vscode.ViewColumn.Active, false);
       await this.refreshPanelShellIfReleaseChanged();
@@ -192,6 +196,9 @@ class WorkLogViewProvider {
     panel.title = EXTENSION_PROFILE.title;
     panel.onDidDispose(() => {
       if (this.panel !== panel) return;
+      this.panelRender?.abort();
+      this.panelVisualizationFrame?.close();
+      this.panelVisualizationFrame = null;
       this.panel = null;
       this.sharedPanel = false;
       this.panelRuntimeRoot = null;
@@ -243,30 +250,56 @@ class WorkLogViewProvider {
   }
 
   async renderPanelShell(panel = this.panel, runtimeRoot = null) {
-    if (!panel) return;
-    const bridge = await this.currentBridge();
-    const activeRuntimeRoot = runtimeRoot ?? await bridge.runtimeReleaseRoot();
-    const runtimeUri = vscode.Uri.file(activeRuntimeRoot);
-    /* В webview разрешены только неизменяемый активный release и bootstrap
-       самого расширения. Workspace сюда намеренно не попадает. */
-    panel.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [
-        this.context.extensionUri,
-        runtimeUri,
-        vscode.Uri.file(bridge.attachmentDirectory()),
-      ],
+    if (this.disposed || !panel || this.panel !== panel) return;
+    this.panelRender?.abort();
+    const render = new AbortController();
+    this.panelRender = render;
+    const { signal } = render;
+    let frame = null;
+    const closePendingFrame = () => {
+      frame?.close();
+      frame = null;
     };
-    const shell = await sharedWebviewHtml(panel.webview, {
-      runtimeUri,
-      extensionUri: this.context.extensionUri,
-      testContour: EXTENSION_PROFILE.name === "test-contour",
-    });
-    this.themes = new Set(shell.themeIds);
-    if (!this.themes.has(this.theme)) this.theme = "orbit";
-    panel.webview.html = shell.html;
-    this.panelRuntimeRoot = activeRuntimeRoot;
-    this.panelRuntimePreparationRoot = null;
+    signal.addEventListener("abort", closePendingFrame, { once: true });
+    try {
+      const bridge = await this.currentBridge();
+      if (signal.aborted) return;
+      const activeRuntimeRoot = runtimeRoot ?? await bridge.runtimeReleaseRoot();
+      if (signal.aborted) return;
+      const runtimeUri = vscode.Uri.file(activeRuntimeRoot);
+      const runtimeAddress = await bridge.localWebAddress().catch(() => null);
+      if (signal.aborted) return;
+      const ipv6 = runtimeAddress && new URL(runtimeAddress).hostname === "[::1]";
+      // Chromium CSP cannot match an IPv6 literal. Keep the native bridge on ::1
+      // and expose just the immutable frame shell on a separate local address.
+      if (ipv6) frame = await serveVisualizationFrame(runtimeUri, signal).catch(() => null);
+      if (signal.aborted) return;
+      const shell = await sharedWebviewHtml(panel.webview, {
+        runtimeUri,
+        extensionUri: this.context.extensionUri,
+        testContour: EXTENSION_PROFILE.name === "test-contour",
+        localWebAddress: ipv6 ? frame?.address : runtimeAddress,
+      });
+      if (signal.aborted) return;
+      /* В webview разрешены только неизменяемый активный release и bootstrap
+         самого расширения. Workspace сюда намеренно не попадает. */
+      panel.webview.options = {
+        enableScripts: true,
+        localResourceRoots: [this.context.extensionUri, runtimeUri, vscode.Uri.file(bridge.attachmentDirectory())],
+      };
+      this.themes = new Set(shell.themeIds);
+      if (!this.themes.has(this.theme)) this.theme = "orbit";
+      panel.webview.html = shell.html;
+      this.panelVisualizationFrame?.close();
+      this.panelVisualizationFrame = frame;
+      frame = null;
+      this.panelRuntimeRoot = activeRuntimeRoot;
+      this.panelRuntimePreparationRoot = null;
+    } finally {
+      signal.removeEventListener("abort", closePendingFrame);
+      closePendingFrame();
+      if (this.panelRender === render) this.panelRender = null;
+    }
   }
 
   async refreshPanelShellIfReleaseChanged({ clientReady = false, force = false } = {}) {
@@ -453,7 +486,12 @@ class WorkLogViewProvider {
     try {
       const result = await (await this.currentBridge()).webviewSession();
       if (this.panel !== panel) return;
-      await panel.webview.postMessage({ type: "agenthub:session-result", id, ok: true, result });
+      // Keep requests on the existing native bridge when Chromium cannot use
+      // this endpoint under the WebView's connect-src.
+      await panel.webview.postMessage({
+        type: "agenthub:session-result", id, ok: true,
+        result: new URL(result.baseUrl).hostname === "[::1]" ? null : result,
+      });
     } catch (error) {
       if (this.panel !== panel) return;
       await panel.webview.postMessage({
@@ -517,9 +555,14 @@ class WorkLogViewProvider {
   }
 
   dispose() {
+    this.disposed = true;
+    this.panel = null;
+    this.panelRender?.abort();
     if (this.timer) clearTimeout(this.timer);
     this.unsubscribeJournal?.();
     this.unsubscribeRuntime?.();
+    this.panelVisualizationFrame?.close();
+    this.panelVisualizationFrame = null;
     this.bridge?.close();
   }
 }

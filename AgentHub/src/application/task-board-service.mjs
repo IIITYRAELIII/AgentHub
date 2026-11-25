@@ -390,6 +390,11 @@ export class TaskBoardService {
     return this.store.committedNativeTestForDev(payload);
   }
 
+  admitInterruptedAwaitPromotion(payload) {
+    requiredMethod(this.store, "admitInterruptedAwaitPromotion");
+    return this.store.admitInterruptedAwaitPromotion(payload);
+  }
+
   recordWorkflowAdmissionRefusal(payload) {
     requiredMethod(this.store, "recordWorkflowAdmissionRefusal");
     return this.store.recordWorkflowAdmissionRefusal(payload);

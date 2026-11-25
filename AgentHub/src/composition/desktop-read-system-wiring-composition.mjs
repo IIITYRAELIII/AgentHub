@@ -185,6 +185,7 @@ export function createDesktopReadSystemWiring({
       historyReader: {
         read: services.readCachedHistory,
         readTurn: services.readExactHistoryTurn,
+        readVisualization: services.readVisualization,
         readPage: services.readHistoryPage,
         refresh: services.refreshHistory,
       },
@@ -203,6 +204,7 @@ export function createDesktopReadSystemWiring({
       },
       interstreamOriginForClientMessage: services.interstreamOriginForClientMessage,
       attachmentImporter: services.attachmentImporter,
+      commandTrace: services.commandTrace,
       responseBudget: {
         fit: fitTaskHistoryPayload,
       },

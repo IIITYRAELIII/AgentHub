@@ -347,7 +347,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
   const runtimeRoot = path.join(root, "runtime", "releases", "current");
   const shadowAssets = path.join(shadowRoot, "Utilities", "AgentHub", "assets", "web-app");
   const runtimeAssets = path.join(runtimeRoot, "assets", "web-app");
-  const required = ["messages/disclosure.js", "message-view-controller.js", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "attachments/interactions.js", "future-runtime-module.js", "rate-limit-series.js", "task-board.js", "app.js", "messages/lifecycle.js", "messages/send-transaction.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
+  const required = ["messages/disclosure.js", "message-view-controller.js", "visualization-frame.html", "chat-scroll-controller.js", "chat-surface-preference.js", "navigation-tabs-controller.js", "stream-tabs-controller.js", "approval-form.js", "runtime-reload-controller.js", "journal-view-controller.js", "statistics-controls.js", "attachments/interactions.js", "future-runtime-module.js", "rate-limit-series.js", "task-board.js", "app.js", "messages/lifecycle.js", "messages/send-transaction.js", "hub-client.js", "styles.css", "backgrounds.css", "stream-status.css", "stream-status-visibility.mjs", "agent-hub-mark.png"];
   try {
     fs.mkdirSync(shadowAssets, { recursive: true });
     fs.mkdirSync(runtimeAssets, { recursive: true });
@@ -355,6 +355,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     fs.writeFileSync(path.join(runtimeAssets, "index.html"), `<meta charset="utf-8">runtime
       <link rel="icon" href="/agent-hub-mark.png"><link rel="stylesheet" href="/work-log.css"><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/backgrounds.css">
       <img data-app-mark src="/agent-hub-mark.png" alt="">
+       <link rel="agent-hub-visualization-frame" href="/visualization-frame.html">
       <!-- agent-hub-theme-styles --><select data-theme-select></select>
       <!-- agent-hub-theme-markup --><!-- agent-hub-theme-catalog -->
       <script src="/browser-device-auth.js" defer></script><script src="/messages/disclosure.js" defer></script><script src="/message-view-controller.js" defer></script><script src="/chat-scroll-controller.js" defer></script><script src="/chat-surface-preference.js" defer></script><script src="/navigation-tabs-controller.js" defer></script><script src="/stream-tabs-controller.js" defer></script><script src="/approval-form.js" defer></script><script src="/runtime-reload-controller.js" defer></script><script src="/journal-view-controller.js" defer></script><script src="/statistics-controls.js" defer></script><script src="/attachments/interactions.js" defer></script><script src="/future-runtime-module.js" defer></script><script src="/rate-limit-series.js" defer></script><script src="/task-board.js" defer></script>
@@ -382,6 +383,7 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     const result = await sharedWebviewHtml(webview, {
       runtimeUri: vscodeUri(runtimeRoot),
       extensionUri: vscodeUri(extensionRoot),
+      localWebAddress: "http://127.0.0.1:8787",
     });
     assert.match(result.html, /runtime/u);
     assert.equal(result.html.includes(shadowRoot), false);
@@ -401,6 +403,15 @@ test("shared webview loads the active runtime, never a workspace shadow", async 
     assert.match(result.html, /url\("vscode-webview-resource:.*themes[\\/]pulsar[\\/]pulsar-aurora\.png"\)/u);
     assert.doesNotMatch(result.html, /url\(["']?\.\/pulsar-aurora\.png/u);
     assert.match(result.html, /style-src vscode-webview:\/\/test 'nonce-[^']+'/u);
+    assert.match(result.html, /frame-src http:\/\/127\.0\.0\.1:8787\/visualization-frame\.html;/u);
+    assert.match(result.html, /rel="agent-hub-visualization-frame" href="http:\/\/127\.0\.0\.1:8787\/visualization-frame\.html"/u);
+    assert.ok(result.roots.some(uri => uri.fsPath === path.join(runtimeAssets, "visualization-frame.html")));
+    const offline = await sharedWebviewHtml(webview, {
+      runtimeUri: vscodeUri(runtimeRoot),
+      extensionUri: vscodeUri(extensionRoot),
+    });
+    assert.match(offline.html, /frame-src 'none';/u);
+    assert.doesNotMatch(offline.html, /agent-hub-visualization-frame/u);
     assert.doesNotMatch(result.html, /browser-device-auth\.js/u);
     assert.ok(result.roots.every((uri) => (
       uri.fsPath.startsWith(runtimeRoot) || uri.fsPath.startsWith(extensionRoot)
@@ -493,13 +504,102 @@ test("VS Code shell permits only extension, selected runtime and attachment root
   harness.panel.webview.asWebviewUri = value => ({ toString: () => `vscode-webview-resource:${value.fsPath}` });
   const runtime = path.resolve(__dirname, "..");
   const attachments = path.join(os.tmpdir(), "synthetic-attachment-root");
-  provider.currentBridge = async () => ({ runtimeReleaseRoot: async () => runtime, attachmentDirectory: () => attachments });
+  provider.currentBridge = async () => ({
+    runtimeReleaseRoot: async () => runtime,
+    attachmentDirectory: () => attachments,
+    localWebAddress: async () => "http://localhost:8787",
+  });
   await provider.renderPanelShell();
   assert.deepEqual(harness.panel.webview.options.localResourceRoots.map(value => value.fsPath), [context.extensionUri.fsPath, runtime, attachments]);
   assert.deepEqual([...provider.themes], THEMES);
   assert.equal(provider.panelRuntimeRoot, runtime);
   assert.ok(harness.panel.webview.html.includes("vscode-webview-resource:"));
+  assert.match(harness.panel.webview.html, /href="http:\/\/localhost:8787\/visualization-frame\.html"/u);
   assert.ok(!harness.panel.webview.html.includes("browser-device-auth.js"));
+});
+
+test("VS Code on an IPv6 Hub serves only the packaged frame and keeps control on IPC", async () => {
+  const harness = panelHarness();
+  const vscode = webviewVscode([]);
+  loadSharedWebview(vscode);
+  const { WorkLogViewProvider } = loadExtension(vscode);
+  const context = providerContext();
+  context.extensionUri = vscodeUri(__dirname);
+  const provider = new WorkLogViewProvider(context);
+  provider.panel = harness.panel;
+  harness.panel.webview.cspSource = "vscode-webview://test";
+  harness.panel.webview.asWebviewUri = (uri) => `vscode-webview-resource:${uri.fsPath}`;
+  const runtime = path.resolve(__dirname, "..");
+  provider.currentBridge = async () => ({
+    runtimeReleaseRoot: async () => runtime,
+    attachmentDirectory: () => path.join(os.tmpdir(), "synthetic-attachment-root"),
+    localWebAddress: async () => "http://[::1]:8787",
+    webviewSession: async () => ({ baseUrl: "http://[::1]:8787", token: "native-only-fixture" }),
+  });
+  let frameUrl;
+  try {
+    await provider.renderPanelShell();
+    frameUrl = /rel="agent-hub-visualization-frame" href="([^"]+)"/u.exec(harness.panel.webview.html)?.[1];
+    assert.match(frameUrl, /^http:\/\/127\.0\.0\.1:\d+\/visualization-frame\.html$/u);
+    assert.ok(harness.panel.webview.html.includes(`frame-src ${frameUrl};`));
+    assert.doesNotMatch(harness.panel.webview.html, /\[::1\]/u);
+    const response = await fetch(frameUrl);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-security-policy"), "frame-ancestors vscode-webview: vscode-file:");
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()),
+      fs.readFileSync(path.join(runtime, "assets/web-app/visualization-frame.html")));
+    assert.equal((await fetch(new URL("/api/control", frameUrl))).status, 404);
+    assert.equal((await fetch(frameUrl, { method: "POST" })).status, 404);
+    await provider.handleSessionMessage({ id: "ipv6-session" });
+    assert.deepEqual(harness.messages.at(-1), {
+      type: "agenthub:session-result", id: "ipv6-session", ok: true, result: null,
+    });
+  } finally {
+    provider.dispose();
+  }
+  await assert.rejects(fetch(frameUrl), /fetch failed/u);
+});
+
+test("a disposed VS Code provider leaves an in-flight panel render unpublished", async () => {
+  const harness = panelHarness();
+  const vscode = webviewVscode([]);
+  loadSharedWebview(vscode);
+  const { WorkLogViewProvider } = loadExtension(vscode);
+  const context = providerContext();
+  context.extensionUri = vscodeUri(__dirname);
+  const provider = new WorkLogViewProvider(context);
+  provider.panel = harness.panel;
+  const enteringAddress = deferred();
+  const address = deferred();
+  provider.currentBridge = async () => ({
+    runtimeReleaseRoot: async () => path.resolve(__dirname, ".."),
+    attachmentDirectory: () => path.join(os.tmpdir(), "synthetic-attachment-root"),
+    localWebAddress: () => { enteringAddress.resolve(); return address.promise; },
+  });
+  const initialHtml = harness.panel.webview.html;
+  const render = provider.renderPanelShell();
+  await enteringAddress.promise;
+  provider.dispose();
+  address.resolve("http://[::1]:8787");
+  await render;
+  assert.equal(provider.panelVisualizationFrame, null);
+  assert.equal(harness.panel.webview.html, initialHtml);
+});
+
+test("cancelling panel preparation closes its real IPv4 frame listener", async () => {
+  const { serveVisualizationFrame } = loadSharedWebview(webviewVscode([]));
+  const preparation = new AbortController();
+  const frame = await serveVisualizationFrame(vscodeUri(path.resolve(__dirname, "..")), preparation.signal);
+  const url = new URL("/visualization-frame.html", frame.address);
+  try {
+    const response = await fetch(url);
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+    preparation.abort();
+    await assert.rejects(fetch(url), /fetch failed/u);
+  } finally {
+    frame.close();
+  }
 });
 
 test("VS Code forces a retained journal refresh when its panel becomes visible", async () => {

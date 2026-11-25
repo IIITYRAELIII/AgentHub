@@ -101,11 +101,24 @@ test("task deletion requires explicit confirmation and supports cancellation", a
 
   controller.request("task-1");
   confirmButton.dispatch("click");
-  assert.equal(dialog.open, false);
+  assert.equal(dialog.open, true);
+  assert.equal(confirmButton.disabled, true);
+  cancelButton.dispatch("click");
+  dialog.dispatch("cancel");
+  assert.equal(dialog.open, true, "pending deletion cannot be dismissed as a cancellation");
   assert.deepEqual(confirmed, ["task-1"]);
 
   confirmButton.dispatch("click");
   assert.deepEqual(confirmed, ["task-1"]);
+  controller.finish({ succeeded: false, error: "Denied" });
+  assert.equal(dialog.open, true);
+  assert.equal(confirmButton.disabled, false);
+  confirmButton.dispatch("click");
+  assert.deepEqual(confirmed, ["task-1", "task-1"]);
+  controller.finish({ succeeded: true });
+  assert.equal(dialog.open, false);
+  confirmButton.dispatch("click");
+  assert.deepEqual(confirmed, ["task-1", "task-1"]);
 });
 
 test("Complete and Delete confirmations render exact server evidence and cancellation performs no mutation", async () => {
@@ -152,10 +165,11 @@ test("Complete and Delete confirmations render exact server evidence and cancell
     assert.deepEqual(mutations, []);
     const [text] = confirmations;
     for (const evidence of [
-      "HUB-159", "D:/managed/task", "head-159", "dirty",
+      "HUB-159", "D:/managed/task", "head-159", "есть изменения",
       "AgentHub/src/changed.mjs", "AgentHub/new.mjs", "result-159",
-      "unpublished", "main-159", "generation-159",
-      "[worktree] D:/managed/task", "[branch] HUB-159", "[result_ref] refs/agent-hub/task-results/task/repo",
+      "не опубликован", "main-159", "generation-159",
+      "Тип: worktree", "Путь: D:/managed/task", "Тип: branch", "Имя: HUB-159",
+      "Тип: result_ref", "Имя: refs/agent-hub/task-results/task/repo",
     ]) assert.match(text, new RegExp(evidence.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
   }
 
@@ -173,6 +187,34 @@ test("Complete and Delete confirmations render exact server evidence and cancell
   assert.equal(calls[0][1].id, "task-159");
   assert.equal(calls[0][1].confirmCleanup, true);
   assert.equal(calls[0][1].expectedCleanupToken, "cleanup-token");
+});
+
+test("cleanup UI submits only once and preserves exact raw preview values", async () => {
+  const { cleanupConfirmation } = await loadFactory();
+  const calls = [];
+  const outcome = await cleanupConfirmation.confirm({
+    confirmation: { cleanupToken: "private-token", warning: "raw server warning",
+      preview: { workspaces: [{ projectRoot: " path with spaces ", branch: "ветка/🧭",
+        headCommit: "abc123", dirty: false }], deleting: [{ kind: "future_kind", name: "raw name" }] } },
+    action: "board-task-complete", params: { id: "exact-task", operationId: "exact-operation" },
+    confirm: async (text, { submit, deletingCount }) => {
+      assert.ok(text.includes(" path with spaces "));
+      assert.ok(text.includes("ветка/🧭"));
+      assert.ok(text.includes("Тип: future_kind"));
+      assert.ok(text.includes("Сообщение сервера:\nraw server warning"));
+      assert.equal(text.includes("private-token"), false);
+      assert.equal(deletingCount, 1);
+      await Promise.all([submit(), submit()]);
+      return true;
+    },
+    request: async (...args) => { calls.push(args); return { completed: true }; },
+  });
+  assert.equal(outcome.confirmed, true);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [["board-task-complete", {
+    id: "exact-task", operationId: "exact-operation",
+    confirmCleanup: true, expectedCleanupToken: "private-token",
+  }]]);
 });
 
 test("cleanup waits for an asynchronous decision and preserves the preview identity", async () => {

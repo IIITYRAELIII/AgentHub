@@ -170,12 +170,18 @@ export class CodexTurnService {
       assertCodexModelAvailable(run.modelId);
       const namedTitle = await d.ensureThreadNamed?.({ provider: "codex", threadId: run.threadId });
       if (namedTitle) run.taskTitle = namedTitle;
+      const sandboxMode = d.sandboxMode();
+      const visualizationDirectory = await d.prepareVisualizationDirectory?.(run.threadId) || "";
       const developerInstructions = await d.developerInstructions({
         provider: "codex",
         threadId: run.threadId,
         streamId: run.streamId,
       });
-      const applicationContext = buildCodexApplicationContext(developerInstructions, run.id);
+      const visualizationContext = visualizationDirectory
+        ? "\n\nFor the visualize skill, save the HTML fragment in this Thread's writable output directory: "
+          + JSON.stringify(visualizationDirectory) + ". Refer to the file's absolute path in the visualize marker."
+        : "";
+      const applicationContext = buildCodexApplicationContext(String(developerInstructions ?? "") + visualizationContext, run.id);
       markProviderTurnRequested(run, { provider: "codex" });
       const requestSave = d.commandTrace?.startBestEffortSpan?.({
         commandId: String(run.clientUserMessageId ?? ""),
@@ -212,12 +218,12 @@ export class CodexTurnService {
               model: run.modelId,
               reasoningEffort: run.reasoningId,
             }),
-            ...codexTurnSandboxSettings(d.sandboxMode(), run.projectRoot),
+            ...codexTurnSandboxSettings(sandboxMode, run.projectRoot, visualizationDirectory, d.commandSpoolDirectory),
           });
         },
         resume: (params) => d.sendRpc("thread/resume", {
           ...params,
-          ...codexThreadSandboxSettings(d.sandboxMode()),
+          ...codexThreadSandboxSettings(sandboxMode),
         }),
       });
       const turnId = String(result?.turn?.id ?? result?.turnId ?? "").trim();

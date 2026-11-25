@@ -3243,3 +3243,80 @@ test("outgoing receipt lookup survives a task thread rebind", () => {
     "codex:thread-before",
   );
 });
+
+test("equal provider start and completion keep the previous final above the next root", () => {
+  const exact = { provider: "codex", threadId: "thread" };
+  const boundary = "2026-11-23T19:01:05.613Z";
+  const previous = { ...exact, id: "z-final", turnId: "z-old", role: "agent",
+    turnCompletedAt: boundary, time: boundary };
+  const root = { ...exact, id: "a-root", turnId: "a-new", role: "user", turnUserSlot: "root",
+    startedAt: boundary, time: "2026-11-23T19:00:16.313Z", providerAccepted: true };
+  const previousRoot = { ...previous, id: "z-root", role: "user", turnUserSlot: "root",
+    turnCompletedAt: null, startedAt: boundary };
+  for (const input of [[previous, root, previousRoot], [root, previousRoot, previous], [previousRoot, previous, root]]) {
+    const ordered = lifecycle.chronologicalMessages(input);
+    assert.deepEqual(ordered.map((message) => message.id), ["z-root", "z-final", "a-root"]);
+    assert.equal(ordered[2].time, root.time);
+  }
+});
+
+test("unaccepted and foreign start evidence cannot move an original message", () => {
+  const exact = { provider: "codex", threadId: "thread" };
+  const previous = { ...exact, id: "final", turnId: "old", role: "agent",
+    time: "2026-11-23T19:01:05.613Z" };
+  const unknown = { ...exact, id: "original", turnId: "new", role: "user", turnUserSlot: "root",
+    time: "2026-11-23T19:00:16.313Z", providerAccepted: false, startedAt: "2026-11-23T19:01:13.299Z" };
+  const foreign = { ...unknown, id: "foreign", threadId: "elsewhere", providerAccepted: true, time: null };
+  const ordered = lifecycle.chronologicalMessages([foreign, previous, unknown]);
+  assert.ok(ordered.indexOf(unknown) < ordered.indexOf(previous));
+  assert.equal(ordered.find((item) => item.id === foreign.id).time, null);
+});
+
+test("equal start and completion keep the same order when either history page arrives first", () => {
+  const identity = { provider: "codex", threadId: "same-thread", operationKind: "user-turn" };
+  const boundary = "2026-11-23T19:01:05.613Z";
+  const previousStart = "2026-11-23T19:00:00.000Z";
+  const submission = "2026-11-23T19:00:16.313Z";
+  const previous = [
+    { ...identity, id: "old-root", turnId: "z-old", role: "user", turnUserSlot: "root",
+      historyOrder: 47_000, startedAt: previousStart, time: previousStart },
+    { ...identity, id: "old-final", turnId: "z-old", role: "agent",
+      projectionAuthority: "canonical", projectionState: "completed", terminalRevision: 1,
+      historyOrder: 47_002, turnCompletedAt: boundary, time: boundary },
+  ];
+  const nextRoot = { ...identity, id: "new-root", turnId: "a-new", role: "user", turnUserSlot: "root",
+    clientUserMessageId: "next-original", startedAt: boundary, providerAccepted: true,
+    time: submission, submittedAt: submission };
+  const nextFinal = { ...identity, id: "new-final", turnId: "a-new", role: "agent",
+    projectionAuthority: "terminal", projectionState: "completed", terminalRevision: 1,
+    turnCompletedAt: boundary, time: boundary };
+  const expected = ["old-root", "old-final", "new-root", "new-final"];
+  const instantaneousPrevious = [{ ...previous[0], startedAt: boundary }, previous[1]];
+  const previousOverlay = instantaneousPrevious.map(({ historyOrder, ...message }) => message);
+  const nextHistory = [{ ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }];
+  for (const input of [
+    [...previous, nextRoot, nextFinal],
+    [nextFinal, nextRoot, ...previous.toReversed()],
+    [...instantaneousPrevious, nextRoot, nextFinal],
+    [nextFinal, nextRoot, ...instantaneousPrevious.toReversed()],
+    [...previousOverlay, nextRoot, nextFinal],
+    [...previousOverlay, ...nextHistory],
+    [...nextHistory.toReversed(), ...previousOverlay.toReversed()],
+    [...previousOverlay, { ...nextHistory[0], startedAt: null }, nextHistory[1]],
+    [{ ...previousOverlay[0], time: "2026-11-23T19:00:30.000Z" }, previousOverlay[1], ...nextHistory],
+    [{ ...instantaneousPrevious[0], time: "2026-11-23T19:00:30.000Z" }, instantaneousPrevious[1], nextRoot, nextFinal],
+    [...instantaneousPrevious, ...nextHistory],
+    [{ ...instantaneousPrevious[0], time: boundary }, instantaneousPrevious[1], ...nextHistory],
+    [...previous.map(({ historyOrder, ...message }) => message),
+      { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],
+    [...previous, { ...nextRoot, historyOrder: 48_000 }, { ...nextFinal, historyOrder: 48_001 }],
+  ]) {
+    const result = lifecycle.chronologicalMessages(projection.projectCanonicalMessages(input), [{
+      provider: identity.provider, threadId: identity.threadId, time: Date.parse(boundary), turnIds: ["z-old", "a-new"],
+    }]);
+    assert.deepEqual(Array.from(result, (message) => message.id), expected);
+    assert.equal(result[2].submittedAt, submission);
+    assert.equal(result[2].time, submission);
+    assert.equal(result[2].clientUserMessageId, "next-original");
+  }
+});

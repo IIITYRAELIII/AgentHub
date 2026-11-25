@@ -1482,9 +1482,10 @@ function refreshTaskDurations() {
 }
 
 let toastTimer = 0;
-function showToast(message, action = null) {
+function showToast(message, action = null, { persistent = false } = {}) {
   if (!message) return;
-  toast.replaceChildren(el("span", { text: message }));
+  const label = el("span", { text: message });
+  toast.replaceChildren(label);
   if (action?.label && typeof action.onClick === "function") {
     const button = el("button", { type: "button", text: action.label });
     button.addEventListener("click", () => {
@@ -1498,6 +1499,13 @@ function showToast(message, action = null) {
   toast.hidden = false;
   toast.classList.add("visible");
   clearTimeout(toastTimer);
+  if (persistent) {
+    return () => {
+      if (label.parentNode !== toast) return;
+      toast.hidden = true;
+      toast.classList.remove("visible");
+    };
+  }
   toastTimer = window.setTimeout(() => {
     toast.classList.remove("visible");
     toastTimer = window.setTimeout(() => { toast.hidden = true; }, 220);
@@ -1928,7 +1936,7 @@ function removeComposerTask(taskId) {
   composerDraftReconciliation.remove(id);
   discardAttachmentPreviews(id);
   attachmentOperationSequences.delete(id);
-  annotationOperationSequences.delete(id);
+  clearPendingAnnotation(id);
 }
 
 function captureComposerTaskOperation(taskId = state.selectedId) {
@@ -1956,7 +1964,7 @@ function advanceComposerAsyncOperationFence(taskId) {
   const id = String(taskId ?? "").trim();
   if (!id) return;
   attachmentOperationSequences.set(id, (attachmentOperationSequences.get(id) ?? 0) + 1);
-  annotationOperationSequences.set(id, (annotationOperationSequences.get(id) ?? 0) + 1);
+  clearPendingAnnotation(id);
   discardAttachmentPreviews(id);
 }
 
@@ -6038,6 +6046,7 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
     streamTabs.hidden = true;
     streamTabs.replaceChildren();
     chatPane.hidden = true;
+    if (activeChatId) clearPendingAnnotation(activeChatId);
     activeChatId = null;
     activeChatHistoryBinding = "";
     renderedStreamChatDeckKey = "";
@@ -6066,6 +6075,9 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
       distance: Math.max(0, chatScroll.scrollHeight - chatScroll.clientHeight - chatScroll.scrollTop),
       pinned: scrollContainerIsNearBottom(chatScroll),
     });
+  }
+  if (activeChatId && (activeChatId !== task.id || activeChatHistoryBinding !== historyBinding)) {
+    clearPendingAnnotation(activeChatId);
   }
   if (taskChanged) chatScrollControllers.get(chatScroll)?.noteUserIntent();
 
@@ -6367,7 +6379,7 @@ function loadAttachmentViewerSource({ source = "", name = "Изображени�
       generation,
       index,
       loaded: false,
-      message: "Не удалось загрузить изображение",
+      message: attachmentViewerGallery[index]?.loadError ?? "Не удалось загрузить изображение",
     });
   };
   attachmentViewerImage.src = resource;
@@ -7235,6 +7247,8 @@ function markdownLink(raw, fileContext = currentFileLinkContext()) {
     : source;
   const taskReferenceLink = TaskReferences.link(value);
   if (taskReferenceLink) return taskReferenceLink;
+  const imageLink = projectedImageLink(value, fileContext.attachments);
+  if (imageLink) return imageLink;
   if (/^https?:\/\//iu.test(value)) {
     try {
       return { href: new URL(value).href };
@@ -7243,6 +7257,25 @@ function markdownLink(raw, fileContext = currentFileLinkContext()) {
     }
   }
   return desktopFileLink(value, fileContext);
+}
+
+function projectedImageLink(value, attachments) {
+  if (!Array.isArray(attachments) || !attachments.length) return null;
+  let target;
+  try { target = new URL(value, window.location.href); }
+  catch { return null; }
+  if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) return null;
+  for (const attachment of attachments) {
+    if (!attachment?.url || !resourceInteractions.isImageAttachment(attachment)) continue;
+    try {
+      if (new URL(attachment.url, window.location.href).href !== target.href) continue;
+      const imageMime = String(attachment.type || "image/*");
+      if (resourceInteractions.imageLinkPreview({ href: target.href, type: imageMime, attachmentName: attachment.name ?? "" })) {
+        return { href: target.href, imageMime };
+      }
+    } catch { /* Invalid attachment metadata has no authority. */ }
+  }
+  return null;
 }
 
 function codexFileCitation(raw) {
@@ -7280,6 +7313,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           rel: "noopener noreferrer",
         });
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
+        if (targetLink.imageMime) link.dataset.agentHubImageMime = targetLink.imageMime;
         target.append(link);
         appendLocalResourceOverflow(target, link, targetLink, citation?.label);
       } else {
@@ -7312,19 +7346,24 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
       appendInlineMarkdown(emphasis, token.slice(1, -1), fileContext);
       target.append(emphasis);
     } else {
-      const parts = token.match(/^\[([^\]\n]+)\]\(<([^>\n]+)>(?:\s+"([^"]*)")?\)$/u)
-        ?? token.match(/^\[([^\]\n]+)\]\(([^)\n]+?)(?:\s+"([^"]*)")?\)$/u);
-      const targetLink = markdownLink(parts?.[2], fileContext);
+      const parts = token.match(/^\[([^\]\n]+)\]\(([^\n]+)\)$/u);
+      const destination = parts?.[2] ?? "";
+      const title = destination.endsWith('"')
+        ? /(\S)\s+"((?:[^"\\]|\\[^\n])*)"$/u.exec(destination)
+        : null;
+      const linkDestination = title ? destination.slice(0, title.index + title[1].length) : destination;
+      const targetLink = markdownLink(linkDestination, fileContext);
       if (targetLink) {
         const link = el("a", {
           href: targetLink.href,
           target: targetLink.taskId ? null : "_blank",
           rel: targetLink.taskId ? null : "noopener noreferrer",
           text: parts[1],
-          title: parts[3] || null,
+          title: title?.[2].replace(/\\(["\\])/gu, "$1") || null,
         });
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
+        if (targetLink.imageMime) link.dataset.agentHubImageMime = targetLink.imageMime;
         target.append(link);
         appendLocalResourceOverflow(target, link, targetLink, parts[1]);
       } else {
@@ -7456,10 +7495,15 @@ function renderMarkdownCodeBlock(lines, language = "") {
   ]);
 }
 
+const visualizationResponseOwners = new WeakMap();
+
 function renderMarkdown(target, source, fileContext = currentFileLinkContext(), messageRole = "agent", detailsDepth = 0) {
   const disclosureState = MessageView.captureMarkdownDetailsState(target);
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
+  const visualization = window.AgentHubVisualization;
+  const visualizationOwner = visualizationResponseOwners.get(target);
+  const isVisualizationLine = (line) => visualizationOwner && visualization?.markerLine(line);
   const headingPattern = /^\s*(#{1,6})\s+(.+)$/u;
   const listItemPattern = /^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u;
   let index = 0;
@@ -7478,11 +7522,23 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       target.append(renderMarkdownCodeBlock(code, fence.language));
       continue;
     }
+    if (isVisualizationLine(line)) {
+      const { provider, threadId, streamId, turnId, itemId } = visualizationOwner;
+      const load = provider === "codex" && threadId && streamId && turnId && itemId
+        ? (markerHash) => new Promise((resolve, reject) => emit("history:visualization", {
+            provider, threadId, streamId, turnId, itemId, markerHash, resolve, reject,
+          }))
+        : null;
+      target.append(visualization.card(line, load));
+      index += 1;
+      continue;
+    }
     const disclosure = detailsDepth < 32 ? MessageView.markdownDetailsAt(lines, index) : null;
     if (disclosure) {
       const summary = el("summary");
       appendInlineMarkdown(summary, disclosure.summary || "Подробнее", fileContext);
       const body = el("div", { class: "markdown-details-body" });
+      if (visualizationOwner) visualizationResponseOwners.set(body, visualizationOwner);
       renderMarkdown(body, disclosure.body, fileContext, messageRole, detailsDepth + 1);
       const details = el("details", { class: "markdown-details" }, [summary, body]);
       details.agentHubMarkdownDetailsSource = JSON.stringify([disclosure.summary, disclosure.body]);
@@ -7560,6 +7616,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
     const paragraph = [lines[index++]];
     while (index < lines.length
       && lines[index].trim()
+      && !isVisualizationLine(lines[index])
       && !MessageView.markdownFenceStart(lines[index])
       && !headingPattern.test(lines[index])
       && !listItemPattern.test(lines[index])
@@ -7690,9 +7747,9 @@ function traceReasoningNode(group, identity = null) {
   return node;
 }
 
-function requestTracePage(identity, tracePage) {
+function requestTracePage(identity, tracePage, commandId) {
   const boundIdentity = { ...identity, streamId: identity.streamId || currentTask()?.streamId };
-  return new Promise((resolve, reject) => emit("history:trace-page", { identity: boundIdentity, tracePage, resolve, reject }));
+  return new Promise((resolve, reject) => emit("history:trace-page", { identity: boundIdentity, tracePage, commandId, resolve, reject }));
 }
 
 function traceArchiveNode(identity) {
@@ -7987,13 +8044,20 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     target.replaceChildren();
     // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
     if (renderResponseAnnotations(target, message)) return;
+    if (role === "agent" && (message.provider || task?.provider) === "codex"
+      && (!message.phase || message.phase === "final_answer")) {
+      visualizationResponseOwners.set(target, {
+        ...message, provider: message.provider || task?.provider, streamId: message.streamId || task?.streamId,
+      });
+    }
     const text = role === "system"
       ? MessageView.normalizeSystemEventText(message.text ?? "")
       : message.text ?? "";
+    const fileContext = { ...currentFileLinkContext(task), attachments: message.attachments };
     if (role === "agent" && Array.isArray(message.responseCitationPresentations)
       && message.responseCitationPresentations.length) {
-      renderAgentResponseBody(target, message, text, currentFileLinkContext(task));
-    } else renderMarkdown(target, text, currentFileLinkContext(task), role);
+      renderAgentResponseBody(target, message, text, fileContext);
+    } else renderMarkdown(target, text, fileContext, role);
   };
   const deferredPreview = MessageView.deferredUserMessagePreview(message);
   if (deferredPreview != null) {
@@ -8088,8 +8152,32 @@ document.addEventListener("click", (event) => {
     TaskReferences.open({ taskId: taskReferenceLink.dataset.agentHubTaskReference });
     return;
   }
-  const link = event.target.closest("a[data-agent-hub-local-link]");
+  const link = event.target.closest("a[href]");
   if (!link) return;
+  const localPath = link.dataset.agentHubLocalLink;
+  if (!event.defaultPrevented && event.button === 0 && !event.altKey && !event.ctrlKey
+    && !event.metaKey && !event.shiftKey && link.closest("[data-chat-pane] .msg-body")) {
+    const preview = resourceInteractions.imageLinkPreview({
+      href: link.href,
+      localPath,
+      type: link.dataset.agentHubImageMime,
+    });
+    if (preview) {
+      event.preventDefault();
+      const name = preview.name || "Изображение";
+      const generation = openAttachmentViewer({
+        gallery: [{
+          name,
+          type: "image/*",
+          dataUrl: preview.url,
+          loadError: "Не удалось открыть изображение: файл недоступен или формат не поддерживается",
+        }],
+      });
+      if (preview.localPath) emit("resource:image-preview", { localPath, name, generation });
+      return;
+    }
+  }
+  if (!localPath) return;
   event.preventDefault();
   openResourceContextMenu(event, resourceInteractions.linkResource({
     href: link.href,
@@ -8172,11 +8260,14 @@ function renderAgentResponseBody(body, message, text, fileContext) {
   const legacyReferences = references.filter((reference) => !reference.position);
   const { segments, unpositioned } = MessageView.responseCitationSegments(text, message.responseCitationPresentations);
   const content = el("div", { class: "msg-response-content" });
+  const visualizationOwner = visualizationResponseOwners.get(body);
+  if (visualizationOwner) visualizationResponseOwners.set(content, visualizationOwner);
   if (segments.some((segment) => segment.citation)) {
     for (const segment of segments) {
       if (segment.citation) content.append(renderResponseCitations({ responseCitationPresentations: [segment.citation] }));
       else if (segment.text.trim()) {
         const part = el("div", { class: "msg-response-part" });
+        if (visualizationOwner) visualizationResponseOwners.set(part, visualizationOwner);
         renderMarkdown(part, MessageView.withoutResponseCitationFallbacks(segment.text, legacyReferences), fileContext, "agent");
         content.append(...part.childNodes);
       }
@@ -8225,8 +8316,31 @@ function selectedResponseAnnotationSourceMessages() {
   );
 }
 
+function compatibleCodexTraceProjections(messages, source, nativeItemId, selectedPrefix = "") {
+  const matches = messages.flatMap((message, index) => (
+    responseAnnotationSourceIdentity(message, source)?.messageKey === source.messageKey ? [{ message, index }] : []
+  ));
+  if (!matches.length || (matches.length > 1 && !nativeItemId)) return [];
+  const textCopies = [];
+  for (const { message } of matches) {
+    const groups = (message.activityGroups ?? []).filter(group => group.id === source.traceGroupId);
+    if (groups.length !== 1 || (nativeItemId && groups[0].sourceItemId !== nativeItemId)) return [];
+    const group = traceGroupWithCitationContext(groups[0], message);
+    textCopies.push(traceReasoningNode(group, message).textContent.trimEnd());
+  }
+  // Different live and final parent items may contain the same native group.
+  // Only compatible rendered copies can share the verified exact source.
+  const longest = textCopies.reduce((left, right) => left.length >= right.length ? left : right);
+  return textCopies.every(text => text.startsWith(selectedPrefix) && longest.startsWith(text)) ? matches : [];
+}
+
 function sourceMessageProjection(source) {
-  return responseAnnotationSourceProjection(selectedResponseAnnotationSourceMessages(), source);
+  const messages = selectedResponseAnnotationSourceMessages();
+  const unique = responseAnnotationSourceProjection(messages, source);
+  if (unique || source.provider !== "codex" || !source.traceGroupId) return unique;
+  return compatibleCodexTraceProjections(messages, source, source.itemId)
+    .find(({ message, index }) => renderedResponseAnnotationSourceRoot(MessageView.messageKey(message, index))?.isConnected)
+    ?? null;
 }
 
 function renderedResponseAnnotationSourceRoot(renderedKey) {
@@ -8301,7 +8415,7 @@ async function focusResponseCitationSource(button) {
     responseAnnotationSha256(surface.textContent),
     responseAnnotationSha256(range.toString().trim()),
   ]);
-  if (!responseAnnotationSourceHashesMatch(source, { contentHash, surfaceHash, selectionHash })) return false;
+  if (!article.isConnected || !responseAnnotationSourceHashesMatch(source, { contentHash, surfaceHash, selectionHash })) return false;
   activeSourceCitationCleanup?.();
   const highlight = highlightResponseAnnotationRange(surface, source.start, source.end);
   if (!highlight) return false;
@@ -8394,6 +8508,9 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
       historyMessages.length,
     ),
   };
+  const visualizationOwner = liveMessage.provider === "codex" && liveMessage.responsePhase === "final_answer"
+    ? { ...liveMessage, streamId: liveMessage.streamId || task?.streamId }
+    : null;
   node.dataset.messageKey = MessageView.messageKey(liveMessage, historyMessages.length);
   const renderParts = window.AgentHubLiveCardRender.liveCardRenderParts({
     visibleText,
@@ -8402,7 +8519,11 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     activities,
     stageDetail: liveStage.detail,
     fileContext,
-    bodyState: liveMessage.responseCitationPresentations,
+    bodyState: visualizationOwner ? {
+      citations: liveMessage.responseCitationPresentations,
+      threadId: visualizationOwner.threadId, turnId: visualizationOwner.turnId,
+      itemId: visualizationOwner.itemId, streamId: visualizationOwner.streamId,
+    } : liveMessage.responseCitationPresentations,
   });
   liveCardRenderController.reconcile(node, "reasoning", renderParts.reasoning, () => {
     renderMarkdown(reasoning, standaloneReasoning, fileContext);
@@ -8432,6 +8553,8 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
   liveTrace.hidden = groups.length === 0;
   const body = node.querySelector("[data-live-body]");
   liveCardRenderController.reconcile(node, "body", renderParts.body, () => {
+    if (visualizationOwner) visualizationResponseOwners.set(body, visualizationOwner);
+    else visualizationResponseOwners.delete(body);
     if (liveMessage.responseCitationPresentations.length) {
       renderAgentResponseBody(body, liveMessage, visibleText, fileContext);
     } else renderMarkdown(body, visibleText, fileContext);
@@ -8733,9 +8856,6 @@ function renderQueueForTask(taskId, container) {
     const content = el("div", { class: "queue-content" }, [
       entry.author ? el("strong", { class: "queue-author", text: entry.author }) : null,
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
-      (entry.waitReason === "managed-run-activity-unknown"
-        || task?.activityUnknown && [entry.waitReason, entry.conflictKind].includes("task-running"))
-        ? el("div", { class: "queue-status", text: "Состояние прежнего хода не подтверждено. Автоматическое продолжение отключено; новый ввод сохранён до проверки завершения. Доступен Stop." }) : null,
       entry.state === "paused" && entry.waitReason === "task-running"
         ? el("div", { class: "queue-status", text: 'Сообщение на паузе; нажми "Продолжить", чтобы вернуть его в очередь.' }) : null,
       entry.waitReason === "provider-thread-active"
@@ -9613,7 +9733,7 @@ let annotations = [];
 let pendingAnnotationSelection = null;
 let lastAnnotationSelection = null;
 let lastTouchSelectionAt = 0;
-const annotationOperationSequences = new Map();
+const pendingAnnotationOperations = new Map();
 const TOUCH_CONTEXT_MENU_WINDOW_MS = 3_000;
 
 function currentAnnotations() {
@@ -9629,25 +9749,29 @@ function setAnnotations(next) {
 function renderAnnotations() {
   annotationsBox.replaceChildren();
   annotationsBox.hidden = annotations.length === 0;
-  annotations.forEach((annotation, index) => {
-    annotationsBox.append(el("div", { class: "annotation" }, [
-      el("div", { class: "annotation-content" }, [
-        el("span", { class: "annotation-quote", tabindex: "0", text: annotation.quote }),
-        el("textarea", {
-          class: "annotation-comment",
-          "data-annotation-comment-index": index,
-          rows: 1,
-          placeholder: "Комментарий к этой цитате…",
-          "aria-label": `Комментарий к цитате ${index + 1}`,
-          text: annotation.annotation ?? "",
-        }),
-      ]),
-      el("button", {
-        type: "button", class: "annotation-remove", "data-annotation-index": index,
-        title: "Убрать аннотацию", "aria-label": "Убрать аннотацию", text: "×",
+  annotations.forEach(appendAnnotation);
+}
+
+function appendAnnotation(annotation, index) {
+  const card = el("div", { class: "annotation" }, [
+    el("div", { class: "annotation-content" }, [
+      el("span", { class: "annotation-quote", tabindex: "0", text: annotation.quote }),
+      el("textarea", {
+        class: "annotation-comment",
+        "data-annotation-comment-index": index,
+        rows: 1,
+        placeholder: "Комментарий к этой цитате…",
+        "aria-label": `Комментарий к цитате ${index + 1}`,
+        text: annotation.annotation ?? "",
       }),
-    ]));
-  });
+    ]),
+    el("button", {
+      type: "button", class: "annotation-remove", "data-annotation-index": index,
+      title: "Убрать аннотацию", "aria-label": "Убрать аннотацию", text: "×",
+    }),
+  ]);
+  annotationsBox.append(card);
+  return card;
 }
 
 annotationsBox.addEventListener("click", (event) => {
@@ -9824,70 +9948,65 @@ function sourceMessageForSelection(selection) {
   return { message: group ? { ...messages[index], ...(groupIdentity ? { itemId: groupIdentity.itemId } : {}), activityGroups: [group] } : messages[index], root: renderedRoot };
 }
 
-function responseAnnotationRefusal(decision) {
+function responseAnnotationRefusal(decision, commandId) {
   try {
-    window.AgentHubCommandTrace?.record("ui-interaction", "annotation-source", 0, undefined,
+    window.AgentHubCommandTrace?.record("ui-interaction", "annotation-source", 0, commandId,
       { decision }, Date.now(), "failed");
   } catch { /* A bounded content-free diagnostic cannot affect the refusal. */ }
   return null;
 }
 
-async function responseAnnotationFromSelection(selection) {
+async function responseAnnotationFromSelection(selection, commandId) {
+  const refuse = (decision) => responseAnnotationRefusal(decision, commandId);
   const quote = normalizedAnnotationQuote(selection?.quote);
-  const projection = sourceMessageForSelection(selection);
+  const captured = selection?.traceSource;
+  if (captured && captured.taskId !== state.selectedId) return refuse("source-replaced");
+  const projection = captured?.projection ?? sourceMessageForSelection(selection);
   const identity = responseAnnotationSourceIdentity(projection?.message);
-  const locator = responseAnnotationSurfaceLocator(selection?.message, selection?.surface);
+  const locator = captured?.locator ?? responseAnnotationSurfaceLocator(selection?.message, selection?.surface);
   const start = Number(selection?.offsets?.start);
   const end = Number(selection?.offsets?.end);
-  if (!quote) return responseAnnotationRefusal("empty-selection");
-  if (!projection) return responseAnnotationRefusal("source-unavailable");
-  if (!identity) return responseAnnotationRefusal("item-identity-unavailable");
-  if (!locator) return responseAnnotationRefusal("surface-unavailable");
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return responseAnnotationRefusal("invalid-range");
+  if (!quote) return refuse("empty-selection");
+  if (!projection) return refuse("source-unavailable");
+  if (!identity) return refuse("item-identity-unavailable");
+  if (!locator) return refuse("surface-unavailable");
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return refuse("invalid-range");
   let sourceMessage = projection.message;
   let sourceSurface = selection.surface;
   const selectedTaskId = state.selectedId;
-  const selectedSurfaceText = String(sourceSurface.textContent ?? "");
-  // Streaming may replace the trace DOM while the exact source page is read.
-  // Rebind only the same unique provider item and unchanged rendered group.
+  const selectedSurfaceText = captured?.text ?? String(sourceSurface.textContent ?? "");
+  const selectedNativeItemId = captured?.nativeItemId ?? traceDetailSources.get(sourceSurface)?.sourceItemId;
+  const selectedPrefix = selectedSurfaceText.trimEnd();
+  // An exact native group can keep growing or move into collapsed history.
+  // Verify ownership and the captured rendering even if its DOM was replaced.
   const currentTraceSelection = () => {
     if (state.selectedId !== selectedTaskId) return null;
-    const messages = selectedResponseAnnotationSourceMessages().flatMap((message, index) => (
-      responseAnnotationSourceIdentity(message, { traceGroupId: locator.traceGroupId, itemId: identity.itemId })?.messageKey === identity.messageKey
-        ? [{ message, index }] : []
-    ));
-    if (messages.length !== 1) return null;
-    const root = renderedResponseAnnotationSourceRoot(MessageView.messageKey(messages[0].message, messages[0].index));
-    if (!root?.isConnected) return null;
-    const surfaces = Array.from(root.querySelectorAll(".turn-trace-reasoning"))
-      .filter((node) => node.dataset.traceGroupId === locator.traceGroupId);
-    if (!surfaces.length || surfaces.some((node) => node.textContent !== selectedSurfaceText)) return null;
-    return messages[0].message;
+    return compatibleCodexTraceProjections(selectedResponseAnnotationSourceMessages(),
+      { ...identity, traceGroupId: locator.traceGroupId }, selectedNativeItemId, selectedPrefix)[0]?.message ?? null;
   };
   if (locator.traceGroupId && identity.provider === "codex") {
     // Durable history is a bounded preview, including legacy rows with no
     // truncation marker. Bind new exact-group quotes to the source, not that copy.
     let page;
-    try { page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId }); }
-    catch { return responseAnnotationRefusal("source-read-failed"); }
+    try { page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId }, commandId); }
+    catch { return refuse("source-read-failed"); }
     const current = currentTraceSelection();
-    if (!current) return responseAnnotationRefusal("source-replaced");
-    if (page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return responseAnnotationRefusal("source-group-mismatch");
-    const selectedNativeItemId = traceDetailSources.get(selection.surface)?.sourceItemId;
-    if (selectedNativeItemId && page.groups[0].sourceItemId !== selectedNativeItemId) return responseAnnotationRefusal("source-item-mismatch");
+    if (!current) return refuse("source-replaced");
+    if (page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return refuse("source-group-mismatch");
+    if (selectedNativeItemId && page.groups[0].sourceItemId !== selectedNativeItemId) return refuse("source-item-mismatch");
     const fullGroup = traceGroupWithCitationContext(page.groups[0], current);
     sourceMessage = { ...current, activityGroups: [fullGroup] };
     sourceSurface = traceReasoningNode(fullGroup, sourceMessage);
     // A cut Markdown construct may render differently. Do not guess a new range.
-    if (!sourceSurface.textContent.startsWith(selectedSurfaceText.trimEnd())) return responseAnnotationRefusal("rendered-prefix-mismatch");
-    if (domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return responseAnnotationRefusal("selected-range-mismatch");
+    if (!sourceSurface.textContent.startsWith(selectedPrefix)) return refuse("rendered-prefix-mismatch");
+    if (domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return refuse("selected-range-mismatch");
   }
   const [contentHash, surfaceHash, selectionHash] = await Promise.all([
     responseAnnotationSha256(responseAnnotationSourceContent(sourceMessage, { ...locator, itemId: identity.itemId })),
     responseAnnotationSha256(sourceSurface.textContent),
     responseAnnotationSha256(quote),
   ]);
-  if (locator.traceGroupId && identity.provider === "codex" && !currentTraceSelection()) return responseAnnotationRefusal("source-replaced");
+  if (locator.traceGroupId && identity.provider === "codex" && !currentTraceSelection()) return refuse("source-replaced");
   const source = normalizedResponseAnnotationSource({
     version: 1,
     ...identity,
@@ -9898,7 +10017,7 @@ async function responseAnnotationFromSelection(selection) {
     surfaceHash,
     selectionHash,
   });
-  return source ? { quote, annotation: "", source } : responseAnnotationRefusal("hash-or-locator-unavailable");
+  return source ? { quote, annotation: "", source } : refuse("hash-or-locator-unavailable");
 }
 
 function duplicateResponseAnnotation(left, right) {
@@ -9908,50 +10027,79 @@ function duplicateResponseAnnotation(left, right) {
   return !leftSource && !rightSource && left?.quote === right?.quote;
 }
 
+function clearPendingAnnotation(taskId) {
+  const operation = pendingAnnotationOperations.get(taskId);
+  pendingAnnotationOperations.delete(taskId);
+  operation?.dismiss();
+}
+
 async function addAnnotation(selection) {
-  const quote = normalizedAnnotationQuote(selection?.quote);
-  if (!quote) {
+  if (!normalizedAnnotationQuote(selection?.quote)) {
     showToast("Выделите фрагмент сообщения или рассуждения.");
     return false;
   }
   const operation = captureComposerTaskOperation();
-  if (!operation) return false;
-  const operationSequence = (annotationOperationSequences.get(operation.taskId) ?? 0) + 1;
-  annotationOperationSequences.set(operation.taskId, operationSequence);
+  if (!operation || pendingAnnotationOperations.has(operation.taskId)) return false;
+  const { taskId } = operation;
+  const trace = window.AgentHubCommandTrace;
+  const commandId = trace.currentId() || trace.newId();
+  const started = trace.now();
+  const isSelectedOperation = () => state.selectedId === taskId
+    && composerTaskOperationCurrent(operation, { allowDraftEdits: true });
+  const pendingMessage = "Проверяем источник цитаты…";
+  operation.dismiss = showToast(pendingMessage, null, { persistent: true });
+  pendingAnnotationOperations.set(taskId, operation);
+  const isPending = () => pendingAnnotationOperations.get(taskId) === operation;
+  trace.afterPaint("ui-render", "annotation-pending", started, commandId, {}, () => ({
+    outcome: !toast.hidden && toast.textContent === pendingMessage ? "succeeded" : "cancelled",
+  }), () => isPending() && isSelectedOperation());
+
   let next;
   try {
-    const validate = () => responseAnnotationFromSelection(selection);
-    next = window.AgentHubCommandTrace
-      ? await window.AgentHubCommandTrace.measure("ui-interaction", "annotation-source", validate,
-        undefined, result => ({ outcome: result ? "succeeded" : "failed" }))
-      : await validate();
+    next = await trace.measure("ui-interaction", "annotation-source",
+      () => responseAnnotationFromSelection(selection, commandId), commandId,
+      result => ({ outcome: result ? "succeeded" : "failed" }));
   } catch {
-    next = responseAnnotationRefusal("source-error");
+    next = responseAnnotationRefusal("source-error", commandId);
+  }
+  const owned = isPending();
+  if (owned) clearPendingAnnotation(taskId);
+  if (!owned || !isSelectedOperation()) {
+    trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId,
+      { decision: "superseded" }, Date.now(), "cancelled");
+    return false;
   }
   if (!next) {
     showToast("Не удалось подтвердить источник выделенного фрагмента.");
+    trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId,
+      { decision: "source-refused" }, Date.now(), "failed");
     return false;
   }
-  if (annotationOperationSequences.get(operation.taskId) !== operationSequence
-    || !composerTaskOperationCurrent(operation)) return false;
-  const current = composerDraftSnapshot(operation.taskId);
+  const current = composerDraftSnapshot(taskId);
   if (current.annotations.some((annotation) => duplicateResponseAnnotation(annotation, next))) {
     showToast("Этот фрагмент уже добавлен.");
+    trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId,
+      { decision: "already-added" }, Date.now(), "cancelled");
     return false;
   }
+  const draftUnedited = composerTaskOperationCurrent(operation);
   const nextAnnotations = [...current.annotations, next];
-  composerDraftReconciliation.save(operation.taskId, {
-    ...current,
-    annotations: nextAnnotations,
-  }, { userEdited: true });
-  if (state.selectedId === operation.taskId) {
-    restoreDraft();
+  composerDraftReconciliation.save(taskId, { ...current, annotations: nextAnnotations }, { userEdited: true });
+  trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId);
+
+  // Keep the active input and caret intact if the user edited while waiting.
+  annotations = nextAnnotations;
+  annotationsBox.hidden = false;
+  const card = appendAnnotation(next, nextAnnotations.length - 1);
+  updateSendState();
+  if (draftUnedited) {
     lastAnnotationSelection = null;
     window.getSelection()?.removeAllRanges();
-    annotationsBox.querySelector(
-      `[data-annotation-comment-index="${nextAnnotations.length - 1}"]`,
-    )?.focus();
+    card.querySelector(".annotation-comment")?.focus();
   }
+  trace.afterPaint("ui-render", "annotation-card", started, commandId, {}, () => ({
+    outcome: card.getClientRects().length && !card.closest("[hidden]") ? "succeeded" : "failed",
+  }), () => isSelectedOperation() && card.isConnected);
   return true;
 }
 
@@ -9961,9 +10109,16 @@ function closeAnnotationContextMenu() {
 }
 
 function openAnnotationContextMenu(event, selection) {
+  const group = traceDetailSources.get(selection.surface);
+  const projection = group ? sourceMessageForSelection(selection) : null;
+  const locator = projection && responseAnnotationSurfaceLocator(selection.message, selection.surface);
   pendingAnnotationSelection = {
     ...selection,
     clipboardText: selectedMessageClipboard(selection)?.text ?? selection.quote,
+    ...(locator?.traceGroupId && projection.message.provider === "codex" ? {
+      traceSource: { taskId: state.selectedId, projection, locator, nativeItemId: group.sourceItemId,
+        text: String(selection.surface.textContent ?? "") },
+    } : {}),
   };
   annotationContextMenu.hidden = false;
   const menuRect = annotationContextMenu.getBoundingClientRect();
@@ -18505,6 +18660,9 @@ if (journalPolling) {
 }
 if (vscodeMode) {
   window.addEventListener("message", (event) => {
+    const nativeHost = event.origin?.startsWith("vscode-webview://") && event.origin === window.location.origin;
+    if (event.origin === "null"
+      || (event.source && event.source !== window && event.source !== window.parent && !nativeHost)) return;
     if (event.data?.type === "agenthub:journal-changed") {
       if (journalRequested) void loadJournal({ force: event.data.force === true });
     }

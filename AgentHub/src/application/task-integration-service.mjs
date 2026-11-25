@@ -239,13 +239,18 @@ export class TaskIntegrationService {
       frozenTasks: [prospective.task] });
   }
 
+  finalizeInterruptedAwait(input) {
+    requiredMethod(this.releaseGitWorkspaces, "finalizeInterruptedAwait");
+    return this.releaseGitWorkspaces.finalizeInterruptedAwait(input);
+  }
+
   async archivedNativeAwaitOriginal({ projectRoot, operationId }) {
     return this.releaseGitWorkspaces.archivedNativeAwaitOriginal?.({ projectRoot, operationId }) ?? null;
   }
 
   async prepareAwaitAcceptance({
     workspaceId, acceptingTask, projectRoot, lease = null, operationId, commitPrepared,
-    nativeAwaitRecovery = null,
+    nativeAwaitRecovery = null, validateAwaitOriginal = null, admitAwaitPromotion = null,
   } = {}) {
     if (typeof commitPrepared !== "function") throw new TypeError("commitPrepared is required");
     const root = path.resolve(String(projectRoot ?? "").trim());
@@ -253,27 +258,37 @@ export class TaskIntegrationService {
     if (!operation) throw new TypeError("operationId is required");
     // Lifecycle holds Workspace Await -> Task -> repository locks, including
     // recovery and cross-Task cutover. Retain candidate rollback through Task CAS.
-    return this.#prepareAwaitSet({
-      workspaceId, acceptingTask, lease, nativeAwaitRecovery,
-      commitPrepared: async (prepared) => {
-        const matches = prepared.releaseCandidates.flatMap((candidate) => (
-          canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
-            ? candidate.frozenTasks.filter((task) => task.taskId === String(acceptingTask?.id ?? ""))
-            : []
-        ));
-        if (matches.length !== 1) throw new Error("Task has no unique prepared Await result to accept");
-        const acceptedCandidate = prepared.releaseCandidates.find(candidate =>
-          canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root));
-        const needsAuthority = nativeAwaitRecovery
-          || acceptedCandidate?.manifest?.baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE;
-        if (needsAuthority && typeof acceptedCandidate?.verifyNativeAwaitAuthority !== "function") {
-          throw new Error("Native Await candidate authority recheck is unavailable");
-        }
-        return commitPrepared({ ...prepared, task: matches[0],
-          ...(typeof acceptedCandidate?.verifyNativeAwaitAuthority === "function"
-            ? { verifyNativeAwaitAuthority: acceptedCandidate.verifyNativeAwaitAuthority } : {}) });
-      },
-    });
+    try {
+      return await this.#prepareAwaitSet({
+        workspaceId, acceptingTask, lease, nativeAwaitRecovery, awaitOperationId: operation,
+        validateAwaitOriginal, admitAwaitPromotion,
+        commitPrepared: async (prepared) => {
+          const matches = prepared.releaseCandidates.flatMap((candidate) => (
+            canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
+              ? candidate.frozenTasks.filter((task) => task.taskId === String(acceptingTask?.id ?? ""))
+              : []
+          ));
+          if (matches.length !== 1) throw new Error("Task has no unique prepared Await result to accept");
+          const acceptedCandidate = prepared.releaseCandidates.find(candidate =>
+            canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root));
+          const needsAuthority = nativeAwaitRecovery
+            || acceptedCandidate?.manifest?.baseProvenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE;
+          if (needsAuthority && typeof acceptedCandidate?.verifyNativeAwaitAuthority !== "function") {
+            throw new Error("Native Await candidate authority recheck is unavailable");
+          }
+          return commitPrepared({ ...prepared, task: matches[0],
+            ...(typeof acceptedCandidate?.verifyNativeAwaitAuthority === "function"
+              ? { verifyNativeAwaitAuthority: acceptedCandidate.verifyNativeAwaitAuthority } : {}) });
+        },
+      });
+    } catch (error) {
+      // A refused continuation does not establish that the prior Git effect
+      // went away. Leave its original lifecycle transition pending.
+      if (nativeAwaitRecovery?.preparedPromotion && error?.code !== "AWAIT_PREPARATION_UNKNOWN") {
+        throw Object.assign(new Error(error.message, { cause: error }), { code: "AWAIT_PREPARATION_UNKNOWN" });
+      }
+      throw error;
+    }
   }
 
   async prepareAwaitSet(options = {}) {
@@ -296,7 +311,8 @@ export class TaskIntegrationService {
     acceptingTask = null, commitPrepared = null, lease = null, validateOnly = false,
     reviewedMainApprovals = null, selectedTaskIds = null,
     prospectiveOnly = false,
-    previousSelectedResults = [], nativeAwaitRecovery = null,
+    previousSelectedResults = [], nativeAwaitRecovery = null, awaitOperationId = null,
+    validateAwaitOriginal = null, admitAwaitPromotion = null,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
@@ -337,6 +353,11 @@ export class TaskIntegrationService {
     if (!selectedRepositories.length) {
       if (acceptingTask) throw new Error("Task has no PreRelease result to accept");
       return { workspaceId: String(workspaceId), planRevision: plan.revision, taskIds: [], releaseCandidates: [] };
+    }
+    if (nativeAwaitRecovery?.preparedPromotion && (selectedRepositories.length !== 1
+        || awaitOperationId !== nativeAwaitRecovery.operationId || typeof validateAwaitOriginal !== "function"
+        || typeof admitAwaitPromotion !== "function")) {
+      throw new Error("Interrupted Await requires the original operation and its sole repository");
     }
     const releaseCandidates = [];
     requiredMethod(this.taskGitWorkspaces, "releaseBaseEvidence");
@@ -481,10 +502,13 @@ export class TaskIntegrationService {
         approvedBaseCommit,
         ...(baseProvenance ? { baseProvenance } : {}),
         preserveFrozen,
+        ...(awaitOperationId ? { awaitOperationId } : {}),
         ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
+        ...(admitAwaitPromotion ? { admitAwaitPromotion } : {}),
 
         validateBeforeCommit: async () => {
           await validatePlan(); await validateBases();
+          await validateAwaitOriginal?.();
         },
         ...((acceptingTask && !prospectiveOnly) ? { commitPrepared: async (prepared) => {
           if (acceptingTask && localSource && typeof prepared.verifyNativeAwaitAuthority !== "function") {
