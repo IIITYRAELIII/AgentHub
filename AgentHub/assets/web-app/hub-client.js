@@ -79,6 +79,26 @@ function startBrowserDownload(downloadPath, name) {
   link.remove();
 }
 
+async function saveAndroidWorkspaceFile(ticket, name) {
+  // MainActivity's existing saveDataUrl bridge accepts at most 20 MiB.
+  if (!Number.isSafeInteger(ticket.bytes) || ticket.bytes <= 0 || ticket.bytes > 20 * 1024 * 1024) {
+    throw new Error("Android сохраняет файлы размером до 20 МиБ");
+  }
+  const downloadPath = String(ticket.downloadPath ?? "");
+  if (!/^\/api\/workspace-file\/transfer\/[A-Za-z0-9_-]+$/u.test(downloadPath)) {
+    throw new Error("Некорректный билет скачивания файла");
+  }
+  const response = await hubFetch(downloadPath, {
+    cache: "no-store",
+    mode: "same-origin",
+    redirect: "error",
+  }, false);
+  if (!response.ok) throw new Error(`Не удалось скачать файл: HTTP ${response.status}`);
+  const blob = await response.blob();
+  if (blob.size !== ticket.bytes) throw new Error("Получен неполный файл");
+  await saveBlob(blob, name);
+}
+
 async function launchWorkspaceFileBridge(action, localPath) {
   const payload = await requestWorkspaceFileTransfer(localPath);
   const source = new URL(String(payload.downloadPath ?? ""), window.location.origin);
@@ -5553,11 +5573,19 @@ async function saveLinkResource(resource) {
   }
   if (String(resource?.localPath ?? "").trim()) {
     if (!await hasLocalWorkspaceFileAccess()) {
-      if (!remoteWorkspaceFileBridgeAvailable()) {
+      // The native port selects how to save the bytes. The ticket endpoint
+      // decides whether the WebView's HttpOnly session can access them.
+      const androidSaveAvailable = typeof window.AgentHubAndroid?.saveDataUrl === "function";
+      if (!androidSaveAvailable && !remoteWorkspaceFileBridgeAvailable()) {
         throw new Error("Чтобы скачать файл с компьютера Agent Hub, сначала сопряги это устройство");
       }
       const ticket = await requestWorkspaceFileTransfer(resource.localPath);
-      startBrowserDownload(ticket.downloadPath, ticket.name || resourceFileName(resource));
+      const name = ticket.name || resourceFileName(resource);
+      if (androidSaveAvailable) {
+        await saveAndroidWorkspaceFile(ticket, name);
+        return;
+      }
+      startBrowserDownload(ticket.downloadPath, name);
       agentHub.toast("Скачивание файла началось");
       return;
     }
