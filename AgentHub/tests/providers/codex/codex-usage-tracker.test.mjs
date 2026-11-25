@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CodexUsageTracker } from "../../../src/providers/codex/codex-usage-tracker.mjs";
+import { turnCreditBreakdown } from "../../../src/domain/token-usage.mjs";
 
 function usage(totalTokens, {
   inputTokens = totalTokens,
@@ -38,6 +39,39 @@ test("CodexUsageTracker accumulates one turn from thread-total deltas", () => {
   assert.equal(result.usage.totalTokens, 140);
   assert.equal(tracker.latestContext("thread-1").breakdown.categories[0].estimatedTokens, 12);
   assert.equal(tracker.turns.has("turn-1"), false);
+});
+
+test("a GPT-6.2 first request can prove a restored thread delta only when all counts match", () => {
+  const model = "gpt-6.2-sol";
+  const request = usage(110_000, { inputTokens: 100_000, outputTokens: 10_000 });
+  const cumulative = usage(220_000, { inputTokens: 200_000, outputTokens: 20_000 });
+  const { cachedInputTokens, ...missingCache } = request;
+  const { cachedInputTokens: _cached, ...missingCumulativeCache } = cumulative;
+  for (const [label, last, total, expected] of [
+    ["exact", request, cumulative, 7.5],
+    ["different output", { ...request, outputTokens: 9_999 }, cumulative, null],
+    ["different optional count", { ...request, cacheWriteInputTokens: 1 }, cumulative, null],
+    ["missing last cache", missingCache, cumulative, null],
+    ["missing cumulative cache", request, missingCumulativeCache, null],
+  ]) {
+    const tracker = new CodexUsageTracker();
+    tracker.restore({ threadTokenTotals: [["thread", request]], turnTokenUsage: [["new-turn", { reported: false }]] });
+    tracker.track({ threadId: "thread", turnId: "new-turn", tokenUsage: { total, last } }, { model });
+    const observed = tracker.consume("new-turn");
+    assert.equal(observed.usage.inputTokens, 100_000, label);
+    assert.equal(observed.usage.cachedInputTokens, 0, label);
+    const cost = turnCreditBreakdown(observed.usage, { model });
+    assert.equal(cost.priced ? cost.total : null, expected, label);
+  }
+
+  const tracker = new CodexUsageTracker();
+  tracker.restore({ threadTokenTotals: [["thread", request]], turnTokenUsage: [["new-turn", { reported: false }]] });
+  tracker.track({ threadId: "thread", turnId: "new-turn", tokenUsage: { total: cumulative, last: missingCache } }, { model });
+  const nextTotal = usage(330_000, { inputTokens: 300_000, outputTokens: 30_000 });
+  tracker.track({ threadId: "thread", turnId: "new-turn", tokenUsage: { total: nextTotal, last: request } }, { model });
+  const observed = tracker.consume("new-turn");
+  assert.equal(observed.usage.totalTokens, 220_000);
+  assert.equal(turnCreditBreakdown(observed.usage, { model }).priced, false);
 });
 
 test("CodexUsageTracker returns the newest context for a thread", () => {

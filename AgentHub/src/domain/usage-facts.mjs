@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { normalizeServiceTier, normalizeTokenUsage } from "./token-usage.mjs";
+import { normalizeJournalTokenUsage, normalizeServiceTier } from "./token-usage.mjs";
 import { isCredentialClassAccountKey } from "./usage-account-identity.mjs";
 
 export const USAGE_FACT_SCHEMA_VERSION = 2;
@@ -215,7 +215,7 @@ function turnFactBody(value, { eventId, threadKey }) {
       || threadKey,
     startedAt: timestamp(value.startedAt),
     completedAt: timestamp(value.completedAt),
-    usage: normalizeTokenUsage(value.usage),
+    usage: normalizeJournalTokenUsage(value.usage, value.model),
     usageReported: value.usageReported === false ? false : true,
     model: text(value.model).toLowerCase(),
     serviceTier: value.serviceTier == null ? "" : normalizeServiceTier(value.serviceTier),
@@ -316,6 +316,11 @@ function summaryFactPayload(fact) {
     version,
     ...payload
   } = fact ?? {};
+  if (payload.usage?.measuredTokenFields !== undefined) {
+    // Older sync servers carry the same counters without local evidence.
+    const { measuredTokenFields, ...usage } = payload.usage;
+    payload.usage = usage;
+  }
   return sortedJsonValue(payload);
 }
 

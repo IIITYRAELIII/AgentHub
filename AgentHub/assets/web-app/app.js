@@ -14703,9 +14703,7 @@ function renderUsageHistoryContent() {
           `${device.label} — ${formatUsageValue(device.credits)}`
         )).join("; ")}.`);
       }
-      if (unpriced) notes.push(usageUnit === "qu"
-        ? `Без модели или API-тарифа для токенного QU: ${unpriced}.`
-        : `Без тарифа и вне суммы: ${unpriced}.`);
+      if (unpriced) notes.push(`Вне суммы из-за неполных данных или отсутствия тарифа: ${unpriced}.`);
       if (rate && usageState.rateBasis === "task" && untimed) {
         notes.push(`Без длительности и вне скорости по времени задач: ${untimed}.`);
       }
