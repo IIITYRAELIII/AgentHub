@@ -33,7 +33,7 @@ import { normalizedTaskGitReferences, taskBranchName, normalizedInitialNativeTes
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../../domain/task-squash-cutover.mjs";
 import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError,
-  normalizedSelectedAbsorption, selectedAbsorptionHandoff, assertSelectedAbsorptionTasks } from "../../domain/task-selected-composition.mjs";
+  normalizedSelectedAbsorption, selectedAbsorptionHandoff, assertSelectedAbsorptionTasks, normalizedOrdinaryAbsorptions } from "../../domain/task-selected-composition.mjs";
 import { normalizedTaskNumber, normalizedWorkspaceTaskPrefix, taskNumberParts } from "../../domain/task-number.mjs";
 import { taskProjectRoot } from "../../domain/task-project-root.mjs";
 import {
@@ -3249,7 +3249,160 @@ export class TaskBoardStore {
   // disappears. Read the existing outcome owner; never infer ordinary protocol
   // from the absence of an optional field in downstream release objects.
   selectedCompositionForRelease({ taskId, projectRoot, resultCommit } = {}) {
-    return this.#withDatabase(database => this.#selectedCompositionForRelease(database, { taskId, projectRoot, resultCommit }));
+    return this.#withDatabase(database => {
+      const selected = this.#selectedCompositionForRelease(database, { taskId, projectRoot, resultCommit });
+      const history = [];
+      // Canonical completed closures, not caller descriptors or inferred Git
+      // reachability, keep this authority available to later ordinary Await.
+      const rows = database.prepare(`SELECT operation_id,task_id,result_json FROM hub_task_lifecycle_outcomes
+        WHERE kind='complete' AND json_extract(result_json,'$.evidence.absorbedInto.taskId')=?
+        AND json_type(result_json,'$.evidence.absorbedInto.ordinaryAbsorptions')='array'
+        ORDER BY completed_at_ms,operation_id LIMIT 65`).all(taskId);
+      if (rows.length > 64) throw selectedCompositionRequiredError("ordinary closure history exceeds bounded lookup");
+      for (const row of rows) {
+        const completed = JSON.parse(row.result_json);
+        const source = this.#taskWithRelease(database, this.#taskRow(database, row.task_id));
+        if (source.status !== "done" || source.id !== completed.result?.id
+            || source.revision !== completed.result.revision) {
+          throw selectedCompositionRequiredError("ordinary absorbed source is no longer closed");
+        }
+        for (const proof of normalizedOrdinaryAbsorptions(completed.evidence.absorbedInto.ordinaryAbsorptions, taskId)) {
+          if (!sameResolvedPath(proof.repositoryRoot, projectRoot)) continue;
+          if (proof.testedCommit !== resultCommit) {
+            throw selectedCompositionRequiredError("closed absorption belongs to another tested result");
+          }
+          const fresh = this.#ordinaryAbsorptionProof(database, { taskId, projectRoot: proof.repositoryRoot,
+            resultCommit: proof.testedCommit, sourceTaskId: source.id, sourceTaskRevision: proof.sourceTaskRevision,
+            targetTaskRevision: proof.taskRevision, operationId: row.operation_id, repository: {
+              ordinaryMerge: Object.fromEntries(["baseCommit", "sourceCommit", "sourceTree", "survivorParentCommit",
+                "absorptionCommit", "testedCommit"].map(key => [key, proof[key]])),
+              returnedSource: proof.authority.returnedSource,
+            } });
+          if (JSON.stringify(fresh) !== JSON.stringify(proof)) {
+            throw selectedCompositionRequiredError("ordinary closure canonical authority changed");
+          }
+          history.push(proof);
+        }
+      }
+      return history.length ? { ...selected, resultCommit,
+        ordinaryAbsorptions: normalizedOrdinaryAbsorptions(history, taskId) } : selected;
+    });
+  }
+
+  #ordinaryAbsorptionProof(database, { taskId, projectRoot, resultCommit, sourceTaskId,
+    sourceTaskRevision, targetTaskRevision, operationId, repository }) {
+    const reject = reason => { throw selectedCompositionRequiredError(`ordinary absorption ${reason}`); };
+    const hash = value => createHash("sha256").update(value).digest("hex");
+    const source = this.#taskWithRelease(database, this.#taskRow(database, sourceTaskId));
+    const target = this.#taskWithRelease(database, this.#taskRow(database, taskId));
+    const readOutcome = id => database.prepare("SELECT * FROM hub_task_lifecycle_outcomes WHERE operation_id=? AND kind='workflow'").get(id);
+    const receipt = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id=?").get(operationId);
+    const execution = receipt?.task_execution_json ? JSON.parse(receipt.task_execution_json) : null;
+    if (!receipt || receipt.tool_name !== "hub_task_complete" || receipt.workspace_id !== source.workspaceId
+        || receipt.stream_id !== source.streamId || source.streamId !== target.streamId
+        || execution?.protocol !== "task-operation-interruption-v1" || execution.version !== 1
+        || execution.taskWorkspaceId !== source.workspaceId
+        || execution.taskId !== source.id || execution?.arguments?.task_id !== source.id
+        || execution.arguments.absorbed_into_task_id !== target.id || execution.cancellation
+        || mcpArgumentsHash(execution.arguments) !== receipt.arguments_hash
+        || execution.arguments.confirm_cleanup !== true || !execution.arguments.expected_cleanup_token
+        || receipt.status !== "succeeded" || receipt.receipt_state !== "succeeded") reject("actor or original changed");
+    if (source.id === target.id || source.workspaceId !== target.workspaceId || !source.streamId
+        || source.status !== "done" || source.revision !== sourceTaskRevision + 1
+        || target.revision < targetTaskRevision
+        || !["in_progress", "new", "blocked"].includes(source.workflowStatus)) reject("current Task boundary changed");
+    const link = target.checklist.find(item => item.linkedTaskId === source.id);
+    if (!link || !link.completed || source.checklistParent?.task?.id !== target.id
+        || source.checklistParent.itemId !== link.id) reject("requirement link changed");
+    const currentPrior = this.#closedAbsorptionPriorResult(database, source);
+    // The canonical archive CAS increments the row revision once. Keep the
+    // original pre-archive authority identity, while checking that exact effect.
+    const prior = { ...currentPrior, taskRevision: sourceTaskRevision };
+    if (JSON.stringify(prior) !== JSON.stringify(repository?.returnedSource)) reject("returned source changed");
+    const sourceTest = readOutcome(prior.testOperationId);
+    const rows = database.prepare(`SELECT * FROM hub_task_lifecycle_outcomes WHERE task_id=? AND kind='workflow'
+      AND json_extract(result_json,'$.task.workflowStatus')='testing'
+      AND json_extract(result_json,'$.evidence.outcome')='integrated'
+      AND json_extract(result_json,'$.evidence.resultCommit')=?
+      AND json_extract(result_json,'$.task.revision')<=? ORDER BY completed_at_ms DESC,operation_id DESC LIMIT 65`)
+      .all(taskId, resultCommit, targetTaskRevision);
+    if (rows.length > 64) reject("Test lookup exceeds bound");
+    const targetTest = rows.find(row => {
+      const task = JSON.parse(row.result_json).task;
+      return task?.gitReferences?.some(ref => sameResolvedPath(ref.projectRoot, projectRoot) && ref.resultCommit === resultCommit);
+    });
+    const sourceReturn = readOutcome(prior.returnOperationId);
+    if (!targetTest || !sourceTest || !sourceReturn
+        || targetTest.completed_at_ms < sourceReturn.completed_at_ms) reject("Test result missing or predates return");
+    const testedTarget = JSON.parse(targetTest.result_json).task;
+    const targetRef = testedTarget.gitReferences.find(ref => sameResolvedPath(ref.projectRoot, projectRoot));
+    if (target.gitReferences.length !== testedTarget.gitReferences.length
+        || target.gitReferences.some((ref, i) => JSON.stringify(ref) !== JSON.stringify(testedTarget.gitReferences[i]))) reject("current survivor result changed");
+    if (repository?.ordinaryMerge?.testedCommit !== resultCommit || prior.projectRoot !== projectRoot
+        || source.gitReferences.length !== 1 || source.gitReferences[0].branch !== prior.branch
+        || !targetRef || testedTarget.streamId !== target.streamId) reject("repository binding changed");
+    const actor = { workspaceId: receipt.workspace_id, streamId: receipt.stream_id,
+      provider: receipt.provider, threadId: receipt.provider_thread_id };
+    const publicOutcome = (id, tool, expectedTaskId = source.id, status = null) => {
+      const r = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id=?").get(id);
+      const capture = r?.task_execution_json ? JSON.parse(r.task_execution_json) : null;
+      if (!r || r.tool_name !== tool || r.status !== "succeeded" || r.receipt_state !== "succeeded"
+          || r.workspace_id !== actor.workspaceId || r.stream_id !== actor.streamId
+          || r.provider !== actor.provider || r.provider_thread_id !== actor.threadId
+          || capture?.protocol !== "task-operation-interruption-v1" || capture.version !== 1
+          || capture.taskWorkspaceId !== actor.workspaceId || capture.taskId !== expectedTaskId
+          || capture.arguments?.task_id !== expectedTaskId || capture.cancellation
+          || (status && capture.arguments.status !== status)
+          || mcpArgumentsHash(capture.arguments) !== r.arguments_hash) reject("foreign or unfinished owner receipt");
+      return { operationId: id, argumentsHash: r.arguments_hash };
+    };
+    const claims = database.prepare(`SELECT m.request_id,m.result_json,b.baseline_json,b.claimed_at_ms
+      FROM hub_task_turn_bindings b JOIN hub_mcp_operations m ON m.request_id=b.operation_id
+      WHERE b.task_id=? AND b.operation_kind='claim' AND m.tool_name='hub_task_claim'
+        AND m.status='succeeded' AND m.receipt_state='succeeded'
+      ORDER BY b.claimed_at_ms DESC,m.request_id DESC LIMIT 2`).all(source.id);
+    const claim = claims[0], claimResult = claim ? JSON.parse(claim.result_json) : null;
+    const baseline = claim ? JSON.parse(claim.baseline_json) : null;
+    if (!claim || claim.claimed_at_ms > sourceTest.completed_at_ms || claimResult?.id !== source.id
+        || !sameResolvedPath(baseline?.repoRoot ?? "", projectRoot) || !baseline?.tree
+        || claimResult.gitWorkspace?.baseCommit !== baseline.tree
+        || claimResult.gitWorkspace?.branch !== prior.branch) reject("canonical claim changed or source reopened");
+    const authority = { actor, returnedSource: prior,
+      claim: { ...publicOutcome(claim.request_id, "hub_task_claim"), resultHash: hash(claim.result_json), baselineHash: hash(claim.baseline_json) },
+      sourceTest: publicOutcome(prior.testOperationId, "hub_task_status_update", source.id, "testing"),
+      sourceReturn: publicOutcome(prior.returnOperationId, "hub_task_status_update", source.id,
+        JSON.parse(sourceReturn.result_json).task.workflowStatus),
+      targetTest: { ...publicOutcome(targetTest.operation_id, "hub_task_status_update", target.id, "testing"), outcomeHash: hash(targetTest.result_json) },
+      sourceMetadataHash: hash(JSON.stringify({ description: source.description, references: source.gitReferences,
+        checklistParent: { taskId: source.checklistParent?.task?.id, itemId: source.checklistParent?.itemId },
+        revision: sourceTaskRevision })),
+      targetMetadataHash: hash(JSON.stringify({ description: testedTarget.description, references: testedTarget.gitReferences,
+        revision: testedTarget.revision })), checklistItemId: link.id };
+    const proof = { kind: "ordinary-task-absorption-v1", sourceTaskId: source.id, sourceTaskRevision,
+      taskId, taskRevision: targetTaskRevision, repositoryRoot: projectRoot,
+      ...repository.ordinaryMerge, authority, authorityHash: hash(JSON.stringify(authority)) };
+    return normalizedOrdinaryAbsorptions([proof], taskId)[0];
+  }
+
+  #closedAbsorptionPriorResult(database, task) {
+    const [prior] = this.#selectedAbsorptionPriorResults(database, [task], this.now());
+    if (!prior) throw selectedCompositionRequiredError("closed source has no exact returned Test");
+    const tested = this.lifecycleOutcome(prior.testOperationId)?.result;
+    const returned = this.lifecycleOutcome(prior.returnOperationId)?.result;
+    const ref = task.gitReferences[0];
+    const later = database.prepare(`SELECT operation_id FROM hub_task_lifecycle_outcomes
+      WHERE task_id=? AND kind='workflow'
+      AND json_extract(result_json,'$.task.workflowStatus')='testing'
+      AND json_extract(result_json,'$.evidence.outcome')='integrated'
+      AND json_extract(result_json,'$.task.revision')>? LIMIT 1`).get(task.id, prior.returnRevision);
+    if (!["new", "in_progress", "blocked"].includes(task.workflowStatus) || later
+        || tested?.evidence.outcome !== "integrated"
+        || [tested?.task, returned?.task, returned?.priorTask].some(value =>
+          value?.gitReferences?.length !== 1 || value.gitReferences[0].branch !== ref.branch)
+        || !/^[0-9a-f]{40}$/u.test(tested?.evidence.devHeadCommit ?? "")) {
+      throw selectedCompositionRequiredError("closed source return or Test boundary changed");
+    }
+    return { ...prior, taskRevision: task.revision, branch: ref.branch, devCommit: tested.evidence.devHeadCommit };
   }
 
   #selectedCompositionForRelease(database, { taskId, projectRoot, resultCommit }) {
