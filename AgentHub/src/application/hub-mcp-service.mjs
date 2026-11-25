@@ -28,11 +28,18 @@ const MAX_REGISTERED_CONTEXT_CAPABILITIES = 1_000;
 const STREAM_HISTORY_CURSOR_VERSION = 1;
 const DEFAULT_HISTORY_ACTIVITY_LIMIT = 40;
 const DEFERRED_INPUT_STALLED_AFTER_MS = 60_000;
+const TASK_COMPLETE_BATCH = "hub_task_complete_batch";
+const MAX_BATCH_COMPLETIONS = 50;
+const MANUAL_DELIVERY_SCHEMA = { type: "object", additionalProperties: false, required: ["revision", "releaseId", "manifestSha256"], properties: {
+  revision: { type: "string", pattern: "^[a-f0-9]{40}$" }, releaseId: { type: "string" },
+  manifestSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+} };
 const MUTATING_TOOLS = new Set([
   "hub_task_create", "hub_task_update", "hub_task_checklist_update", "hub_task_move", "hub_task_start", "hub_task_reassign", "hub_task_launch_cancel", "hub_task_claim", "hub_task_status_update", "hub_task_operation_cancel", "hub_task_legacy_git_adopt", "hub_task_complete", "hub_task_delete",
   "hub_task_attachment_add", "hub_workspace_rules_update", "hub_stream_rules_update",
   "hub_stream_message_send",
   "hub_task_operation_reconcile",
+  TASK_COMPLETE_BATCH,
 ]);
 
 // Only the synchronous input boundary below can produce this proof of no effects.
@@ -891,10 +898,7 @@ export class HubMcpService {
         retained_repositories: { type: "array", description: "Manual mode only: exact managed worktree/head pins for historical repositories no longer represented by the canonical Task result. Retained, not certified delivered or deleted.", items: { type: "object", additionalProperties: false, required: ["project_root", "head_commit"], properties: {
           project_root: { type: "string" }, head_commit: { type: "string", pattern: "^[a-f0-9]{40}$" },
         } } },
-        manual_delivery: { type: "object", additionalProperties: false, required: ["revision", "releaseId", "manifestSha256"], properties: {
-          revision: { type: "string", pattern: "^[a-f0-9]{40}$" }, releaseId: { type: "string" },
-          manifestSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
-        } },
+        manual_delivery: MANUAL_DELIVERY_SCHEMA,
         completed_operation_request_id: { type: "string", description: "Original canonical closure for historical cleanup: published-service proof in operational mode, or exact original manually delivered source in manual_delivery mode. The old closure is not replayed." },
         published_delivery: { type: "object", properties: {
           runtimeRoot: { type: "string" }, publicationRunSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
@@ -903,6 +907,11 @@ export class HubMcpService {
           sourceCommit: { type: "string", pattern: "^[a-f0-9]{40}$" }, publicationBaseCommit: { type: "string", pattern: "^[a-f0-9]{40}$" },
         }, required: ["runtimeRoot", "publicationRunSha256", "preparedSha256", "sourceBaseCommit", "sourceCommit", "publicationBaseCommit"], additionalProperties: false },
       }, ["task_id"]),
+      tool(TASK_COMPLETE_BATCH, "Archive the listed Tasks in one operation, preserving their history and local Git artifacts. Returns each Task's outcome and child receipt. Optional manual_delivery uses the existing verified Done transition before archive.", {
+        task_ids: { type: "array", minItems: 1, maxItems: MAX_BATCH_COMPLETIONS, items: { type: "string" },
+          description: "Task IDs in processing order. Each unique ID is processed once." },
+        manual_delivery: MANUAL_DELIVERY_SCHEMA,
+      }, ["task_ids"]),
       tool("hub_task_delete", "Preview, then explicitly confirm permanent destructive deletion of a Task and its managed Git artifacts.", {
         task_id: { type: "string" },
         confirm_cleanup: { type: "boolean" },
@@ -1099,6 +1108,7 @@ export class HubMcpService {
           || (existing.status === "unknown" && cleanupConfirmationOriginal(existing, true)));
       recoveringCleanup = Boolean(cleanupRecovery);
       const continuation = toolName === "hub_task_operation_cancel" && this.taskOperationInterruption
+        || toolName === TASK_COMPLETE_BATCH
         || this.#ordinaryAwaitReconciliationContinuation(toolName, args, existing) || custodyContinuation;
       if (!cleanupRecovery && (!continuation || existing.status !== "unknown" || this.#pendingMutations.has(requestId))) {
         return this.#taskOperationReadback(context, { operation_request_id: requestId, expected_arguments_hash: argumentsHash(args) });
@@ -1491,6 +1501,8 @@ export class HubMcpService {
           throw new Error("published release service closure requires a Release Manager Stream");
         }
         return this.#completeTask(context, args);
+      case TASK_COMPLETE_BATCH:
+        return this.#completeTaskBatch(context, args);
       case "hub_task_delete": {
         return this.#deleteTask(context, args);
       }
@@ -2362,6 +2374,107 @@ export class HubMcpService {
     return compactCompleteResult(result);
   }
 
+  async #completeTaskBatch(context, args) {
+    let taskIds;
+    try {
+      if (!Array.isArray(args.task_ids) || args.task_ids.length < 1 || args.task_ids.length > MAX_BATCH_COMPLETIONS) {
+        throw new Error(`Expected between 1 and ${MAX_BATCH_COMPLETIONS} Task IDs`);
+      }
+      taskIds = [...new Set(args.task_ids.map(id => {
+        if (typeof id !== "string") throw new Error("Task ID must be a string");
+        return requiredText(id, "task id", 300);
+      }))];
+      // The catalog has a 64 KiB receipt cap. Do not let long input IDs consume
+      // the space needed for each outcome and its exact child receipt.
+      if (Buffer.byteLength(JSON.stringify(taskIds)) > 12 * 1024) throw new Error("Batch Task IDs exceed the receipt budget");
+    } catch (error) {
+      throw new TaskInputValidationError(error.message, { cause: error });
+    }
+    const results = [];
+    for (const taskId of taskIds) {
+      results.push(await this.#completeBatchTask(context, { batchId: args.request_id, taskId, manualDelivery: args.manual_delivery }));
+    }
+    return { results };
+  }
+
+  async #completeBatchTask(context, { batchId, taskId, manualDelivery }) {
+    const id = stage => `batch-${stage}-${createHash("sha256").update(JSON.stringify([batchId, taskId])).digest("hex")}`;
+    const previewId = id("preview"), archiveId = id("archive"), doneId = id("done");
+    const archiveOriginal = this.workspaceCatalog.mcpOperation(archiveId);
+    const task = this.taskBoard.task(taskId, { required: false });
+    if (!archiveOriginal && task?.status === "done") {
+      return { taskId, outcome: "already_closed", workflowStatus: task.workflowStatus, taskRevision: task.revision };
+    }
+    if (!task) return { taskId, outcome: "not_found" };
+
+    const archiveArgs = { task_id: taskId, completion_mode: "archive", retain_artifacts: true };
+    const run = (toolName, input) => this.#completeBatchChild(context, toolName, input);
+    let doneReceipt = null;
+    if (manualDelivery) {
+      const priorDone = this.workspaceCatalog.mcpOperation(doneId);
+      if (priorDone || (!archiveOriginal && task.workflowStatus !== "done")) {
+        const captured = priorDone?.taskExecution?.arguments;
+        const done = await run("hub_task_status_update", { task_id: taskId, request_id: doneId, status: "done",
+          expected_task_revision: captured?.expected_task_revision ?? task.revision,
+          expected_workflow_status: captured?.expected_workflow_status ?? task.workflowStatus,
+          manual_delivery: manualDelivery });
+        if (done.outcome !== "succeeded" || done.result?.workflowStatus !== "done") {
+          return { taskId, stage: "done", ...done.summary, ...(done.outcome === "succeeded" ? { outcome: "unknown" } : {}) };
+        }
+        doneReceipt = done.summary.receipt;
+      }
+    }
+    const preview = await run("hub_task_complete", { ...archiveArgs, request_id: previewId });
+    if (preview.outcome !== "succeeded" || !preview.result?.cleanupToken) {
+      return { taskId, stage: "preview", ...preview.summary, ...(preview.outcome === "succeeded" ? { outcome: "unknown" } : {}) };
+    }
+    const archive = await run("hub_task_complete", { ...archiveArgs, request_id: archiveId,
+      confirm_cleanup: true, expected_cleanup_token: preview.result.cleanupToken });
+    const result = archive.result;
+    const summary = { taskId, stage: "archive", ...archive.summary, ...(doneReceipt ? { doneReceipt } : {}) };
+    if (archive.outcome !== "succeeded") return summary;
+    if (result?.confirmationRequired) return { ...summary, outcome: "confirmation_required" };
+    if (result?.id !== taskId || result.status !== "done") return { ...summary, outcome: "unknown" };
+    return { ...summary, outcome: "archived", workflowStatus: result.workflowStatus };
+  }
+
+  async #completeBatchChild(context, toolName, args) {
+    const requestId = args.request_id, childHash = argumentsHash(args);
+    let operation = this.workspaceCatalog.mcpOperation(requestId);
+    const matches = row => row.workspaceId === context.workspaceId && row.streamId === context.streamId
+      && row.provider === context.provider && row.threadId === context.auditThreadId
+      && (row.actorKind ?? "provider") === (context.actorKind ?? "provider")
+      && row.toolName === toolName && row.argumentsHash === childHash;
+    let error;
+    if (!operation) {
+      try {
+        await this.#mutate(context, toolName, args,
+          admissionReceipt => this.#dispatch({ ...context, admissionReceipt }, toolName, args));
+      } catch (failure) {
+        error = failure;
+      }
+      operation = this.workspaceCatalog.mcpOperation(requestId);
+    }
+    if (operation && !matches(operation)) return { outcome: "failed", summary: { outcome: "failed", error: "Child receipt identity differs" } };
+    if (operation?.status === "unknown" && args.completion_mode === "archive" && args.confirm_cleanup === true
+        && !this.#pendingMutations.has(requestId)) {
+      // Only the single Complete reconciler may settle a previously admitted
+      // archive. It verifies its original hash and never repeats cleanup.
+      try {
+        await this.#reconcilePublishedDeliveryComplete(context, { operation_request_id: requestId,
+          task_id: args.task_id, expected_arguments_hash: childHash });
+      } catch (failure) {
+        error = failure;
+      }
+      operation = this.workspaceCatalog.mcpOperation(requestId);
+    }
+    const outcome = operation?.status ?? "unknown";
+    const message = String(operation?.error || error?.message || "").slice(0, 80);
+    return { outcome, result: operation?.result, summary: { outcome,
+      receipt: { requestId, argumentsHash: childHash, status: operation?.status ?? "not_found" },
+      ...(message ? { error: message } : {}) } };
+  }
+
   async #deleteTask(context, args = {}) {
     const {
     task_id: taskId, request_id: operationId, confirm_cleanup: confirmCleanup = false,
@@ -3016,6 +3129,7 @@ export class HubMcpService {
     const workflowReconciliationContinuation = started.replayed
       && this.#ordinaryAwaitReconciliationContinuation(toolName, args, started);
     const interruption = toolName === "hub_task_operation_cancel";
+    const batchContinuation = toolName === TASK_COMPLETE_BATCH;
     if (started.status === "unknown" && toolName === "hub_task_claim" && !custodyConsume) {
       const reconciled = await this.#reconcileClaimAdmissionNoEffect(context, args, started).catch(() => null);
       if (reconciled) {
@@ -3030,7 +3144,7 @@ export class HubMcpService {
         throw terminal;
       }
     }
-    if (started.status === "unknown" && !custodyConsume && !custodyStage && !interruption && !workflowReconciliationContinuation) {
+    if (started.status === "unknown" && !custodyConsume && !custodyStage && !interruption && !workflowReconciliationContinuation && !batchContinuation) {
       throw new Error(`MCP operation outcome is unknown; reconcile authoritatively before retrying request_id ${requestId}`);
     }
     const inFlight = this.#pendingMutations.get(requestId);
@@ -3040,6 +3154,7 @@ export class HubMcpService {
       "hub_task_start", "hub_task_reassign", "hub_task_status_update", "hub_task_complete", "hub_task_delete",
       "hub_task_checklist_update",
       "hub_task_operation_cancel",
+      TASK_COMPLETE_BATCH,
     ]);
     if (started.replayed && !resumable.has(toolName) && !custodyConsume && !custodyStage && !workflowReconciliationContinuation) {
       const reason = new Error("MCP operation outcome requires authoritative reconciliation; blind replay is forbidden");
@@ -3081,6 +3196,12 @@ export class HubMcpService {
             reconciliation: { kind: "ordinary-await-reconciliation-control-v1",
               originalRequestId: args.operation_request_id, originalArgumentsHash: args.expected_arguments_hash,
               previousReceipt: started },
+          });
+          return completed.result;
+        } else if (batchContinuation && started.status === "unknown") {
+          const completed = await this.workspaceCatalog.completeUnknownMcpOperation(requestId, {
+            workspaceId: context.workspaceId, toolName, result,
+            reconciliation: { kind: "task-complete-batch-child-receipts-v1" },
           });
           return completed.result;
         } else if (interruption && started.status === "unknown") {
@@ -3126,7 +3247,7 @@ export class HubMcpService {
         }
         // A failed continuation does not erase the previous control UNKNOWN:
         // effects of that older invocation may already be in the target owner.
-        if (workflowReconciliationContinuation) throw error;
+        if (workflowReconciliationContinuation || (batchContinuation && started.status === "unknown")) throw error;
         if (args.claim_custody && toolName === "hub_task_operation_reconcile") {
           const durable = claimCustodyState(observe(() => this.workspaceCatalog.mcpOperation(requestId)));
           if (durable) return durable.result;

@@ -1038,6 +1038,23 @@ Dashboard verifies the complete digest before rendering the confirmation.
 A compacted reconciliation keeps its business outcome and the original
 operation ID and arguments hash for the same page reads.
 
+### Batch Task archive (ADR-HUB-466)
+
+`hub_task_complete_batch` archives the unique Task IDs in supplied order.
+Each item reports its own outcome and exact child receipt when one exists.
+Explicit batch archive retains artifacts and history. It uses the same
+single-card preview, token, Task lease and CAS internally. Optional
+`manual_delivery` invokes the existing Done transition with its real proof
+before archive, leaving each failed or unresolved item visible in the result.
+A bounded batch preserves the full index of item outcomes in the outer receipt.
+
+An exact aggregate repeat may read existing child receipts and admit only
+missing stages under deterministic child IDs. An unresolved archive can
+settle through the single-card reconciler when its exact admitted evidence
+exists. A missing or unresolved effect is never labeled an archived Task.
+Terminal child receipts are not replayed. Terminal aggregate readback is
+immutable; an unresolved child has its own canonical readback.
+
 Successful complete/delete preview compaction preserves action, token, exact
 Task identity/revision and the complete preview digest/length within 64 KiB.
 Combined-closure capsules also retain the survivor identity/revision, including

@@ -101,9 +101,9 @@ export class TaskBoardService {
     });
   }
 
-  task(id) {
+  task(id, { required = true } = {}) {
     const task = this.store.task(id);
-    if (!task) throw new Error("Задача не найдена");
+    if (!task && required) throw new Error("Задача не найдена");
     return task;
   }
 
