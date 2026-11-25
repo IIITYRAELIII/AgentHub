@@ -1637,11 +1637,18 @@ async function hubFetch(input, init, retrySession = true, traceId) {
 
 async function hubFetchResponse(input, init, retrySession = true, traceId) {
   try {
-    const measured = (action, operation) => traceId?.traceUploadId
-      ? commandTrace.upload(action, operation, { uploadId: traceId.traceUploadId,
-        uploadAttemptId: traceId.traceAttemptId,
-        httpRequestId: traceId.traceHttpRequestId,
-        messageRequestId: traceId.traceRequestId, chunkIndex: traceId.traceChunkIndex }) : operation();
+    const measured = (action, operation) => {
+      if (traceId?.traceUploadId) {
+        return commandTrace.upload(action, operation, { uploadId: traceId.traceUploadId,
+          uploadAttemptId: traceId.traceAttemptId,
+          httpRequestId: traceId.traceHttpRequestId,
+          messageRequestId: traceId.traceRequestId, chunkIndex: traceId.traceChunkIndex });
+      }
+      if (traceId?.exactTracePage && action !== "transport") {
+        return commandTrace.measure("ui-control", `http-history-device-${action}`, operation, traceId.traceRequestId);
+      }
+      return operation();
+    };
     // Refreshing the session re-issues the HttpOnly cookie that the request below
     // carries automatically as a same-origin request.
     await measured("session", () => window.AgentHubBrowserDevice?.ensureSession?.());
@@ -1889,9 +1896,14 @@ async function readHistoryHttpResponse(response, traceId, requestId) {
 
 async function httpControl(action, params = {}) {
   if (action === "snapshot" && !params.messageReceiptIds?.length) return readSnapshot(params);
-  await localSessionReady;
-  const commandId = crypto.randomUUID();
   const historyTraceId = action === "task-history" ? params.clientTraceId : "";
+  const exactTracePage = Boolean(historyTraceId && params.tracePage?.groupId);
+  if (exactTracePage) {
+    await commandTrace.measure("ui-control", "http-history-local-session", () => localSessionReady, historyTraceId);
+  } else {
+    await localSessionReady;
+  }
+  const commandId = crypto.randomUUID();
   const payload = await retryConnectionFailure(async () => {
     const requestParams = params.clientTiming
       ? {
@@ -1911,7 +1923,8 @@ async function httpControl(action, params = {}) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ action, params: requestParams, commandId }),
-    }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS, params.clientTraceId);
+    }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS,
+    exactTracePage ? { traceRequestId: historyTraceId, exactTracePage } : params.clientTraceId);
     const result = await (historyTraceId
       ? readHistoryHttpResponse(response, historyTraceId, commandId)
       : response.json()).catch(() => ({}));

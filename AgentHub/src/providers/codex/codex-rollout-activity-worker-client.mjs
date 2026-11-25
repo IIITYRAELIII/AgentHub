@@ -31,6 +31,10 @@ function createRolloutWorkerClient(admission = false) {
     activeWorker.unref();
     activeWorker.on("message", (message) => {
       const requestId = Number(message?.requestId);
+      const timing = message?.timing;
+      if (Number.isFinite(timing?.finishedAt)) {
+        timing.returnMs = Math.max(0, performance.timeOrigin + performance.now() - timing.finishedAt);
+      }
       if (message?.ok) {
         settlePending(requestId, (request, result) => {
           try { request.timing?.(message.timing, "succeeded"); } catch { /* Diagnostics only. */ }
