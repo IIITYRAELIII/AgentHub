@@ -8,7 +8,7 @@ const MAX_LINE_BYTES = 4 * 1024 * 1024;
 const PAGE_BYTES = 512 * 1024;
 const PAGE_ITEMS = 50;
 const PAGE_CHUNK_BYTES = 64 * 1024;
-const EXACT_CHUNK_BYTES = 512 * 1024;
+const HASH_CHUNK_BYTES = 512 * 1024;
 const EXACT_PREFIX_LIMIT = 4;
 const EXACT_PREFIX_GROUPS = 256;
 const EXACT_PREFIX_GROUP_BYTES = 1024 * 1024;
@@ -16,18 +16,6 @@ const exactPrefixes = new Map();
 
 function sameFile(left, right) {
   return left.dev === right.dev && left.ino === right.ino && left.birthtimeMs === right.birthtimeMs;
-}
-
-async function* traceChunks(file, start, end, chunkBytes, reuseBuffer = false) {
-  const reusable = reuseBuffer ? Buffer.allocUnsafe(Math.min(chunkBytes, end - start)) : null;
-  for (let offset = start; offset < end;) {
-    const length = Math.min(chunkBytes, end - offset);
-    const buffer = reusable ?? Buffer.allocUnsafe(length);
-    const { bytesRead } = await file.read(buffer, 0, length, offset);
-    if (!bytesRead) throw new Error("Trace source changed during read");
-    offset += bytesRead;
-    yield buffer.subarray(0, bytesRead);
-  }
 }
 
 async function verifyExactPrefix(file, before, source, size) {
@@ -40,7 +28,14 @@ async function verifyExactPrefix(file, before, source, size) {
   // File metadata can rule out reuse. Only the digest of the actual bytes
   // permits skipping the parser, including for a rollout that has grown.
   const hash = createHash("sha256");
-  for await (const chunk of traceChunks(file, 0, candidate.size, EXACT_CHUNK_BYTES, true)) hash.update(chunk);
+  const buffer = Buffer.allocUnsafe(Math.min(HASH_CHUNK_BYTES, candidate.size));
+  for (let offset = 0; offset < candidate.size;) {
+    const length = Math.min(buffer.length, candidate.size - offset);
+    const { bytesRead } = await file.read(buffer, 0, length, offset);
+    if (!bytesRead) throw new Error("Trace source changed during read");
+    hash.update(buffer.subarray(0, bytesRead));
+    offset += bytesRead;
+  }
   if (hash.copy().digest("hex") !== candidate.sourceHash) return null;
   return { candidate, hash };
 }
@@ -108,9 +103,13 @@ async function readTracePrefix(file, rolloutPath, request, { turnId, offset, gro
   }
 
   prefix?.groups.forEach(({ group, bytes }, index) => collectGroup(group, index, bytes));
-  const chunkBytes = groupId ? EXACT_CHUNK_BYTES : PAGE_CHUNK_BYTES;
-  for await (const chunk of traceChunks(file, start, size, chunkBytes)) {
+  const chunks = start < size ? file.createReadStream({
+    start, end: size - 1, highWaterMark: PAGE_CHUNK_BYTES, autoClose: false,
+  }) : [];
+  let scanned = start;
+  for await (const chunk of chunks) {
     hash.update(chunk);
+    scanned += chunk.length;
     endedAtNewline = chunk.at(-1) === 10;
     let cursor = 0;
     while (cursor < chunk.length) {
@@ -166,6 +165,7 @@ async function readTracePrefix(file, rolloutPath, request, { turnId, offset, gro
       collectGroup(group, position++, groupBytes);
     }
   }
+  if (scanned !== size) throw new Error("Trace source changed during read");
   if (ignoredRecord) throw new Error("Trace source contains an incomplete record");
   const sourceHash = hash.digest("hex");
   if (request.sourceHash && request.sourceHash !== sourceHash) throw new Error("Trace source prefix changed");

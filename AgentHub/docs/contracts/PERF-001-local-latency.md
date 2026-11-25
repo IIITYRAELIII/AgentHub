@@ -201,9 +201,8 @@ small scalar fields participate in the same budget and require no extra read.
 
 Explicit “All stages” reads use the existing history owner and rollout worker,
   without provider calls, history writes or automatic polling. They stream a fixed
-  source prefix in 64 KiB chunks (512 KiB for exact-group reads) and retain at
-  most 4 MiB for a raw record or its internal projected JSON representation.
-  Raw records over 4 MiB are admitted only
+  source prefix in 64 KiB parser chunks and retain at most 4 MiB for a raw record
+  or its internal projected JSON representation. Raw records over 4 MiB are admitted only
 when complete structural and escape validation positively identifies a top-level
 `compacted` record or `response_item` with `payload.type=message` and
 `payload.role=user`. Their large string values may be omitted only from that
