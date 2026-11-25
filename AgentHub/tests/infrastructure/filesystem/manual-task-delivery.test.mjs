@@ -1298,6 +1298,45 @@ test("batch Complete uses the admitted single archive receipt after a lost Task 
   assert.equal(attempts, 2);
 });
 
+test("batch Complete retains verified Done when archive preview fails", async t => {
+  const f = await publicFixture(t);
+  const next = f.raw.create({ text: "Archive the next verified delivery", bucket: "workspace", workspaceId: f.task.workspaceId });
+  await f.taskGit.prepare({ taskId: next.id, projectRoot: f.repo, dependencyMode: "skip" });
+  const preview = f.taskGit.archiveCleanupPreview.bind(f.taskGit);
+  let blockedPreviews = 0;
+  f.taskGit.archiveCleanupPreview = async (task, options) => {
+    if (task.id === f.task.id) {
+      blockedPreviews += 1;
+      throw new Error("fixture: archive inventory unavailable after Done");
+    }
+    return preview(task, options);
+  };
+
+  const original = { request_id: "batch-partial-delivery", task_ids: [f.task.id, next.id], manual_delivery: f.input };
+  const response = await f.call("hub_task_complete_batch", original);
+  const [partial, archived] = response.results;
+  assert.equal(partial.taskId, f.task.id);
+  assert.equal(partial.stage, "preview");
+  assert.equal(partial.outcome, "unknown");
+  assert.equal(partial.receipt.status, "unknown");
+  assert.equal(f.board.task(f.task.id).workflowStatus, "done");
+  assert.notEqual(f.board.task(f.task.id).status, "done");
+  assert.equal(partial.workflowStatus, "done");
+  assert.equal(partial.doneReceipt.status, "succeeded");
+  const done = await f.call("hub_task_operation_get", { task_id: f.task.id,
+    operation_request_id: partial.doneReceipt.requestId, expected_arguments_hash: partial.doneReceipt.argumentsHash });
+  assert.equal(done.result.workflowStatus, "done");
+  assert.equal(archived.taskId, next.id);
+  assert.equal(archived.outcome, "archived");
+  assert.equal(archived.doneReceipt.status, "succeeded");
+  const partialRevision = f.board.task(f.task.id).revision;
+  const archivedRevision = f.board.task(next.id).revision;
+  assert.deepEqual(await f.call("hub_task_complete_batch", original), response);
+  assert.equal(blockedPreviews, 1);
+  assert.equal(f.board.task(f.task.id).revision, partialRevision);
+  assert.equal(f.board.task(next.id).revision, archivedRevision);
+});
+
 test("Task archive preserves unpublished work and reports the agent instruction only on MCP", async t => {
   const f = await publicFixture(t);
   const ignored = path.join(f.managed.projectRoot, "WIP", "evidence");

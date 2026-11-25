@@ -2424,14 +2424,17 @@ export class HubMcpService {
         doneReceipt = done.summary.receipt;
       }
     }
+    const completedWorkflow = doneReceipt ? { workflowStatus: "done", doneReceipt }
+      : task.workflowStatus === "done" ? { workflowStatus: task.workflowStatus } : {};
     const preview = await run("hub_task_complete", { ...archiveArgs, request_id: previewId });
     if (preview.outcome !== "succeeded" || !preview.result?.cleanupToken) {
-      return { taskId, stage: "preview", ...preview.summary, ...(preview.outcome === "succeeded" ? { outcome: "unknown" } : {}) };
+      return { taskId, stage: "preview", ...preview.summary, ...completedWorkflow,
+        ...(preview.outcome === "succeeded" ? { outcome: "unknown" } : {}) };
     }
     const archive = await run("hub_task_complete", { ...archiveArgs, request_id: archiveId,
       confirm_cleanup: true, expected_cleanup_token: preview.result.cleanupToken });
     const result = archive.result;
-    const summary = { taskId, stage: "archive", ...archive.summary, ...(doneReceipt ? { doneReceipt } : {}) };
+    const summary = { taskId, stage: "archive", ...archive.summary, ...completedWorkflow };
     if (archive.outcome !== "succeeded") return summary;
     if (result?.confirmationRequired) return { ...summary, outcome: "confirmation_required" };
     if (result?.id !== taskId || result.status !== "done") return { ...summary, outcome: "unknown" };
