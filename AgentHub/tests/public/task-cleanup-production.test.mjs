@@ -97,3 +97,48 @@ test("Complete and Delete show exact cleanup confirmation inside the VS Code san
     await browser.close();
   }
 });
+
+test("archive confirmation renders neutral remaining paths and never the MCP instruction", { timeout: 30_000 }, async () => {
+  const { chromium } = await import("playwright-core");
+  const browser = await chromium.launch(process.platform === "win32"
+    ? { channel: "msedge", headless: true } : { headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 780 } });
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.setContent("<title>Task archive fixture</title><main>Dashboard</main>");
+    for (const file of ["modal-overlays.js", "task-board.js"]) {
+      await page.addScriptTag({ content: await readFile(new URL("../../assets/web-app/" + file, import.meta.url), "utf8") });
+    }
+    await page.addStyleTag({ content: await readFile(new URL("../../assets/web-app/styles.css", import.meta.url), "utf8") });
+    await page.evaluate(() => {
+      window.archiveResult = window.AgentHubTaskCleanupConfirmation.confirm({
+        action: "board-task-complete", params: { id: "archive-task" },
+        confirmation: {
+          task: { taskNumber: "FIXTURE-466" }, cleanupToken: "fresh",
+          agentInstruction: "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС",
+          preview: { archive: true, retainArtifacts: true, remainingArtifacts: [
+            { kind: "path", path: "fixture/remaining/evidence" },
+            { kind: "branch", name: "FIXTURE-466", repositoryRoot: "fixture/repo" },
+          ] },
+        },
+        request: async (action, params) => ({ action, params }),
+      });
+    });
+    const dialog = page.getByRole("dialog", { name: "Всё равно закрыть?" });
+    await dialog.waitFor();
+    assert.match(await dialog.innerText(), /fixture\/remaining\/evidence/u);
+    assert.match(await dialog.innerText(), /FIXTURE-466 · fixture\/repo/u);
+    assert.doesNotMatch(await page.locator("body").innerText(), /УДАЛИ ФАЙЛЫ САМ/u);
+    await dialog.getByRole("button", { name: "Да", exact: true }).click();
+    assert.deepEqual((await page.evaluate(() => window.archiveResult)).result, {
+      action: "board-task-complete", params: { id: "archive-task", completionMode: "archive",
+        confirmCleanup: true, retainArtifacts: true, expectedCleanupToken: "fresh" },
+    });
+    assert.equal(await dialog.count(), 0);
+    assert.doesNotMatch(await page.locator("body").innerText(), /УДАЛИ ФАЙЛЫ САМ/u);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});

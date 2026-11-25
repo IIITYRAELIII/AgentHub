@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { validCodexBundle } from "./codex-executable-bundle.mjs";
+import { isCodexBundleSignatureRejectionMessage, sameCodexBundleIdentity, validCodexBundle } from "./codex-executable-bundle.mjs";
 import { acquireCodexExecutableCustody } from "./codex-executable-custody.mjs";
 
 import {
+  CODEX_CANDIDATE_MISSING,
   codexExecutableRejectionMessage,
   discoverOfficialCodexExecutables,
+  isCodexExecutableSignatureRejectionMessage,
   summarizeCodexExecutableRejections,
   verifyRecordedCodexExecutable,
 } from "./codex-executable.mjs";
@@ -35,7 +37,7 @@ function sameCoreIdentity(left, right) {
 }
 
 function sameIdentity(left, right) {
-  return sameCoreIdentity(left, right) && (left.bundle?.digest ?? null) === (right.bundle?.digest ?? null);
+  return sameCoreIdentity(left, right) && sameCodexBundleIdentity(left.bundle, right.bundle);
 }
 
 function validIdentity(value) {
@@ -45,6 +47,10 @@ function validIdentity(value) {
     && typeof value.sha256 === "string" && /^[A-F0-9]{64}$/.test(value.sha256)
     && typeof value.publisher === "string" && value.publisher
     && (value.bundle === undefined || validCodexBundle(value.bundle));
+}
+
+function unavailableRecordedIdentity(error) {
+  return [CODEX_CANDIDATE_MISSING, "ENOENT", "ENOTDIR", "CODEX_BUNDLE_UNAVAILABLE"].includes(error?.code);
 }
 
 function initialState() {
@@ -62,6 +68,7 @@ function initialState() {
     status: "uninitialized",
     reason: null,
     lastError: null,
+    recordedSignatureRejection: null,
     updatedAt: null,
   };
 }
@@ -147,6 +154,9 @@ export class CodexExecutableUpdateService {
       if (parsed.trustedCandidates != null && (!Array.isArray(parsed.trustedCandidates)
         || parsed.trustedCandidates.some((entry) => !validIdentity(entry)))) throw new Error("invalid trusted identities");
       const state = { ...initialState(), ...parsed };
+      if (!isCodexBundleSignatureRejectionMessage(state.recordedSignatureRejection)) {
+        state.recordedSignatureRejection = null;
+      }
       for (const candidate of [state.lastKnownGood, state.prepared]) {
         if (candidate && !state.trustedCandidates.some((entry) => sameIdentity(entry, candidate))) {
           state.trustedCandidates.push(identity(candidate));
@@ -181,12 +191,57 @@ export class CodexExecutableUpdateService {
     }
   }
 
-  #findVerified(expected) {
-    return this.#verifiedCandidates.find((candidate) => sameIdentity(candidate, expected)) ?? null;
+  #matchesPin(candidate) {
+    return !this.versionPin || candidate.version === this.versionPin;
   }
 
-  #legacyVscodeCandidate(candidates) {
-    return candidates.find((candidate) => candidate.source.startsWith("vscode")) ?? null;
+  #discoverySelection(candidates, state = this.#state) {
+    const allowed = candidates.filter(candidate => this.#matchesPin(candidate));
+    const verifiedLkg = allowed.find(candidate => sameIdentity(candidate, state.lastKnownGood)) ?? null;
+    const legacy = allowed.find(candidate => candidate.source.startsWith("vscode")) ?? null;
+    return { candidate: allowed[0] ?? null, verifiedLkg, legacy };
+  }
+
+  #usablePrepared(state) {
+    const candidate = state.prepared;
+    return this.autoUpdateEnabled && validIdentity(candidate) && this.#matchesPin(candidate)
+      && !sameIdentity(candidate, state.failedIdentity);
+  }
+
+  // Installer observation only. A positive result still requires ordinary
+  // startup custody and compatibility checks after cutover.
+  async inspectUpgradeReadiness() {
+    if (this.requestedExecutable || this.platform !== "win32") return { status: "unchecked" };
+    const state = await this.#readPersistedState({ allowMissing: true });
+    const recorded = state.lastKnownGood;
+    if (!validIdentity(recorded) || !this.#matchesPin(recorded)) return { status: "unchecked" };
+    let missing;
+    try {
+      await this.#freshRecorded(recorded);
+      return { status: "eligible" };
+    } catch (error) {
+      if (error?.code !== CODEX_CANDIDATE_MISSING) return { status: "unchecked" };
+      missing = codexExecutableRejectionMessage(error);
+    }
+    if (this.#usablePrepared(state)) {
+      const prepared = await this.#freshRecorded(state.prepared).catch(() => null);
+      if (prepared) return { status: "eligible", rejection: missing };
+    }
+    const discovery = await this.discover(this.#discoveryOptions(state));
+    const rejection = discovery.rejected?.map(entry => entry.error)
+      .find(isCodexExecutableSignatureRejectionMessage) ?? missing;
+    const { candidate, verifiedLkg, legacy } = this.#discoverySelection(discovery.candidates ?? [], state);
+    const fallback = verifiedLkg ?? legacy;
+    const compatiblePolicy = this.autoUpdateEnabled
+      ? !sameIdentity(candidate, state.failedIdentity) || sameIdentity(candidate, state.active)
+        || sameIdentity(candidate, verifiedLkg) || Boolean(fallback && !sameIdentity(fallback, candidate))
+      : Boolean(fallback);
+    if (candidate && compatiblePolicy) return { status: "eligible", rejection };
+    if (discovery.inspectionComplete !== true) {
+      return { status: "unchecked", reason: "inspection-incomplete", rejection };
+    }
+    return { status: "blocked", rejection, reason: this.versionPin ? "pin-unavailable"
+      : this.autoUpdateEnabled ? "no-eligible-trusted-codex" : "automatic-update-disabled" };
   }
 
   #hasActiveCodexRuns() {
@@ -236,7 +291,7 @@ export class CodexExecutableUpdateService {
     try { return await this.#freshRecorded(candidate); }
     catch (error) {
       this.#state.lastError = codexExecutableRejectionMessage(error);
-      if (!prepared && !["ENOENT", "ENOTDIR", "CODEX_BUNDLE_UNAVAILABLE"].includes(error?.code)) {
+      if (!prepared && !unavailableRecordedIdentity(error)) {
         this.#state.status = "selection-rejected";
         this.#state.reason = "recorded-identity-unverified";
         await this.#save();
@@ -291,26 +346,23 @@ export class CodexExecutableUpdateService {
     if (this.#rollbackIdentity) {
       const rollback = this.#rollbackIdentity;
       this.#rollbackIdentity = null;
-      const verified = await this.#usableRecorded(rollback);
+      const verified = this.#matchesPin(rollback) ? await this.#usableRecorded(rollback) : null;
       if (verified) return this.#select(verified, "rollback-starting", "candidate-startup-failed");
     }
     const prepared = this.#state.prepared;
-    if (this.autoUpdateEnabled && validIdentity(prepared)
-      && (!this.versionPin || prepared.version === this.versionPin)
-      && !sameIdentity(prepared, this.#state.failedIdentity) && !this.#hasActiveCodexRuns()) {
+    if (this.#usablePrepared(this.#state) && !this.#hasActiveCodexRuns()) {
       const verified = await this.#usableRecorded(prepared, { prepared: true });
       if (verified) return this.#select(verified, "candidate-starting", "background-verified");
     }
     const lastKnownGood = this.#state.lastKnownGood;
-    if (validIdentity(lastKnownGood) && (!this.versionPin || lastKnownGood.version === this.versionPin)) {
+    if (validIdentity(lastKnownGood) && this.#matchesPin(lastKnownGood)) {
       const verified = await this.#usableRecorded(lastKnownGood);
       if (verified) return this.#select(verified, !this.autoUpdateEnabled ? "disabled"
         : this.#hasActiveCodexRuns() && prepared ? "deferred-active-runs"
           : this.versionPin ? "pinned" : "current");
       this.#recoverUnavailable = this.canRecoverUnavailableSelection() === true;
     }
-    if (this.#recoverUnavailable && this.autoUpdateEnabled && validIdentity(prepared)
-      && (!this.versionPin || prepared.version === this.versionPin) && !sameIdentity(prepared, this.#state.failedIdentity)) {
+    if (this.#recoverUnavailable && this.#usablePrepared(this.#state)) {
       const verified = await this.#usableRecorded(prepared, { prepared: true });
       if (verified) return this.#select(verified, "candidate-starting", "unavailable-recorded-bundle-recovery");
     }
@@ -321,11 +373,7 @@ export class CodexExecutableUpdateService {
     const discovery = await this.discover(this.#discoveryOptions());
     this.#verifiedCandidates = discovery.candidates ?? [];
     this.#state.trustedCandidates = this.#verifiedCandidates.map(identity);
-    let candidates = this.#verifiedCandidates;
-    if (this.versionPin) candidates = candidates.filter((candidate) => candidate.version === this.versionPin);
-    const candidate = candidates[0] ?? null;
-    const verifiedLkg = this.#findVerified(this.#state.lastKnownGood);
-    const legacy = this.#legacyVscodeCandidate(this.#verifiedCandidates);
+    const { candidate, verifiedLkg, legacy } = this.#discoverySelection(this.#verifiedCandidates);
     this.#state.candidate = identity(candidate ?? this.#verifiedCandidates[0] ?? null);
     this.#state.rejected = (discovery.rejected ?? []).map((entry) => ({
       path: entry.path,
@@ -339,7 +387,8 @@ export class CodexExecutableUpdateService {
       this.#state.lastError = (this.versionPin
         ? `No trusted installed Codex executable matches pin ${this.versionPin}`
         : "No trusted installed official Codex executable was found")
-        + summarizeCodexExecutableRejections(this.#state.rejected);
+        + summarizeCodexExecutableRejections(this.#state.rejected)
+        + (this.#state.recordedSignatureRejection ? `; recorded: ${this.#state.recordedSignatureRejection}` : "");
       await this.#save();
       throw new Error(this.#state.lastError);
     }
@@ -470,8 +519,8 @@ export class CodexExecutableUpdateService {
     return this.#refreshPromise;
   }
 
-  #discoveryOptions() {
-    return { trustedCandidates: this.#state.trustedCandidates,
+  #discoveryOptions(state = this.#state) {
+    return { trustedCandidates: state.trustedCandidates,
       ...(this.executableArgs.length ? { executableArgs: this.executableArgs } : {}) };
   }
 
@@ -558,7 +607,7 @@ export class CodexExecutableUpdateService {
     await this.releaseUnboundSelection();
     if (!validIdentity(this.#selection)) return false;
     await this.#load();
-    const lost = [error, error?.cause].some(value => ["ENOENT", "ENOTDIR", "CODEX_BUNDLE_UNAVAILABLE"].includes(value?.code));
+    const lost = [error, error?.cause].some(unavailableRecordedIdentity);
     if (!lost) this.#state.failedIdentity = identity(this.#selection);
     this.#state.lastError = String(error?.message ?? error);
     const verifiedLkg = this.#state.lastKnownGood;
@@ -600,6 +649,7 @@ export class CodexExecutableUpdateService {
       canary: this.#state.canary,
       rejected: this.#state.rejected ?? [],
       lastError: this.#state.lastError,
+      recordedSignatureRejection: this.#state.recordedSignatureRejection,
       updatedAt: this.#state.updatedAt,
     };
   }

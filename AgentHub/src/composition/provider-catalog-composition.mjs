@@ -18,6 +18,7 @@ import {
 import {
   catalogEntriesWithoutLiveActivity,
   codexCatalogEntry,
+  readCodexAdmissionActivity,
   readCodexRolloutActivity,
   selectExactActiveCodexTurnId,
 } from "../providers/codex/codex-rollout-activity.mjs";
@@ -181,6 +182,7 @@ export function createProviderCatalogComposition({
     claudeTaskSnapshots,
     claudeRuntimeState: (snapshot, options) => claudeRuntimeOwner.state(snapshot, options),
     readRolloutActivity: readCodexRolloutActivity,
+    readAdmissionRolloutActivity: readCodexAdmissionActivity,
     selectActiveTurnId: selectExactActiveCodexTurnId,
     resolveActivity: resolveCodexTaskActivity,
   });

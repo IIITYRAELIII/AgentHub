@@ -154,9 +154,9 @@ for (const [partition, extra] of [
       assert.equal(old.providerStart.acceptedAt, saved.turnId ? "2026-11-18T10:00:00.000Z" : null,
         "retain exact late telemetry; an unbound old callback cannot acquire a turn");
       assert.deepEqual(persistedLocalExecutionIdentity(old), original);
-      // An unbound old callback is intentionally ignored, so take its ordinary
-      // canonical snapshot explicitly rather than expecting an event-side save.
-      if (!saved.turnId) await runtime.save({ activeRuns: registry.retainedValues().map(serializableTaskRun),
+      // The provider can refine the recorded start time after local retirement.
+      old.startedAt = "2026-11-18T10:00:03.457Z";
+      await runtime.save({ activeRuns: registry.retainedValues().map(serializableTaskRun),
         queuedInputs: [{ id: "retained-queue", clientUserMessageId: "same-original", temporaryFiles: ["retained.png"] }] });
       const snapshot = await readRuntimeState(dataDir);
       const captured = snapshot.activeRuns.find(run => run.id === old.id);
@@ -177,17 +177,18 @@ for (const [partition, extra] of [
         assert.equal(composition.stateLoadFailed, false, "actual restoration accepts late snapshot");
         assert.equal(nextRegistry.size, 0);
         assert.ok(nextRegistry.retainedValues().some(run => run.id === old.id));
+        assert.equal(nextRegistry.retainedValues().find(run => run.id === old.id).startedAt, old.startedAt);
         assert.equal(restored.responseText, "Retained partial");
         assert.equal(reopened.get({ ...saved, turnId: saved.turnId ?? "late-unbound-old-turn" }), null,
           "late start is not a provider terminal");
       }
-      for (const key of ["id", "provider", "threadId", "turnId", "clientUserMessageId", "streamId", "startedAt"]) {
+      for (const key of ["id", "provider", "threadId", "turnId", "clientUserMessageId", "streamId"]) {
         const foreign = structuredClone(captured);
         foreign[key] = key === "provider" ? "claude" : "changed-binding";
         assert.throws(() => persistedLocalExecutionIdentity(foreign), /identity changed/u);
       }
       const forgedTimes = structuredClone(captured);
-      forgedTimes.localExecutionRetirement.identity.acceptedAt = "2026-11-19T10:00:00.000Z";
+      forgedTimes.localExecutionRetirement.identity.startedAt = captured.startedAt;
       assert.throws(() => store.getLocalExecutionRetirement(persistedLocalExecutionIdentity(forgedTimes)), /identity changed/u);
       assert.deepEqual(store.getLocalExecutionRetirement(original), disposition);
       await runtime.save({ activeRuns: [{ ...captured, streamId: "changed-binding" }] });

@@ -41,6 +41,8 @@ function configureDatabase(database, now = Date.now) {
       item_json TEXT,
       receipt_json TEXT,
       result_json TEXT,
+      dispatch_run_json TEXT,
+      withdrawn_run_id TEXT,
       occupancy_key TEXT,
       occupancy_binding TEXT CHECK (occupancy_binding IN ('provisional', 'exact')),
       queue_order INTEGER,
@@ -72,6 +74,8 @@ function configureDatabase(database, now = Date.now) {
     .map((column) => String(column.name)));
   for (const [name, definition] of [
     ["result_json", "TEXT"],
+    ["dispatch_run_json", "TEXT"],
+    ["withdrawn_run_id", "TEXT"],
     ["terminal_at_ms", "INTEGER"],
     ["archived_at_ms", "INTEGER"],
     ["occupancy_key", "TEXT"],
@@ -324,6 +328,8 @@ function recordFromRow(row) {
     item,
     receipt: parseJson(row.receipt_json),
     result: parseJson(row.result_json),
+    ...(row.dispatch_run_json ? { dispatchRun: parseJson(row.dispatch_run_json) } : {}),
+    ...(row.withdrawn_run_id ? { withdrawnRunId: row.withdrawn_run_id } : {}),
     occupancyKey: row.occupancy_key ?? null,
     occupancyBinding: row.occupancy_binding ?? null,
     queueOrder: row.queue_order != null && Number.isFinite(Number(row.queue_order))
@@ -529,7 +535,25 @@ function overlayRecords(value, records) {
     .filter((item) => !ids.has(clientMessageId(item)));
   const receipts = (Array.isArray(state.desktopMessageReceipts) ? state.desktopMessageReceipts : [])
     .filter((receipt) => !ids.has(clientMessageId(receipt)));
+  let activeRuns = null;
   for (const record of records) {
+    if (record.dispatchRun || record.withdrawnRunId) {
+      activeRuns ??= Array.isArray(state.activeRuns) ? [...state.activeRuns]
+        : state.activeRun ? [state.activeRun] : [];
+    }
+    if (record.withdrawnRunId) {
+      activeRuns = activeRuns.filter((run) => run?.id !== record.withdrawnRunId
+        || clientMessageId(run) !== record.clientUserMessageId || run.turnId || run.providerStart);
+    }
+    if (record.dispatchRun && ["dispatching", "started"].includes(record.state)) {
+      const checkpoint = record.dispatchRun;
+      const index = activeRuns.findIndex((run) => run?.id === checkpoint.id);
+      if (index < 0) activeRuns.push(checkpoint);
+      else if (clientMessageId(activeRuns[index]) === record.clientUserMessageId
+        && !activeRuns[index].providerStart && checkpoint.providerStart?.state === "requesting") {
+        activeRuns[index] = { ...activeRuns[index], providerStart: checkpoint.providerStart };
+      }
+    }
     if (record.item && ["attention-required", "unknown"].includes(record.state)) pendingInputs.push(record.item);
     if (record.item && ["accepted", "queued", "dispatching"].includes(record.state)) {
       queuedInputs.push(record.item);
@@ -540,6 +564,7 @@ function overlayRecords(value, records) {
   state.pendingInputs = pendingInputs;
   state.queuedInputs = queuedInputs;
   state.desktopMessageReceipts = receipts;
+  if (activeRuns) state.activeRuns = activeRuns;
   return state;
 }
 
@@ -741,6 +766,97 @@ export class MessageCommandLedgerStore {
   }
 
   projectSnapshot(value) {
+    return this.#projectSnapshot(value);
+  }
+
+  reserveDispatch(item, receipt, timing = {}) {
+    const started = performance.now();
+    const record = this.get(item?.clientUserMessageId);
+    timing.lookupMs = performance.now() - started;
+    if (!record) return false;
+
+    const identity = taskOccupancyIdentity(item);
+    const validReceipt = !receipt || (receipt.clientUserMessageId === record.clientUserMessageId
+      && receipt.fingerprint === record.fingerprint && receipt.result?.providerAccepted !== true);
+    const nextState = stateFromEvidence({ queued: item, receipt });
+    if (nextState !== "dispatching" || record.result?.providerAccepted === true
+      || item.manualPaused === true || record.item?.manualPaused === true
+      || item.id !== record.item?.id || !validReceipt
+      || !["accepted", "queued", "attention-required"].includes(record.state)
+      || (record.occupancyBinding === "exact" && identity?.key !== record.occupancyKey)) {
+      throw Object.assign(new Error("Deferred dispatch command changed before reservation"), {
+        code: "ERR_DEFERRED_DISPATCH_CONFLICT",
+      });
+    }
+    const outcome = this.#projectSnapshot({
+      queuedInputs: [item],
+      desktopMessageReceipts: receipt ? [receipt] : [],
+    }, record, timing);
+    if (outcome.changed !== 1) throw Object.assign(new Error("Deferred dispatch reservation was not committed"), {
+      code: "ERR_DEFERRED_DISPATCH_CONFLICT",
+    });
+    return true;
+  }
+
+  checkpointDispatchRun(run, deferredInput = null) {
+    if (run?.provider !== "codex" || !clientMessageId(run)) return false;
+    const record = this.get(run.clientUserMessageId);
+    const initial = Boolean(deferredInput);
+    if (initial && (!record || record.occupancyBinding === "provisional")) return false;
+    const item = record?.item;
+    const lane = taskOccupancyIdentity(run);
+    const matches = initial
+      ? (!record.dispatchRun && record.withdrawnRunId !== run.id && item?.id === deferredInput.id
+        && deferredInput.manualPaused !== true
+        && deferredInput.dispatchingRunId === run.id && !run.providerStart)
+      : record?.dispatchRun?.id === run.id && !record.dispatchRun.providerStart
+        && run.providerStart?.state === "requesting"
+        && run.providerStart.clientUserMessageId === record.clientUserMessageId;
+    if (!matches || !run.id || run.turnId || run.status !== "running"
+      || record?.state !== "dispatching" || !item?.dispatchingAt || item.manualPaused === true
+      || lane?.binding !== "exact" || lane.key !== record.occupancyKey) {
+      throw Object.assign(new Error("Deferred run changed before its checkpoint"), {
+        code: "ERR_DEFERRED_DISPATCH_CONFLICT",
+      });
+    }
+    const result = this.#database.prepare(`
+      UPDATE message_commands
+      SET item_json = ?, dispatch_run_json = ?, updated_at_ms = ?, revision = revision + 1
+      WHERE client_user_message_id = ? AND state = 'dispatching' AND revision = ?
+    `).run(JSON.stringify({ ...item, dispatchingRunId: run.id }), JSON.stringify(run),
+      this.#now(), record.clientUserMessageId, record.revision);
+    if (result.changes !== 1) throw Object.assign(new Error("Deferred run checkpoint was not committed"), {
+      code: "ERR_DEFERRED_DISPATCH_CONFLICT",
+    });
+    return true;
+  }
+
+  revokeUnrequestedDispatchRun(run) {
+    if (run?.provider !== "codex" || run.turnId || run.providerStart || !clientMessageId(run)) return false;
+    const record = this.get(run.clientUserMessageId);
+    const checkpoint = record?.dispatchRun;
+    const item = record?.item;
+    if (record?.state !== "dispatching" || !checkpoint || checkpoint.providerStart || checkpoint.turnId
+      || run.id !== checkpoint.id || item?.dispatchingRunId !== run.id
+      || taskOccupancyIdentity(run)?.key !== record.occupancyKey) return false;
+
+    // Only an admitted run that never crossed the provider-request fence can
+    // be withdrawn here. The original queue reservation remains recoverable.
+    const { dispatchingRunId: _withdrawn, ...retainedItem } = item;
+    const result = this.#database.prepare(`
+      UPDATE message_commands
+      SET item_json = ?, dispatch_run_json = NULL, withdrawn_run_id = ?, updated_at_ms = ?,
+          revision = revision + 1
+      WHERE client_user_message_id = ? AND state = 'dispatching' AND revision = ?
+    `).run(JSON.stringify(retainedItem), run.id, this.#now(), record.clientUserMessageId, record.revision);
+    if (result.changes !== 1) throw Object.assign(new Error("Deferred run changed before withdrawal"), {
+      code: "ERR_DEFERRED_DISPATCH_CONFLICT",
+    });
+    return true;
+  }
+
+  #projectSnapshot(value, exactRecord = null, timing = null) {
+    const prepareStarted = timing ? performance.now() : 0;
     const receipts = receiptByClientId(value);
     const pending = inputByClientId(value, "pendingInputs");
     const queued = inputByClientId(value, "queuedInputs");
@@ -748,12 +864,13 @@ export class MessageCommandLedgerStore {
     const evidenceIds = new Set([...receipts.keys(), ...pending.keys(), ...queued.keys(), ...runs.keys()]);
     // Snapshot projection owns only the identities present in this snapshot.
     // Do not hydrate every other active lane merely to discard it afterwards.
-    const records = [...evidenceIds].map(id => this.get(id))
+    const records = exactRecord ? [exactRecord] : [...evidenceIds].map(id => this.get(id))
       .filter(record => record && ACTIVE_STATES.includes(record.state));
     if (!records.length) return { scanned: 0, changed: 0 };
     const update = this.#database.prepare(`
       UPDATE message_commands
       SET state = ?, destination = ?, item_json = ?, receipt_json = ?, result_json = ?,
+          dispatch_run_json = CASE WHEN ? IN ('dispatching', 'started') THEN dispatch_run_json ELSE NULL END,
           occupancy_key = ?, occupancy_binding = ?, queue_order = ?,
           terminal_at_ms = ?, updated_at_ms = ?, revision = revision + 1
       WHERE client_user_message_id = ? AND state = ? AND revision = ?
@@ -761,8 +878,13 @@ export class MessageCommandLedgerStore {
     const now = this.#now();
     let changed = 0;
     let terminalChanged = false;
-    this.#database.exec("BEGIN IMMEDIATE;");
+    const sqliteStarted = timing ? performance.now() : 0;
+    if (timing) timing.prepareMs = sqliteStarted - prepareStarted;
+    let transactionStarted = false;
     try {
+      this.#database.exec("BEGIN IMMEDIATE;");
+      transactionStarted = true;
+      if (timing) timing.beginMs = performance.now() - sqliteStarted;
       for (const record of records) {
         const id = record.clientUserMessageId;
         const pendingItem = pending.get(id);
@@ -792,7 +914,11 @@ export class MessageCommandLedgerStore {
               ].flatMap((key) => run[key] == null ? [] : [[key, run[key]]])),
             }
           : evidenceItem;
-        const item = preserveExactBinding ? record.item : inferredItem;
+        let item = preserveExactBinding ? record.item : inferredItem;
+        if (record.withdrawnRunId && item?.dispatchingRunId === record.withdrawnRunId) {
+          const { dispatchingRunId: _withdrawn, ...retained } = item;
+          item = retained;
+        }
         const occupancy = record.occupancyBinding === "exact"
           && inferredOccupancy?.binding !== "exact"
           ? { key: record.occupancyKey, binding: record.occupancyBinding }
@@ -812,12 +938,21 @@ export class MessageCommandLedgerStore {
             }
           : item;
         const terminal = TERMINAL_STATES.has(nextState);
+        const encodeStarted = timing ? performance.now() : 0;
+        const durableItemJson = durableItem ? JSON.stringify(durableItem) : null;
+        const receiptValue = receipt ?? record.receipt;
+        const receiptJson = receiptValue ? JSON.stringify(receiptValue) : null;
+        const resultValue = receipt?.result ?? record.result;
+        const resultJson = resultValue ? JSON.stringify(resultValue) : null;
+        if (timing) timing.encodeMs = performance.now() - encodeStarted;
+        const writeStarted = timing ? performance.now() : 0;
         const updated = update.run(
           nextState,
           destination,
-          durableItem ? JSON.stringify(durableItem) : null,
-          receipt ? JSON.stringify(receipt) : record.receipt ? JSON.stringify(record.receipt) : null,
-          receipt?.result ? JSON.stringify(receipt.result) : record.result ? JSON.stringify(record.result) : null,
+          durableItemJson,
+          receiptJson,
+          resultJson,
+          nextState,
           occupancy?.key ?? null,
           occupancy?.binding ?? null,
           occupancy ? queueOrder : null,
@@ -827,13 +962,18 @@ export class MessageCommandLedgerStore {
           record.state,
           record.revision,
         );
+        if (timing) timing.writeMs = performance.now() - writeStarted;
         terminalChanged ||= terminal && updated.changes > 0;
         changed += Number(updated.changes ?? 0);
       }
+      const commitStarted = timing ? performance.now() : 0;
       this.#database.exec("COMMIT;");
+      if (timing) timing.commitMs = performance.now() - commitStarted;
     } catch (error) {
-      this.#database.exec("ROLLBACK;");
+      if (transactionStarted) this.#database.exec("ROLLBACK;");
       throw error;
+    } finally {
+      if (timing) timing.sqliteMs = performance.now() - sqliteStarted;
     }
     if (terminalChanged) this.#archiveTerminalPayloads();
     return { scanned: records.length, changed };
@@ -1171,6 +1311,8 @@ export class MessageCommandLedgerStore {
       ...(Array.isArray(value?.pendingInputs) ? value.pendingInputs : []),
       ...(Array.isArray(value?.queuedInputs) ? value.queuedInputs : []),
       ...(Array.isArray(value?.desktopMessageReceipts) ? value.desktopMessageReceipts : []),
+      ...(!referencedOnly && Array.isArray(value?.activeRuns) ? value.activeRuns : []),
+      ...(!referencedOnly && value?.activeRun ? [value.activeRun] : []),
     ]) {
       const id = clientMessageId(item);
       if (!id || records.has(id)) continue;
@@ -1217,7 +1359,7 @@ export class MessageCommandLedgerStore {
     `);
     const compact = this.#database.prepare(`
       UPDATE message_commands
-      SET item_json = NULL, receipt_json = NULL, result_json = ?, archived_at_ms = ?,
+      SET item_json = NULL, receipt_json = NULL, dispatch_run_json = NULL, result_json = ?, archived_at_ms = ?,
           updated_at_ms = ?, revision = revision + 1
       WHERE client_user_message_id = ? AND archived_at_ms IS NULL
     `);

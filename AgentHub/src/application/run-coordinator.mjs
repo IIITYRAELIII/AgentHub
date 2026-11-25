@@ -147,7 +147,7 @@ export class RunCoordinator {
     return this.maintenanceBarrier(target, options);
   }
 
-  async deferredOccupancy(target) {
+  async deferredOccupancy(target, admissionTrace = null) {
     const identity = taskOccupancyIdentity(target);
     const run = this.activeRun(target);
     if (run) {
@@ -176,7 +176,8 @@ export class RunCoordinator {
         run: null,
       };
     }
-    const external = await this.externalActivity(target);
+    const external = await this.externalActivity(target, { admissionTrace });
+    if (this.activeRun(target)) return this.deferredOccupancy(target, admissionTrace);
     return {
       key: identity.key,
       binding: identity.binding,

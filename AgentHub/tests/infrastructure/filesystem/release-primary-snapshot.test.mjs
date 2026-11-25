@@ -70,7 +70,7 @@ test("primary snapshot batches fresh revisions without changing any public evide
   assert.deepEqual(actual, await expected(f.root));
   const starts = (await readFile(trace, "utf8")).trim().split("\n").map(JSON.parse)
     .filter(row => row.event === "start" && !row.sid.includes("/"));
-  assert.equal(starts.length, 8);
+  assert.equal(starts.length, 6);
   await git(f.root, ["commit", "--allow-empty", "-m", "fresh main"]);
   const next = await f.service.assertPrimaryInvariant(f.root);
   assert.notEqual(next.headCommit, actual.headCommit);

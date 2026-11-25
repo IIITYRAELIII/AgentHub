@@ -88,11 +88,13 @@ export async function publishedMetadataContext({ publication, repositoryRoot, gi
   const entry = publicationStateRepositories(publication ?? {})
     .find(item => canonicalPath(item.root) === canonicalPath(repositoryRoot));
   if (!publication?.generation || !entry) return null;
-  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(entry.revision)
-      || await git(["rev-parse", `${entry.revision}^{commit}`]) !== entry.revision) reject("published metadata identity changed");
+  const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
+  if (!oid.test(entry.revision)) reject("published metadata identity changed");
+  const [commit, tree, ...extra] = String(await git(["rev-parse", "--revs-only",
+    `${entry.revision}^{commit}`, `${entry.revision}^{tree}`])).split(/\r?\n/u);
+  if (commit !== entry.revision || !oid.test(tree) || extra.length) reject("published metadata identity changed");
   return { generation: publication.generation, repositoryRoot: canonicalPath(repositoryRoot),
-    recordHash: taskGitIdentityHash(entry), commit: entry.revision,
-    tree: await git(["rev-parse", `${entry.revision}^{tree}`]) };
+    recordHash: taskGitIdentityHash(entry), commit, tree };
 }
 
 async function regular(file) {

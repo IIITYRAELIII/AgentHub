@@ -29,15 +29,18 @@ export async function measureStartupBeforeTrace(stage, operation, {
   const phaseMarkers = [];
   const recordPhase = ({ phase, outcome, durationMs, ...details } = {}) => {
     try {
-      if (stage !== "sqlite-recovery"
-        || !["database-lock", "recovery-lock-acquire", "marker-read", "resume",
+      const recovery = stage === "sqlite-recovery"
+        && ["database-lock", "recovery-lock-acquire", "marker-read", "resume",
           "intent-read", "intent-rollback", "database-stat", "database-check",
           "quarantine", "recovery-lock-release", "inspection-directory",
-          "copy-database", "copy-wal", "inspection-query", "inspection-cleanup"].includes(phase)
-        || !["started", "succeeded", "failed"].includes(outcome)
+          "copy-database", "copy-wal", "inspection-query", "inspection-cleanup"].includes(phase);
+      const catalog = stage === "workspace-catalog-load" && phase === "catalog-sqlite-mutation";
+      if ((!recovery && !catalog) || !["started", "succeeded", "failed"].includes(outcome)
         || !Number.isFinite(durationMs) || durationMs < 0) return;
       const marker = { phase, outcome, durationMs, observedAtMs: clock() };
-      for (const field of ["bytes", "openMs", "checkMs", "closeMs", "workerThreadId"]) {
+      const numericFields = catalog ? ["persistenceMs", "queueWaitMs", "contentionWaitMs", "attempts"]
+        : ["bytes", "openMs", "checkMs", "closeMs", "workerThreadId"];
+      for (const field of numericFields) {
         if (Number.isFinite(details[field]) && details[field] >= 0) marker[field] = details[field];
       }
       if (/^[A-Z0-9_]{1,64}$/u.test(details.errorCode ?? "")) marker.errorCode = details.errorCode;

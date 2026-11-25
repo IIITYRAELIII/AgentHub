@@ -75,6 +75,15 @@ html[data-theme="meadow"] {
   --meadow-image: url("./meadow-sun.jpg");
 }
 
+/* Back only the status tracks where sunlight shows through the card. */
+html[data-theme="meadow"] :is([data-unread], [data-answer-ready]) > .stream-effect-layer {
+  background: var(--card-bg) center bottom 6px / 94% 6px no-repeat;
+}
+
+html[data-theme="meadow"] [data-maintenance] > .stream-effect-layer {
+  box-shadow: inset 0 0 0 6px color-mix(in srgb, var(--bg) 72%, transparent);
+}
+
 /* Цветущая часть луга внизу справа, поэтому низ не гасим — иначе от темы
    остаётся ровное зелёное пятно. Затемняется только левый край: тень под
    деревьями на фотографии всё-таки светлее, чем нужно колонке задач. */

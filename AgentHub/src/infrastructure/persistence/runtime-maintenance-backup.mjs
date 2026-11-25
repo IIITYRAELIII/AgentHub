@@ -8,7 +8,7 @@ import { observeInterprocessLockDirectories } from "../process/interprocess-lock
 // Declared mutable state, not a full-data/disk backup (ADR-HUB-380).
 const scope = "runtime-durable-state-v1";
 const durableDirectories = new Set([".mini-app-control-result-outbox", "background-jobs",
-  "delivery-outbox", "failed-updates", "claude-runs", "locks", "task-diff-indexes", "task-custody"]);
+  "delivery-outbox", "failed-updates", "claude-runs", "locks", "task-diff-indexes", "task-custody", "github-account"]);
 const retainedDirectories = new Set(["task-worktrees", "dev-worktrees", "prerelease-worktrees",
   "integration-worktrees", "release-gens", "release-repositories", "release-operation-executions",
   "retained-runtime-sources", "runtime-source-captures", "audio", "images", "tts", "models",

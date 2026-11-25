@@ -1,8 +1,10 @@
 """Recipient installer checks. Run: python -m unittest discover -s tests/runtime -p autonomous_installer_test.py"""
 import importlib.util
 import hashlib
-from contextlib import closing, ExitStack
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, ExitStack, redirect_stderr, redirect_stdout
 from copy import deepcopy
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from threading import Event
 import time
 import unittest
 from unittest.mock import patch
@@ -34,6 +37,135 @@ def foreign_layout(root, entries):
 
 @unittest.skipUnless(os.name == "nt", "Windows recipient installer")
 class AutonomousInstallerTests(unittest.TestCase):
+    def test_explicit_offline_install_uses_stopped_owner_without_worker(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp).resolve()
+            root = base / "hub"
+            root.mkdir()
+            archive = base / "package.zip"
+            archive.write_bytes(b"verified-input fixture")
+            options = [str(SOURCE), "--offline", "--runtime-root", str(root), "--scratch-root", str(base / "scratch"),
+                       "--archive", str(archive), "--sha256", installer.file_hash(archive)]
+            with patch.object(sys, "argv", options), patch.object(installer, "stop_selected") as stopped, \
+                    patch.object(installer, "extract_verified", return_value={"releaseId": "candidate"}) as extract, \
+                    patch.object(installer.shutil, "which", return_value="node"), \
+                    patch.object(installer.subprocess, "run", side_effect=[None, subprocess.CompletedProcess([], 0)]) as run, \
+                    patch.object(installer, "independent_worker", side_effect=AssertionError("offline dispatched a worker")):
+                stopped.side_effect = RuntimeError("Hub still running")
+                with self.assertRaisesRegex(RuntimeError, "Hub still running"):
+                    installer.autonomous_main()
+                extract.assert_not_called()
+                run.assert_not_called()
+                stopped.side_effect = None
+                installer.autonomous_main()
+                stopped.assert_called_with(root, inspect_only=True)
+                extract.assert_called_once()
+                self.assertEqual(run.call_args.args[0][2:], ["install", str(root)])
+            for conflict in [["--mode", "force"], ["--update-status"], ["--operation-id", "old-attempt"]]:
+                with patch.object(sys, "argv", options + conflict), redirect_stderr(io.StringIO()), \
+                        self.assertRaises(SystemExit):
+                    installer.autonomous_main()
+
+    def test_joined_worker_job_refusal_advertises_separate_stopped_install(self):
+        selection = {"operationId": "same-update", "installerSha256": "a" * 64}
+        checks = {"stage": "worker-job-check", "workerOutsideAllJobs": False, "workerJoined": True,
+                  "resumeAttempted": False}
+        for joined in (True, False):
+            output = io.StringIO()
+            with redirect_stderr(output), self.assertRaises(SystemExit):
+                installer.report_worker_dispatch_failure(selection, {**checks, "workerJoined": joined}, True)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report["reason"], "worker-in-job")
+            self.assertEqual(report.get("stoppedInstallAvailable", False), joined)
+
+    def test_offline_uses_autonomous_runtime_mutex_for_check_fetch_and_install(self):
+        with tempfile.TemporaryDirectory() as temp, ThreadPoolExecutor(max_workers=1) as pool:
+            base = Path(temp).resolve()
+            root = base / "hub"
+            root.mkdir()
+            scratch = base / "scratch"
+            args = [str(SOURCE), "--offline", "--release", "2.1.14",
+                    "--runtime-root", str(root), "--scratch-root", str(scratch)]
+            acquired, release = Event(), Event()
+
+            def hold_autonomous_mutex():
+                with installer.installer_runtime_mutex(root):
+                    acquired.set()
+                    if not release.wait(10):
+                        raise TimeoutError("Test did not release the installer mutex")
+
+            def verify_other_owner_excluded():
+                with self.assertRaisesRegex(RuntimeError, "Another installer owns this runtime"):
+                    pool.submit(hold_autonomous_mutex).result(timeout=5)
+
+            def fetch(*_):
+                verify_other_owner_excluded()
+                return base / "package.zip", "2.1.14", {"releaseId": "candidate", "sha256": "a" * 64}
+
+            def run(command, **_):
+                if command[1] != "-e":
+                    verify_other_owner_excluded()
+                    self.assertEqual(command[2:], ["install", str(root)])
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch.object(sys, "argv", args), patch.object(installer, "stop_selected") as stopped, \
+                    patch.object(installer, "fetch_release", side_effect=fetch) as fetch_spy, \
+                    patch.object(installer, "extract_verified", return_value={"releaseId": "candidate"}), \
+                    patch.object(installer, "verify_release_descriptor"), patch.object(installer.shutil, "which", return_value="node"), \
+                    patch.object(installer.subprocess, "run", side_effect=run) as node, \
+                    patch.object(installer, "independent_worker", side_effect=AssertionError("offline dispatched a worker")):
+                busy = pool.submit(hold_autonomous_mutex)
+                try:
+                    self.assertTrue(acquired.wait(5))
+                    with self.assertRaisesRegex(RuntimeError, "Another installer owns this runtime"):
+                        installer.autonomous_main()
+                    stopped.assert_not_called()
+                    fetch_spy.assert_not_called()
+                    node.assert_not_called()
+                    self.assertFalse(scratch.exists())
+                finally:
+                    release.set()
+                busy.result(timeout=5)
+                installer.autonomous_main()
+                fetch_spy.assert_called_once()
+                self.assertEqual(node.call_count, 2)
+                pool.submit(hold_autonomous_mutex).result(timeout=5)
+
+    @unittest.skipUnless(shutil.which("node"), "Windows junction fixture")
+    def test_offline_refuses_retargeted_junction_or_replaced_physical_root(self):
+        node_path = shutil.which("node")
+        command = ["-e", "require('fs').symlinkSync(process.argv[1],process.argv[2],'junction')"]
+        for change in ("junction", "root"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temp:
+                base = Path(temp).resolve()
+                root, other, link = (base / name for name in ("original", "other", "selected"))
+                root.mkdir()
+                other.mkdir()
+                subprocess.run([node_path, *command, str(root), str(link)], check=True, capture_output=True)
+                native_run = subprocess.run
+
+                def retarget(*_):
+                    if change == "junction":
+                        link.rmdir()
+                        native_run([node_path, *command, str(other), str(link)], check=True, capture_output=True)
+                    else:
+                        root.rename(base / "previous")
+                        root.mkdir()
+                    return {"releaseId": "candidate"}
+
+                args = [str(SOURCE), "--offline", "--release", "2.1.14",
+                        "--runtime-root", str(link), "--scratch-root", str(base / "scratch")]
+                with patch.object(sys, "argv", args), patch.object(installer, "stop_selected") as stopped, \
+                        patch.object(installer, "fetch_release",
+                                     return_value=(base / "package.zip", "2.1.14", {"releaseId": "candidate", "sha256": "a" * 64})), \
+                        patch.object(installer, "extract_verified", side_effect=retarget), \
+                        patch.object(installer, "verify_release_descriptor"), patch.object(installer.subprocess, "run") as run:
+                    with self.assertRaisesRegex(RuntimeError, "Selected offline runtime root changed"):
+                        installer.autonomous_main()
+                    stopped.assert_called_once_with(root, inspect_only=True)
+                    self.assertEqual(run.call_count, 1)
+                    self.assertEqual(run.call_args.args[0][1], "-e")
+
     def test_explicit_modes_and_cancel_never_default_to_force(self):
         for mode in ['wait','force']:
             self.assertEqual(installer.choose_install_mode(mode),mode)
@@ -69,8 +201,12 @@ class AutonomousInstallerTests(unittest.TestCase):
             base=Path(temp); root=base/'hub'; (root/'data').mkdir(parents=True); scratch=base/'scratch'
             archive=base/'package.zip'; archive.write_bytes(b'Not executed: transport selection fixture')
             dispatched=[]
-            def dispatch(arguments,cache,environment):
+            _, _, kernel = installer.native_api()
+            native_python = installer.process_identity(kernel.GetCurrentProcess())["image"]
+            def dispatch(arguments,cache,environment,*,runtime_root):
                 request=installer._read_record(cache/'request.json')
+                self.assertEqual(runtime_root, root.resolve())
+                self.assertEqual(arguments[0], native_python)
                 self.assertEqual(installer.file_hash(cache/'install_release.py'),installer.file_hash(SOURCE))
                 self.assertEqual(arguments[-1],str(cache/'request.json'))
                 dispatched.append(request)
@@ -78,7 +214,8 @@ class AutonomousInstallerTests(unittest.TestCase):
             for mode in ['wait','force']:
                 args=[str(SOURCE),'--archive',str(archive),'--sha256',installer.file_hash(archive),
                       '--runtime-root',str(root),'--scratch-root',str(scratch),'--mode',mode]
-                with patch.object(sys,'argv',args), patch.object(installer,'independent_worker',side_effect=dispatch):
+                with patch.object(sys,'argv',args), patch.object(sys,'executable',str(base/'venv/python.exe')), \
+                        patch.object(installer,'independent_worker',side_effect=dispatch):
                     installer.autonomous_main()
                 self.assertEqual(dispatched[-1]['mode'],mode)
             self.assertNotEqual(dispatched[0]['operationId'],dispatched[1]['operationId'])
@@ -91,9 +228,13 @@ class AutonomousInstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             base=Path(temp); root=base/'old-hub'; (root/'data').mkdir(parents=True)
             (root/'data/history-marker').write_text('retained history and input',encoding='utf-8')
+            (root/'config.json').write_text(json.dumps(dict(dataDir='data')),encoding='utf-8')
+            alias=base/'old-hub-alias'
             source=SOURCE.parents[1]; package=base/'package'; package.mkdir()
-            subprocess.run(['node','-e',"require('fs').symlinkSync(process.argv[1],process.argv[2],'junction')",
-                           str(source),str(package/'runtime')],check=True,capture_output=True,creationflags=0x08000000)
+            junction="require('fs').symlinkSync(process.argv[1],process.argv[2],'junction')"
+            for target, link in [(source,package/'runtime'),(root,alias)]:
+                subprocess.run(['node','-e',junction,str(target),str(link)],
+                               check=True,capture_output=True,creationflags=0x08000000)
             imports={name:(source/name).as_uri() for name in [
                 'src/infrastructure/process/desktop-control.mjs','src/infrastructure/persistence/maintenance-operation-store.mjs',
                 'src/application/installer-cutover.mjs','src/application/run-coordinator.mjs']}
@@ -122,7 +263,7 @@ const server=new DesktopControlServer({runtimeRoot:root,protectSecret:async()=>{
 await server.start();fs.writeFileSync(root+'/fixture-ready','ready');
 """
             entry=root/'bot.mjs'; entry.write_text(code,encoding='utf-8')
-            child=subprocess.Popen(['node',str(entry),str(root),json.dumps(imports)],stdout=subprocess.PIPE,
+            child=subprocess.Popen(['node',str(alias/entry.name),str(alias),json.dumps(imports)],stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,encoding='utf-8',creationflags=0x08000000)
             try:
                 deadline=time.monotonic()+10
@@ -139,7 +280,10 @@ await server.start();fs.writeFileSync(root+'/fixture-ready','ready');
                     result=subprocess.run(args,capture_output=True,encoding='utf-8',timeout=10,creationflags=0x08000000)
                     self.assertEqual(result.returncode,0,result.stderr); return json.loads(result.stdout)
                 initial=call('wait-probe'); self.assertEqual(initial['process']['pid'],child.pid)
-                original=call('create',dict(runtimeRoot=str(root),mode='wait'))
+                observed_process=next(row for row in installer.process_snapshot() if row['ProcessId']==child.pid)
+                admission_root=installer.wait_admission_root(root,'legacy',installer.node_entrypoint(observed_process))
+                self.assertEqual(admission_root,alias)
+                original=call('create',dict(runtimeRoot=str(admission_root),physicalRuntimeRoot=str(root),mode='wait'))
                 self.assertEqual(original['phase'],'installer-waiting')
                 def control(action):
                     script='import{callDesktopControl}from '+json.dumps(imports['src/infrastructure/process/desktop-control.mjs'])+";console.log(JSON.stringify(await callDesktopControl(process.argv[1],{},{runtimeRoot:process.argv[2]})));"
@@ -159,6 +303,21 @@ await server.start();fs.writeFileSync(root+'/fixture-ready','ready');
             finally:
                 if child.poll() is None:child.kill(); child.wait(timeout=10)
                 child.stdout.close(); child.stderr.close()
+
+    @unittest.skipUnless(shutil.which('node'), 'Windows junction fixture')
+    def test_wait_admission_root_requires_selected_installation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base=Path(temp); root=base/'hub'; foreign=base/'foreign'
+            release=root/'releases/revision'; release.mkdir(parents=True)
+            (root/'data').mkdir(); foreign.mkdir()
+            (release/'agent-hub-main.mjs').write_text('',encoding='utf-8')
+            (root/'config.json').write_text('{}',encoding='utf-8')
+            alias=base/'alias'
+            subprocess.run(['node','-e',"require('fs').symlinkSync(process.argv[1],process.argv[2],'junction')",
+                           str(root),str(alias)],check=True,capture_output=True,creationflags=0x08000000)
+            self.assertEqual(installer.wait_admission_root(root,'revision',alias/'releases/revision/agent-hub-main.mjs'),alias)
+            with self.assertRaisesRegex(RuntimeError,'different physical ownership'):
+                installer.wait_admission_root(root,'revision',foreign/'bot.mjs')
 
     @unittest.skipUnless(shutil.which('node'), 'Real SQLite owner contention fixture')
     def test_ready_checkpoint_waits_for_real_writer_without_replaying_launch_and_keeps_cas(self):
@@ -277,6 +436,28 @@ console.log(JSON.stringify(await sealAutonomousInstallerStorage({runtimeRoot:roo
             evidence=json.loads(result.stdout); self.assertEqual(len(evidence['artifacts']),1)
             self.assertGreaterEqual(len(evidence['backup']['retentionFiles']),3)
 
+            scoped_script = script.replace(
+                "console.log(JSON.stringify",
+                """const worker = JSON.parse(await (await import('node:fs/promises')).readFile(cache+'/worker-started.json','utf8'));
+op.metadata.autonomousInstaller.storageScope.worker = worker;
+op.metadata.autonomousInstaller.previous = {releaseId:'old', manifestSha256:'b'.repeat(64)};
+console.log(JSON.stringify""")
+            scope = dict(kind="selected-runtime-job-v1", releaseId="old", manifestSha256="b"*64,
+                         host=dict(pid=1,created="10",image="old-host"),node=dict(pid=2,created="11",image="old-node"))
+            scoped_worker = dict(identity, outsideAllJobs=False, retirementScope=scope)
+            (cache/'worker-started.json').write_text(json.dumps(scoped_worker),encoding='utf-8')
+            for dispatch_scope in (scope, dict(scope, releaseId="other")):
+                (cache/'worker-verified-suspended.json').write_text(
+                    json.dumps(dict(scoped_worker, retirementScope=dispatch_scope)),encoding='utf-8')
+                checked=subprocess.run([shutil.which('node'),'--input-type=module','-e',scoped_script,
+                                        str(SOURCE.parents[1]),str(root),str(cache)],
+                    capture_output=True,encoding='utf-8',timeout=30,creationflags=0x08000000)
+                if dispatch_scope == scope:
+                    self.assertEqual(checked.returncode,0,checked.stderr)
+                else:
+                    self.assertNotEqual(checked.returncode,0)
+                    self.assertIn('installer-storage-origin-unproven',checked.stderr)
+
     def test_flat_continuation_avoids_real_sqlite_backup_path_failure(self):
         with tempfile.TemporaryDirectory() as temp:
             base=Path(temp); root=base/'hub'; root.mkdir()
@@ -370,7 +551,8 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
 
     def test_batch_capture_137_descendants_and_budget_before_first_kill(self):
         c,w,_=installer.native_api(); root=Path(tempfile.gettempdir())/'selected-batch'
-        parent=dict(ProcessId=101,ParentProcessId=0,ExecutablePath=str(root/'AgentHub.RuntimeHost.exe'),Created='20000',CommandLine='host')
+        # Windows can reuse the Host's former parent's PID for its own child.
+        parent=dict(ProcessId=101,ParentProcessId=102,ExecutablePath=str(root/'AgentHub.RuntimeHost.exe'),Created='20000',CommandLine='host')
         rows=[parent]+[dict(ProcessId=pid,ParentProcessId=101,ExecutablePath=sys.executable,
                 Created=str(30000+pid),CommandLine='python worker') for pid in range(102,239)]
         class Kernel:
@@ -389,6 +571,8 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
         with patch.object(installer,'native_api',return_value=(c,w,kernel)),patch.object(installer,'process_identity',side_effect=identity),patch.object(installer,'process_birth',side_effect=lambda pid:identity(pid)['created']),patch.object(installer,'process_parent',side_effect=lambda pid:next(r['ParentProcessId'] for r in rows if r['ProcessId']==pid)),patch.object(installer,'process_snapshot',side_effect=snapshot):
             result=installer.stop_selected(root,trace=timings.append)
         self.assertEqual(len(result),138); self.assertEqual(len(calls),3)
+        self.assertEqual(kernel.killed[-1],101)
+        self.assertIn(102,kernel.killed[:-1])
         self.assertEqual(timings[-1]['snapshotCalls'],3)
         kernel=Kernel(); calls=[]
         def slow_snapshot():
@@ -625,7 +809,8 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                 "constructor({dataDir}){this.file=path.join(dataDir,'operation.json')}get(){return JSON.parse(fs.readFileSync(this.file))}"
                 "async runMaintenanceMutation(fn){return fn()}"
                 "transition(id,delta,{expectedRevision}){let op=this.get();if(op.revision!==expectedRevision)return {applied:false};"
-                "op={...op,...delta,revision:op.revision+1};fs.writeFileSync(this.file,JSON.stringify(op));return {applied:true,operation:op}}}")
+                "const metadata={...op.metadata,...delta.metadata};op={...op,...delta,metadata,revision:op.revision+1};"
+                "fs.writeFileSync(this.file,JSON.stringify(op));return {applied:true,operation:op}}}")
             module('src/infrastructure/process/desktop-control.mjs',
                 "import fs from 'node:fs';import path from 'node:path';let calls=0;"
                 "export async function readDesktopControlEndpoint(){return {endpointId:'same-endpoint'}}"
@@ -635,7 +820,17 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             module('src/infrastructure/process/process-liveness.mjs',"export const processIsAlive=()=>true;")
             module('src/infrastructure/filesystem/config.mjs',"export const miniAppSettings=value=>value;")
             module('src/runtime/runtime-manager.mjs',
-                "export async function runtimeStatus(){return {current:'new',runningRelease:'new',running:true,ready:true,pid:123}}")
+                "import fs from 'node:fs';import path from 'node:path';"
+                "export async function runtimeStatus({runtimeRoot}){const id=JSON.parse(fs.readFileSync(path.join(runtimeRoot,'health.json'))).process.releaseId;"
+                "return {current:id,runningRelease:id,running:true,ready:true,pid:123}}")
+            bundle_module = SOURCE.parents[1] / 'src/infrastructure/process/codex-executable-bundle.mjs'
+            module('src/infrastructure/process/codex-executable-bundle.mjs',
+                   "export * from " + json.dumps(bundle_module.as_uri()))
+            executable_module = SOURCE.parents[1] / 'src/infrastructure/process/codex-executable.mjs'
+            module('src/infrastructure/process/codex-executable.mjs',
+                   "export * from " + json.dumps(executable_module.as_uri()))
+            rejection = ("Codex bundle member signature is not trusted (member=helper.dll, status=Valid, "
+                         "reason=publisher-not-openai, version=0.151.0)")
             module('src/runtime/publication-readiness.mjs',(SOURCE.parents[1]/'src/runtime/publication-readiness.mjs').read_text(encoding='utf-8'))
             owner=base/'owner.mjs'; owner.write_text(installer.OWNER_MODULE,encoding='utf-8')
             assertion=base/'assert.py'; assertion.write_text(
@@ -643,20 +838,39 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             (root/'data').mkdir(); (root/'data/bot.lock').write_text('{"pid":123}')
             (root/'config.json').write_text('{"miniApp":{"host":"127.0.0.1","port":8787}}')
             value=dict(releaseId='new',hostPid=456,hostCreated='789',python=sys.executable,installer=str(assertion))
+            preflight=dict(status='eligible', rejection='Codex executable signature is not trusted (NotSigned)')
+            value['codexPreflight']=preflight
             input_path=base/'input.json'; installer._write_record(input_path,value)
             for state in ['ready','failed','disabled']:
                 with self.subTest(state=state):
                     original=dict(operationId='same-original',revision=6,status='reconciling',outcome='unknown')
                     (root/'data/operation.json').write_text(json.dumps(original),encoding='utf-8')
                     (root/'health.json').write_text(json.dumps(dict(live=True,ready=False,startingProbes=3,
-                        process=dict(releaseId='new',pid=123),capabilities=[dict(name='mini_app',state=state)])),encoding='utf-8')
+                        process=dict(releaseId='new',pid=123),capabilities=[dict(name='mini_app',state=state)],
+                        diagnostics=dict(codexExecutableUpdate=dict(recordedSignatureRejection=rejection)))),encoding='utf-8')
                     result=subprocess.run([shutil.which('node'),str(owner),str(pkg),str(root),'same-original','ready',str(input_path)],
                         capture_output=True,encoding='utf-8',timeout=15,creationflags=0x08000000)
                     op=installer._read_record(root/'data/operation.json')
+                    self.assertEqual(op['metadata']['autonomousCodexStartupRejection'], rejection)
                     if state=='failed':
-                        self.assertNotEqual(result.returncode,0); self.assertEqual(op,original)
+                        self.assertNotEqual(result.returncode,0)
+                        self.assertEqual(op['status'], original['status'])
+                        (root/'health.json').write_text(json.dumps(dict(live=True,ready=False,startingProbes=1,
+                            process=dict(releaseId='old',pid=123),
+                            capabilities=[dict(name='mini_app',state='disabled')])),encoding='utf-8')
+                        recovery_path=base/'recovery-input.json'
+                        installer._write_record(recovery_path,dict(value,releaseId='old'))
+                        rolled_back=subprocess.run([shutil.which('node'),str(owner),str(pkg),str(root),
+                            'same-original','recovered',str(recovery_path)],capture_output=True,
+                            encoding='utf-8',timeout=15,creationflags=0x08000000)
+                        self.assertEqual(rolled_back.returncode,0,rolled_back.stderr)
+                        op=installer._read_record(root/'data/operation.json')
+                        self.assertEqual(op['outcome'],'rolled-back')
+                        self.assertEqual(installer.original_status('same-original',op).get('codexPreflight'),preflight)
+                        self.assertEqual(op['metadata']['autonomousCodexStartupRejection'],rejection)
                     else:
                         self.assertEqual(result.returncode,0,result.stderr); self.assertEqual(op['status'],'succeeded')
+                        self.assertEqual(installer.original_status('same-original',op).get('codexPreflight'),preflight)
                         asserted=json.loads((root/'asserted.json').read_text(encoding='utf-8'))
                         self.assertEqual(asserted[:4],['--assert-launch',str(root),'456','789'])
                         self.assertEqual(len(asserted),4 if state=='disabled' else 5)
@@ -825,10 +1039,203 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
                     with self.assertRaisesRegex(RuntimeError,'independence unproved'):
                         installer.independent_worker([sys.executable,'-c',"from pathlib import Path;Path("+repr(str(marker))+").touch()"],base,installer.clean_installer_environment())
                 self.assertEqual(len(retained),1);self.assertEqual(k.WaitForSingleObject(retained[0],0),0)
-                self.assertFalse(marker.exists());self.assertTrue((base/'worker-dispatch-failure.json').exists())
+                self.assertFalse(marker.exists())
+                record = installer._read_record(base/'worker-dispatch-failure.json')
+                checks = record["checks"]
+                self.assertEqual(checks["stage"], "worker-job-check")
+                self.assertEqual(checks["callerOutsideAllJobs"], real(k.GetCurrentProcess()))
+                self.assertEqual(checks["providerReturnValue"], 0)
+                self.assertIs(checks["workerIdentityVerified"], True)
+                self.assertIs(checks["workerOutsideAllJobs"], False)
+                self.assertIs(checks["resumeAttempted"], False)
+                self.assertIs(checks["workerJoined"], True)
             finally:
                 for handle in retained:k.CloseHandle(handle)
                 k.CloseHandle(job)
+
+    def test_scoped_job_is_bound_to_live_host_and_node_before_worker_can_proceed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            release = base/"releases/old"
+            release.mkdir(parents=True)
+            installer._write_record(base/"current.json",dict(current="old"))
+            installer._write_record(release/"runtime-manifest.json",dict(releaseId="old"))
+            child_args = [sys.executable, "-c", "import time; time.sleep(30)"]
+            host_args = [sys.executable, "-c",
+                         "import subprocess,time; child=subprocess.Popen("+repr(child_args)+"); "
+                         "print(child.pid,flush=True); child.wait()"]
+            c, w, k = installer.native_api()
+            k.CreateJobObjectW.argtypes = [c.c_void_p, w.LPCWSTR]
+            k.CreateJobObjectW.restype = w.HANDLE
+            k.AssignProcessToJobObject.argtypes = [w.HANDLE, w.HANDLE]
+            k.TerminateJobObject.argtypes = [w.HANDLE, w.UINT]
+            k.ResumeThread.argtypes = [w.HANDLE]
+            k.ResumeThread.restype = w.DWORD
+            with subprocess.Popen(host_args, stdout=subprocess.PIPE, text=True, creationflags=4|0x08000000) as host:
+                job = k.CreateJobObjectW(None, f"Local\\IIITYRAELIII.AgentHub.{host.pid}")
+                self.assertTrue(job)
+                with ExitStack() as cleanup:
+                    cleanup.callback(k.CloseHandle, job)
+                    cleanup.callback(k.TerminateJobObject, job, 1)
+                    self.assertTrue(k.AssignProcessToJobObject(job, int(host._handle)))
+                    thread = installer.suspended_worker_thread(host.pid)
+                    cleanup.callback(k.CloseHandle, thread)
+                    self.assertEqual(k.ResumeThread(thread), 1)
+                    node_pid = int(host.stdout.readline())
+                    node_handle = k.OpenProcess(0x1000|0x100000, False, node_pid)
+                    self.assertTrue(node_handle)
+                    cleanup.callback(k.CloseHandle, node_handle)
+                    host_identity = installer.root_process_identity(host.pid, int(host._handle))
+                    node_identity = installer.root_process_identity(node_pid, node_handle)
+                    with patch.object(installer, 'ready_process_proof', return_value=[host_identity, node_identity]):
+                        scope = installer.selected_runtime_job_scope(base, k.GetCurrentProcess())
+                        self.assertEqual(scope['host'], host_identity)
+                        self.assertEqual(scope['node'], node_identity)
+                        with self.assertRaisesRegex(RuntimeError, 'belongs to the selected runtime Job'):
+                            installer.selected_runtime_job_scope(base, node_handle)
+
+    def test_scoped_stop_refusal_cannot_retire_or_replace_a_changed_host_during_recovery(self):
+        for mode in ("force", "wait"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temp:
+                base = Path(temp).resolve()
+                root, cache = base/"hub", base/"cache"
+                root.mkdir()
+                cache.mkdir()
+                request = cache/"request.json"
+                image = str(root/"AgentHub.RuntimeHost.exe")
+                host = dict(pid=101, created="1000", image=image)
+                node = dict(pid=102, created="1100", image=str(base/"node.exe"))
+                previous = dict(releaseId="old", manifestSha256="a"*64)
+                retired_scope = dict(kind="selected-runtime-job-v1", host=host, node=node, **previous)
+                installer._write_record(request, dict(
+                    runtimeRoot=str(root), runtimeIdentity=installer._directory_identity(root),
+                    archive=str(base/"archive.zip"), operationId="same-original", mode=mode,
+                    installerSha256="c"*64, sha256="d"*64))
+                (base/"archive.zip").touch()
+                (cache/"verified").mkdir()
+                (cache/"verified/package-manifest.json").touch()
+                calls = []
+
+                def owner(args, **options):
+                    if args[1] == "-e":
+                        return subprocess.CompletedProcess(args, 0, "", "")
+                    action = args[5]
+                    calls.append(action)
+                    if action == "create":
+                        value = installer._read_record(Path(args[6]))
+                        result = dict(metadata=dict(autonomousInstaller=value))
+                    else:
+                        result = {
+                            "previous": previous,
+                            "codex-preflight": dict(status="eligible"),
+                            "wait-probe": dict(live=True, ready=True, installerCutover=dict(protocol=1), process=node),
+                            "wait-complete": {},
+                            "unknown": {},
+                        }[action]
+                    return subprocess.CompletedProcess(args, 0, json.dumps(result), "")
+
+                new_host = dict(ProcessId=202, ParentProcessId=33, Created="2000", ExecutablePath=image)
+                with ExitStack() as mocks:
+                    for name, kwargs in {
+                        "verified_worker_scope": dict(return_value=dict(pid=os.getpid(), outsideAllJobs=False,
+                                                                         retirementScope=retired_scope)),
+                        "selected_runtime_job_scope": dict(return_value=retired_scope),
+                        "read_update_original": dict(return_value=None),
+                        "ready_process_proof": dict(return_value=([host, node], root)),
+                        "wait_for_current_turns": dict(return_value=dict(activeCount=0)),
+                        "process_snapshot": dict(return_value=[new_host]),
+                        "extract_verified": dict(return_value=dict(releaseId="new")),
+                    }.items():
+                        mocks.enter_context(patch.object(installer, name, **kwargs))
+                    mocks.enter_context(patch.object(installer.subprocess, "run", side_effect=owner))
+                    launch = mocks.enter_context(patch.object(installer.subprocess, "Popen"))
+                    stop = mocks.enter_context(patch.object(installer, "stop_selected", wraps=installer.stop_selected))
+                    with self.assertRaisesRegex(installer.RetirementScopeChanged, "Host changed"):
+                        installer.autonomous_worker(request)
+                    stop.assert_called_once()
+                    self.assertEqual(stop.call_args.kwargs["expected_host"], host)
+                    launch.assert_not_called()
+                self.assertEqual(calls, ["previous","create","codex-preflight","unknown"] if mode == "force"
+                                 else ["previous","wait-probe","create","codex-preflight","wait-complete","unknown"])
+                self.assertTrue((cache/"failure.json").exists())
+
+    @unittest.skipUnless(shutil.which("node"), "Node process fixture")
+    def test_rejected_codex_signature_preflight_records_terminal_refusal_without_stop(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root, cache, local = base / "hub", base / "scratch", base / "local"
+            data, runtime = root / "data", cache / "verified/runtime"
+            data.mkdir(parents=True)
+            runtime.mkdir(parents=True)
+            bundle = local / "OpenAI/Codex/bin/old"
+            bundle.mkdir(parents=True)
+            rejected = bundle.parent / "new/codex.exe"
+            rejected.parent.mkdir()
+            rejected.write_bytes(b"inert unsigned main executable fixture")
+            executable = bundle / "codex.exe"
+            original = dict(schemaVersion=1, lastKnownGood=dict(
+                path=str(executable.resolve()), sha256="A" * 64,
+                version="0.151.0", publisher='CN="OpenAI Opco, LLC", O=OpenAI', source="desktop"))
+            state = data / "codex-executable-state.json"
+            installer._write_record(state, original)
+            before = state.read_bytes()
+            source_root = SOURCE.parents[1]
+            for name in (
+                "src/infrastructure/filesystem/config.mjs",
+                "src/infrastructure/process/codex-executable-update-service.mjs",
+                "src/infrastructure/process/codex-executable.mjs",
+                "src/infrastructure/persistence/maintenance-operation-store.mjs",
+            ):
+                output = runtime / name
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text("export * from " + json.dumps((source_root / name).as_uri()),
+                                  encoding="utf-8")
+            installer._write_record(root / "config.json", dict(components={}, projectRoot=str(root)))
+            installer._write_record(root / "current.json", dict(current="old"))
+            installer._write_record(cache / "verified/package-manifest.json", dict(releaseId="new"))
+            archive = base / "archive.zip"
+            archive.touch()
+            request = cache / "request.json"
+            installer._write_record(request, dict(runtimeRoot=str(root),
+                runtimeIdentity=installer._directory_identity(root), archive=str(archive),
+                sha256=installer.file_hash(archive), operationId="codex-preflight-test",
+                installerSha256="a" * 64, mode="force"))
+
+            real_run = subprocess.run
+            calls = []
+
+            def run(args, **kwargs):
+                if args[1] == "-e":
+                    return real_run(args, **kwargs)
+                action = args[5]
+                calls.append(action)
+                if action == "previous":
+                    return subprocess.CompletedProcess(args, 0, json.dumps(
+                        dict(releaseId="old", manifestSha256="b" * 64)), "")
+                return real_run(args, **kwargs)
+
+            with ExitStack() as mocks:
+                mocks.enter_context(patch.dict(os.environ, {"LOCALAPPDATA": str(local),
+                                                            "USERPROFILE": str(base / "profile")}))
+                mocks.enter_context(patch.object(installer, "extract_verified", return_value=dict(releaseId="new")))
+                mocks.enter_context(patch.object(installer, "verified_worker_scope",
+                                                  return_value=dict(pid=os.getpid())))
+                mocks.enter_context(patch.object(installer.subprocess, "run", side_effect=run))
+                stop = mocks.enter_context(patch.object(installer, "stop_selected"))
+                installer.autonomous_worker(request)
+                stop.assert_not_called()
+            self.assertEqual(calls, ["previous", "create", "codex-preflight", "codex-preflight-blocked"])
+            original_readback = installer.read_update_original(root, "codex-preflight-test")
+            status = installer.original_status("codex-preflight-test", original_readback)
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(status["phase"], "codex-preflight-blocked")
+            self.assertRegex(status["codexPreflight"]["rejection"], r"^Codex executable signature is not trusted \(\w+\)$")
+            self.assertEqual(status["codexPreflight"]["reason"], "no-eligible-trusted-codex")
+            self.assertEqual(installer._read_record(cache / "result.json"), original_readback)
+            self.assertEqual(installer._read_record(root / "current.json")["current"], "old")
+            self.assertEqual(state.read_bytes(), before)
+            self.assertFalse((cache / "retired.json").exists())
+            self.assertFalse((cache / "backup").exists())
 
     def test_worker_does_not_require_an_interactive_desktop_shell(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -863,6 +1270,115 @@ console.log(JSON.stringify({oldTargetLength:path.join(old,'data',name).length,fl
             self.assertEqual(installer._read_record(base/'worker-create-intent.json')['operationId'],'same-original')
             self.assertFalse((base/'worker-verified-suspended.json').exists())
             self.assertTrue((base/'worker-dispatch-failure.json').exists())
+
+    def dispatch_cli_args(self, base):
+        root = base / "private-installation-path"
+        (root / "data").mkdir(parents=True)
+        archive = base / "private-archive-name.zip"
+        archive.touch()
+        return root, [str(SOURCE), "--archive", str(archive), "--sha256", installer.file_hash(archive),
+                      "--runtime-root", str(root), "--scratch-root", str(base / "scratch"),
+                      "--mode", "force", "--operation-id", "same-original"]
+
+    def read_dispatch_cli_failure(self):
+        err, out = io.StringIO(), io.StringIO()
+        with redirect_stderr(err), redirect_stdout(out), self.assertRaises(SystemExit) as outcome:
+            installer.autonomous_main()
+        self.assertEqual(outcome.exception.code, 1)
+        self.assertEqual(out.getvalue(), "")
+        self.assertNotIn("private", err.getvalue())
+        return json.loads(err.getvalue())
+
+    def test_cli_reports_dispatch_failure_without_private_input_or_second_creation(self):
+        for record_saved in (True, False):
+            with self.subTest(record_saved=record_saved), tempfile.TemporaryDirectory() as temp:
+                base = Path(temp)
+                root, args = self.dispatch_cli_args(base)
+                write_record = installer._write_record
+
+                def write_or_refuse(path, value):
+                    if not record_saved and path.name == "worker-dispatch-failure.json":
+                        raise OSError("private record path unavailable")
+                    write_record(path, value)
+
+                def refuse_provider(command, **kwargs):
+                    reply = dict(returnValue=2, pid=None)
+                    write_record(Path(json.loads(kwargs["input"])["result"]), reply)
+                    return subprocess.CompletedProcess(command, 0, json.dumps(reply), "private provider output")
+
+                with patch.object(sys, "argv", args), patch.object(installer, "_write_record", side_effect=write_or_refuse), \
+                     patch.object(installer.subprocess, "run", side_effect=refuse_provider) as provider:
+                    report = self.read_dispatch_cli_failure()
+                    self.assertEqual(report["kind"], "installer-worker-dispatch-failed")
+                    self.assertEqual(report["operationId"], "same-original")
+                    self.assertEqual(report["installerSha256"], installer.file_hash(SOURCE))
+                    self.assertEqual(report["stage"], "wmi-reply")
+                    self.assertEqual(report["reason"], "wmi-create-refused")
+                    self.assertEqual(report["providerExitCode"], 0)
+                    self.assertEqual(report["providerReturnValue"], 2)
+                    self.assertIs(report["failureRecordSaved"], record_saved)
+                    self.assertIs(type(report["callerOutsideAllJobs"]), bool)
+                    self.assertIs(report["workerIdentityVerified"], False)
+                    self.assertIsNone(report["workerOutsideAllJobs"])
+                    self.assertIsNone(report["workerJoined"])
+                    self.assertIs(report["resumeAttempted"], False)
+                    if record_saved:
+                        self.assertEqual(self.read_dispatch_cli_failure(), report)
+                    self.assertEqual(provider.call_count, 1)
+                self.assertIsNone(installer.read_update_original(root, "same-original"))
+
+    def test_cli_distinguishes_wmi_reply_failures_and_reads_them_back_without_replay(self):
+        cases = [
+            ("private unparseable stdout", {"returnValue": 2, "pid": None}, "wmi-reply-invalid"),
+            ('{"returnValue":0,"pid":123}', None, "wmi-result-unreadable"),
+            ('{"returnValue":0,"pid":123}', {"returnValue": 0, "pid": 456}, "wmi-reply-mismatch"),
+        ]
+        for stdout, record, reason in cases:
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as temp:
+                root, args = self.dispatch_cli_args(Path(temp))
+
+                def wmi_reply(command, **kwargs):
+                    if record is not None:
+                        installer._write_record(Path(json.loads(kwargs["input"])["result"]), record)
+                    return subprocess.CompletedProcess(command, 0, stdout, "")
+
+                with patch.object(sys, "argv", args), patch.object(installer.subprocess, "run", side_effect=wmi_reply) as provider:
+                    report = self.read_dispatch_cli_failure()
+                    self.assertEqual(report["stage"], "wmi-reply")
+                    self.assertEqual(report["reason"], reason)
+                    self.assertEqual(report["providerExitCode"], 0)
+                    self.assertIsNone(report["providerReturnValue"])
+                    self.assertIs(report["workerIdentityVerified"], False)
+                    self.assertIs(report["resumeAttempted"], False)
+                    self.assertEqual(self.read_dispatch_cli_failure(), report)
+                    self.assertEqual(provider.call_count, 1)
+                self.assertIsNone(installer.read_update_original(root, "same-original"))
+
+    def test_cli_reports_worker_preparation_failure_without_path_or_worker(self):
+        for stage in ("working-directory", "prepare-worker"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temp:
+                root, args = self.dispatch_cli_args(Path(temp))
+                resolve = Path.resolve
+
+                def denied_directory(path, *args, **kwargs):
+                    if path.name.startswith("agenthub-autonomous-"):
+                        raise PermissionError("private working directory")
+                    return resolve(path, *args, **kwargs)
+
+                denial = (patch.object(Path, "resolve", denied_directory) if stage == "working-directory"
+                          else patch.object(installer.shutil, "copyfile", side_effect=PermissionError("private source path")))
+                with patch.object(sys, "argv", args), denial, patch.object(installer.subprocess, "run") as provider:
+                    report = self.read_dispatch_cli_failure()
+                    self.assertEqual(report["stage"], stage)
+                    self.assertEqual(report["reason"], f"{stage}-failed")
+                    self.assertIsNone(report["providerExitCode"])
+                    self.assertIs(report["workerIdentityVerified"], False)
+                    self.assertIs(report["resumeAttempted"], False)
+                    self.assertIs(report["failureRecordSaved"], stage == "prepare-worker")
+                    if report["failureRecordSaved"]:
+                        self.assertEqual(self.read_dispatch_cli_failure(), report)
+                    provider.assert_not_called()
+                self.assertIsNone(installer.read_update_original(root, "same-original"))
 
 
 if __name__ == "__main__":

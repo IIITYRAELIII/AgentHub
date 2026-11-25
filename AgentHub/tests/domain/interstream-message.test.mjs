@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   consistentInterstreamRecordIdentity,
   createInterstreamMessage,
+  isInterstreamOnlyTurn,
   interstreamAuditContentHash,
   interstreamDisplayText,
   interstreamMessageDetails,
@@ -192,4 +193,14 @@ test("legacy origin without source thread matches only the same durable identity
     origin,
     clientUserMessageId: "mcp:interstream-1",
   }), null);
+});
+
+test("only an accepted user contribution makes a service turn ordinary", () => {
+  const rootId = "mcp:" + origin.requestId;
+  const run = { prompt: envelope, clientUserMessageId: rootId, messageOrigin: origin,
+    userMessages: [{ role: "user", text: envelope, clientUserMessageId: rootId }] };
+  assert.equal(isInterstreamOnlyTurn(run), true);
+  assert.equal(isInterstreamOnlyTurn({ ...run, messageOrigin: null }), false);
+  run.userMessages.push({ role: "user", text: envelope, clientUserMessageId: "user-2" });
+  assert.equal(isInterstreamOnlyTurn(run), false);
 });

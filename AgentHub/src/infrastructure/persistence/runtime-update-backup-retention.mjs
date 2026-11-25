@@ -3,7 +3,8 @@ import { lstat, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { packageFile } from "../filesystem/runtime-package-target.mjs";
 import { deleteVerifiedWindowsEntry } from "./windows-delete-verified-entry.mjs";
-import { installerStorageDigest, installerStorageDisposed, installerWorkerRetired, sealAutonomousInstallerStorage, installerCustodyCurrent } from "./autonomous-installer-storage.mjs";
+import { installerStorageDigest, installerStorageDisposed, installerWorkerRetired, sealAutonomousInstallerStorage,
+  installerCustodyCurrent, installerPhysicalRuntimeRoot } from "./autonomous-installer-storage.mjs";
 
 const LIMIT = 5;
 const digest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -80,12 +81,13 @@ export class RuntimeUpdateBackupRetention {
     const autonomous = operation?.metadata?.autonomousInstaller;
     const snapshot = artifact?.snapshot ?? evidence?.backup ?? operation?.metadata?.autonomousBackup ?? operation?.metadata?.packageBackup;
     const envelope = operation?.metadata?.packageHandoff;
-    const binding = autonomous ? { operationId: operation.operationId, runtimeRoot: autonomous.runtimeRoot, scratchRoot: evidence?.cache?.file } : envelope?.binding;
+    const binding = autonomous ? { operationId: operation.operationId, runtimeRoot: installerPhysicalRuntimeRoot(autonomous),
+      scratchRoot: evidence?.cache?.file } : envelope?.binding;
     if (artifact && (!["payload", "download", "partial-backup"].includes(artifact.kind)
       || artifact.kind === "download" && (snapshot.files?.length !== 1 || snapshot.files[0].path !== "release.zip" || !snapshot.keepRoot)))
       throw Error("backup-artifact-scope-unproven");
     const owned = autonomous ? evidence?.schema === 1 && evidence.operationId === operation.operationId
-      && operation.streamId === "agent-hub-installer" && normalize(operation.threadId) === normalize(this.#runtimePin.file)
+      && operation.streamId === "agent-hub-installer" && normalize(operation.threadId) === normalize(autonomous.runtimeRoot)
       && same(evidence.runtime, this.#runtimePin) && normalize(evidence.runtime.file) === normalize(this.#runtimePin.file)
       : operation?.streamId === "agent-hub-runtime" && operation?.threadId === "agent-hub-runtime"
         && envelope?.sha256 === digest(binding);

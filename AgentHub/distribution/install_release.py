@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, ExitStack
 import hashlib
 import http.client
 import json
@@ -366,6 +366,10 @@ def original_status(operation_id: str, original) -> dict:
     result = {"operationId": operation_id, "status": original.get("status"), "phase": original.get("phase"),
               "outcome": original.get("outcome"), "effectsReplayed": False}
     metadata = original.get("metadata") or {}
+    if metadata.get("autonomousCodexPreflight"):
+        result["codexPreflight"] = metadata["autonomousCodexPreflight"]
+    if metadata.get("autonomousCodexStartupRejection"):
+        result["codexStartupRejection"] = metadata["autonomousCodexStartupRejection"]
     envelope = metadata.get("packageHandoff") or {}
     binding = envelope.get("binding") or {}
     if (original.get("status") in {"requested", "blocked", "running"} and original.get("outcome") is None
@@ -663,6 +667,7 @@ def historical_main():
     parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--scratch-root", type=Path, required=True, help="Private temporary area on the intended volume")
     parser.add_argument("--rollback", action="store_true")
+    parser.add_argument("--offline", action="store_true", help="Install into a fully stopped Hub without starting a worker")
     parser.add_argument("--inspect-package", action="store_true", help="Verify/extract public input only; no runtime effect")
     parser.add_argument("--prepare-update", action="store_true", help="Admit one exact package update through the existing runtime owner")
     parser.add_argument("--update-status", action="store_true", help="Read the exact original without replaying effects")
@@ -673,7 +678,7 @@ def historical_main():
         parser.error("--sha256 is required with --url or --archive")
     if args.sha256 and not re.fullmatch(r"[0-9a-f]{64}", args.sha256):
         parser.error("--sha256 must be 64 lowercase hexadecimal characters")
-    if sum((args.rollback, args.inspect_package, args.prepare_update, args.update_status)) > 1:
+    if sum((args.rollback, args.inspect_package, args.prepare_update, args.update_status, args.offline)) > 1:
         parser.error("Choose one installer operation")
     if args.prepare_update or args.update_status:
         if not args.release or args.release == "latest" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.operation_id or ""):
@@ -682,15 +687,37 @@ def historical_main():
         parser.error("--project-root belongs only to a first installation")
     if os.name != "nt":
         raise RuntimeError("Ready packages currently support Windows x64 only")
+    if args.offline:
+        root = args.runtime_root.resolve(strict=True)
+        _plain_chain(root)
+        identity = _directory_identity(root)
+        args.scratch_root = args.scratch_root.resolve()
+        if root.is_relative_to(args.scratch_root) or args.scratch_root.is_relative_to(root):
+            raise ValueError("Offline scratch must be outside the selected runtime")
+        with installer_runtime_mutex(root):
+            assert_offline_root(args.runtime_root, root, identity)
+            stop_selected(root, inspect_only=True)
+            return install_recipient_package(args, offline=(root, identity))
     if args.runtime_root.resolve().is_relative_to(args.scratch_root.resolve()):
         raise ValueError("Runtime must be outside the disposable package scratch root")
     if args.update_status:
         print(json.dumps(update_status(args.runtime_root.resolve(), args.operation_id)))
         return
-    args.scratch_root.mkdir(parents=True, exist_ok=True)
     if args.prepare_update:
+        args.scratch_root.mkdir(parents=True, exist_ok=True)
         prepare_update(args)
         return
+    return install_recipient_package(args)
+
+
+def assert_offline_root(selected, root, identity):
+    _plain_chain(root)
+    if selected.resolve(strict=True) != root or _directory_identity(root) != identity:
+        raise RuntimeError("Selected offline runtime root changed")
+
+
+def install_recipient_package(args, *, offline=None):
+    args.scratch_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="agenthub-package-", dir=windows_filesystem_path(args.scratch_root)) as temporary:
         scratch = Path(temporary)
         archive = args.archive
@@ -726,8 +753,13 @@ def historical_main():
             entry = "\\\\" + entry[8:] if entry.startswith("\\\\?\\UNC\\") else entry[4:]
         # Explicit offline update only; the existing owner checks live/unknown
         # process evidence. No automatic start, stop, autostart or retry.
+        if offline is None:
+            root = args.runtime_root.resolve()
+        else:
+            root, identity = offline
+            assert_offline_root(args.runtime_root, root, identity)
         result = subprocess.run([node, entry,
-                                 "rollback" if args.rollback else "install", str(args.runtime_root.resolve()),
+                                 "rollback" if args.rollback else "install", str(root),
                                  *(["--project-root", str(args.project_root.resolve())] if args.project_root else [])],
                                 check=False, env={k: v for k, v in os.environ.items()
                                                   if not k.startswith("AGENT_HUB_PUBLICATION_")})
@@ -751,6 +783,7 @@ def native_api():
         ("WaitForSingleObject", w.DWORD, [w.HANDLE, w.DWORD]),
         ("TerminateProcess", w.BOOL, [w.HANDLE, w.UINT]),
         ("IsProcessInJob", w.BOOL, [w.HANDLE, w.HANDLE, ctypes.POINTER(w.BOOL)]),
+        ("OpenJobObjectW", w.HANDLE, [w.DWORD, w.BOOL, w.LPCWSTR]),
         ("GetCurrentProcess", w.HANDLE, []),
         ("CreateMutexW", w.HANDLE, [ctypes.c_void_p, w.BOOL, w.LPCWSTR]),
         ("ReleaseMutex", w.BOOL, [w.HANDLE]),
@@ -764,6 +797,24 @@ def native_process_error(code, operation):
     error = c.WinError(code)
     error.native_operation = operation
     return error
+
+
+@contextmanager
+def installer_runtime_mutex(root):
+    c, _, k = native_api()
+    name = "Local\\AgentHubInstaller-" + hashlib.sha256(str(root).lower().encode()).hexdigest()
+    mutex = k.CreateMutexW(None, False, name)
+    if not mutex:
+        raise c.WinError(c.get_last_error())
+    try:
+        if k.WaitForSingleObject(mutex, 0) not in (0, 128):
+            raise RuntimeError("Another installer owns this runtime")
+        try:
+            yield
+        finally:
+            k.ReleaseMutex(mutex)
+    finally:
+        k.CloseHandle(mutex)
 
 
 def process_birth(handle):
@@ -795,9 +846,9 @@ def process_identity(handle):
     return dict(created=created, image=str(Path(name.value).resolve()))
 
 
-def outside_jobs(handle):
+def outside_jobs(handle, job=None):
     c, w, k = native_api(); member = w.BOOL()
-    if not k.IsProcessInJob(handle, None, c.byref(member)):
+    if not k.IsProcessInJob(handle, job, c.byref(member)):
         raise c.WinError(c.get_last_error())
     return not member.value
 
@@ -861,24 +912,72 @@ def suspended_worker_thread(pid):
         k.CloseHandle(snapshot)
 
 
-def independent_worker(command, directory, environment):
+class WorkerDispatchError(RuntimeError):
+    def __init__(self, error, checks, record_saved):
+        super().__init__(str(error))
+        self.checks = checks
+        self.record_saved = record_saved
+
+
+WORKER_DISPATCH_STAGES = (
+    "prepare-worker", "working-directory", "native-api", "caller-job-check",
+    "creation-intent", "wmi-launch", "wmi-reply",
+    "worker-identity", "worker-security", "worker-job-check", "worker-thread",
+    "record-worker-proof", "resume-thread",
+)
+WMI_REPLY_FAILURE_REASONS = (
+    "wmi-reply-invalid", "wmi-result-unreadable", "wmi-reply-mismatch",
+    "wmi-create-refused", "wmi-worker-pid-invalid",
+)
+
+
+def report_worker_dispatch_failure(selection, checks, record_saved):
+    # A retained file is local evidence, not trusted console text. Print only
+    # known stages and scalar observations, never exception messages or paths.
+    stage = checks.get("stage")
+    stage = stage if stage in WORKER_DISPATCH_STAGES else None
+    reason = checks.get("reason")
+    if stage != "wmi-reply" or reason not in WMI_REPLY_FAILURE_REASONS:
+        if stage == "worker-job-check" and checks.get("workerOutsideAllJobs") is False:
+            reason = "worker-in-job"
+        else:
+            reason = f"{stage}-failed" if stage is not None else None
+    report = dict(kind="installer-worker-dispatch-failed", schema=1,
+                  operationId=selection["operationId"], installerSha256=selection["installerSha256"],
+                  mechanism="Win32_Process.Create", failureRecordSaved=record_saved,
+                  stage=stage, reason=reason)
+    if reason == "worker-in-job" and checks.get("workerJoined") is True and checks.get("resumeAttempted") is False:
+        report["stoppedInstallAvailable"] = True
+    for key in ("callerOutsideAllJobs", "workerIdentityVerified", "workerOutsideAllJobs",
+                "workerJoined", "resumeAttempted"):
+        value = checks.get(key)
+        report[key] = value if type(value) is bool else None
+    for key in ("windowsBuild", "providerExitCode", "providerReturnValue", "workerPid",
+                "workerParentPid", "winerror"):
+        value = checks.get(key)
+        report[key] = value if type(value) is int and -(2**31) <= value < 2**32 else None
+    print(json.dumps(report, sort_keys=True), file=sys.stderr, flush=True)
+    raise SystemExit(1)
+
+
+def retain_worker_dispatch_failure(directory, error, checks, started):
+    try:
+        _write_record(directory/"worker-dispatch-failure.json",dict(code=type(error).__name__,
+            diagnostic=str(error)[:1000],elapsedMs=(time.monotonic()-started)*1000,
+            workerIdentityVerified=checks["workerIdentityVerified"], checks=checks))
+    except OSError:
+        # Console diagnostics must survive failure to write the scratch record.
+        return False
+    return True
+
+
+def independent_worker(command, directory, environment, *, runtime_root=None):
     """Use the local Windows process provider; prove independence before Resume.
 
-    Neither Explorer nor the calling Hub is the parent. The provider's own Job
-    is explicitly escaped, not accepted as independent merely because it is WMI.
+    Neither Explorer nor the calling Hub is the parent. When breakaway leaves
+    the worker in a Job, prove independence from the exact runtime retirement.
     There is one creation attempt. A lost reply retains its original transport.
     """
-    c, w, k = native_api(); directory = directory.resolve(strict=True)
-    k.ResumeThread.argtypes = [w.HANDLE]; k.ResumeThread.restype = w.DWORD
-    intent = dict(schema=1, mechanism="Win32_Process.Create", creationFlags=0x01000004,
-                  commandSha256=hashlib.sha256(subprocess.list2cmdline(command).encode()).hexdigest(),
-                  caller=dict(pid=os.getpid(), outsideAllJobs=outside_jobs(k.GetCurrentProcess()),
-                              **process_identity(k.GetCurrentProcess())))
-    request_file = directory/"request.json"
-    if request_file.exists():
-        intent.update(operationId=_read_record(request_file)["operationId"], requestSha256=file_hash(request_file))
-    _write_record(directory/"worker-create-intent.json", intent)
-    started = time.monotonic(); earliest = time.time_ns()//100 + 116444736000000000
     # JSON stdin is data; argv, paths and environment are never shell source.
     script = r'''$ErrorActionPreference='Stop';
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);
@@ -891,21 +990,64 @@ $v=@{returnValue=$r.ReturnValue;pid=$r.ProcessId}|ConvertTo-Json -Compress;
 $f=[IO.File]::Open($x.result,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);
 try {$b=[Text.UTF8Encoding]::new($false).GetBytes($v);$f.Write($b,0,$b.Length);$f.Flush($true)} finally {$f.Dispose()};
 [Console]::WriteLine($v);'''
-    process = thread = None; owned = False
+    process = thread = None
+    owned = False
+    checks = dict(stage="working-directory", windowsBuild=sys.getwindowsversion().build,
+                  workerIdentityVerified=False, resumeAttempted=False)
+    resolved_directory = None
+    started = time.monotonic()
     try:
+        resolved_directory = directory.resolve(strict=True)
+        directory = resolved_directory
+        checks["stage"] = "native-api"
+        c, w, k = native_api()
+        k.ResumeThread.argtypes = [w.HANDLE]; k.ResumeThread.restype = w.DWORD
+        checks["stage"] = "caller-job-check"
+        checks["callerOutsideAllJobs"] = outside_jobs(k.GetCurrentProcess())
+        checks["stage"] = "creation-intent"
+        intent = dict(schema=1, mechanism="Win32_Process.Create", creationFlags=0x01000004,
+                      commandSha256=hashlib.sha256(subprocess.list2cmdline(command).encode()).hexdigest(),
+                      caller=dict(pid=os.getpid(), outsideAllJobs=checks["callerOutsideAllJobs"],
+                                  **process_identity(k.GetCurrentProcess())))
+        request_file = directory/"request.json"
+        if request_file.exists():
+            intent.update(operationId=_read_record(request_file)["operationId"], requestSha256=file_hash(request_file))
+        _write_record(directory/"worker-create-intent.json", intent)
+        started = time.monotonic()
+        earliest = time.time_ns()//100 + 116444736000000000
+        checks["stage"] = "wmi-launch"
         reply_file = directory/"worker-create-result.json"
         result = subprocess.run([str(Path(os.environ["SystemRoot"])/"System32/WindowsPowerShell/v1.0/powershell.exe"),
                                  "-NoProfile", "-NonInteractive", "-Command", script],
             input=json.dumps(dict(command=subprocess.list2cmdline(command), directory=str(directory),
                                   environment=[f"{a}={b}" for a,b in environment.items()],result=str(reply_file))),
             capture_output=True, encoding="utf-8", env=environment, creationflags=0x08000000)
+        checks["providerExitCode"] = result.returncode
         if result.returncode:
             (directory/"worker-provider.stderr").write_text(result.stderr[:4000],encoding="utf-8")
             raise RuntimeError("Windows process provider failed: exit "+str(result.returncode))
+        checks["stage"] = "wmi-reply"
+        checks["reason"] = "wmi-reply-invalid"
         reply = json.loads(result.stdout)
-        if reply != _read_record(reply_file): raise RuntimeError("Windows process provider reply changed")
-        if reply.get("returnValue") != 0 or type(reply.get("pid")) is not int or reply["pid"] <= 0:
+        if not isinstance(reply, dict): raise ValueError("Invalid Windows process provider reply")
+        checks["reason"] = "wmi-result-unreadable"
+        retained_reply = _read_record(reply_file)
+        checks["reason"] = "wmi-reply-mismatch"
+        if reply != retained_reply: raise RuntimeError("Windows process provider reply changed")
+        return_value = reply.get("returnValue")
+        if type(return_value) is int:
+            checks["providerReturnValue"] = return_value
+        if type(return_value) is not int:
+            checks["reason"] = "wmi-reply-invalid"
+            raise ValueError("Invalid Windows process provider return value")
+        if return_value != 0:
+            checks["reason"] = "wmi-create-refused"
             raise RuntimeError("Windows process provider refused creation: "+str(reply.get("returnValue")))
+        if type(reply.get("pid")) is not int or reply["pid"] <= 0:
+            checks["reason"] = "wmi-worker-pid-invalid"
+            raise RuntimeError("Windows process provider did not return a valid worker PID")
+        checks.pop("reason")
+        checks["stage"] = "worker-identity"
         process = k.OpenProcess(0x1000 | 0x100000 | 1, False, reply["pid"])
         if not process: raise c.WinError(c.get_last_error())
         identity = process_identity(process)
@@ -917,28 +1059,45 @@ try {$b=[Text.UTF8Encoding]::new($false).GetBytes($v);$f.Write($b,0,$b.Length);$
                 or k.WaitForSingleObject(process,0) != 258):
             raise RuntimeError("Windows process provider worker command or lifetime changed")
         owned = True
+        checks.update(workerIdentityVerified=True, workerPid=reply["pid"], stage="worker-security")
         security = process_security(process)
         if security != process_security(k.GetCurrentProcess()):
             raise RuntimeError("Installer worker security context differs from initiator")
-        if not outside_jobs(process):
-            raise RuntimeError("Windows process provider worker belongs to a Job; independence unproved")
+        checks["stage"] = "worker-job-check"
+        checks["workerOutsideAllJobs"] = outside_jobs(process)
+        scope = {}
+        if not checks["workerOutsideAllJobs"]:
+            try:
+                checks["workerParentPid"] = process_parent(process)
+            except (OSError, RuntimeError):
+                pass
+            if runtime_root is None:
+                raise RuntimeError("Windows process provider worker belongs to a Job; independence unproved")
+            scope["retirementScope"] = selected_runtime_job_scope(runtime_root, process)
+        checks["stage"] = "worker-thread"
         thread = suspended_worker_thread(reply["pid"])
-        proof = dict(pid=reply["pid"], **identity, outsideAllJobs=True, security=security,
+        checks["stage"] = "record-worker-proof"
+        proof = dict(pid=reply["pid"], **identity, outsideAllJobs=checks["workerOutsideAllJobs"], security=security,
                      mechanism=intent["mechanism"], parentPid=process_parent(process),
-                     elapsedMs=(time.monotonic()-started)*1000)
+                     elapsedMs=(time.monotonic()-started)*1000, **scope)
         _write_record(directory/"worker-verified-suspended.json",proof)
+        checks.update(stage="resume-thread", resumeAttempted=True)
         suspended = k.ResumeThread(thread)
         if suspended == 0xffffffff: raise c.WinError(c.get_last_error())
         if suspended != 1: raise RuntimeError("Installer worker had an unexpected native suspend count")
         return proof
     except BaseException as error:
+        checks["winerror"] = getattr(error, "winerror", None)
+        failure = error
         if owned:
             k.TerminateProcess(process, 1)
-            if k.WaitForSingleObject(process, 10000) != 0:
-                raise RuntimeError("Installer dispatch refusal could not join its exact worker") from error
-        _write_record(directory/"worker-dispatch-failure.json",dict(code=type(error).__name__,
-            diagnostic=str(error)[:1000],elapsedMs=(time.monotonic()-started)*1000,
-            workerIdentityVerified=owned))
+            checks["workerJoined"] = k.WaitForSingleObject(process, 10000) == 0
+            if not checks["workerJoined"]:
+                failure = RuntimeError("Installer dispatch refusal could not join its exact worker")
+        record_saved = (resolved_directory is not None
+                        and retain_worker_dispatch_failure(resolved_directory, error, checks, started))
+        if isinstance(error, Exception):
+            raise WorkerDispatchError(failure, checks, record_saved) from error
         raise
     finally:
         if thread: k.CloseHandle(thread)
@@ -1099,7 +1258,11 @@ def terminate_retained(pid, handle, identity):
     return dict(pid=pid, **identity, forced=True)
 
 
-def stop_selected(root, *, inspect_only=False, trace=None, capture=None, scope=None):
+class RetirementScopeChanged(RuntimeError):
+    """The updater has no authority to retire or replace the current Host."""
+
+
+def stop_selected(root, *, inspect_only=False, trace=None, capture=None, scope=None, expected_host=None):
     c, w, k = native_api(); records = []
     retained = scope.setdefault("handles",{}) if scope is not None else {}
     known_rows = scope.setdefault("rows",{}) if scope is not None else {}
@@ -1112,7 +1275,14 @@ def stop_selected(root, *, inspect_only=False, trace=None, capture=None, scope=N
     def snapshot():
         budget(); before = time.monotonic()
         try:
-            return {int(r["ProcessId"]): r for r in process_snapshot()}
+            rows = {int(row["ProcessId"]): row for row in process_snapshot()}
+            if expected_host is not None:
+                for pid, row in rows.items():
+                    image = row.get("ExecutablePath")
+                    if image and Path(image).resolve() == root/"AgentHub.RuntimeHost.exe" and (
+                            pid != expected_host["pid"] or int(row["Created"])//10 != int(expected_host["created"])//10):
+                        raise RetirementScopeChanged("Selected native Host changed before retirement")
+            return rows
         finally:
             metrics["snapshotCalls"] += 1
             metrics["snapshotMs"] += (time.monotonic()-before)*1000
@@ -1154,6 +1324,8 @@ def stop_selected(root, *, inspect_only=False, trace=None, capture=None, scope=N
             if inspect_only:
                 if wanted: raise RuntimeError("Selected runtime still has live processes")
                 return []
+            if os.getpid() in wanted:
+                raise RuntimeError("Installer is still in the selected process tree")
             before = time.monotonic()
             def depth(pid):
                 seen=set(); current=pid
@@ -1162,11 +1334,15 @@ def stop_selected(root, *, inspect_only=False, trace=None, capture=None, scope=N
                     seen.add(current)
                     row=bypid.get(current) or known_rows.get(current)
                     if not row: break
-                    current=int(row["ParentProcessId"])
+                    parent_pid = int(row["ParentProcessId"])
+                    parent = bypid.get(parent_pid) or known_rows.get(parent_pid)
+                    # A reused PID can point to a younger process in this same tree.
+                    if parent_pid not in wanted or not parent or not descendant_birth_matches(parent, row):
+                        break
+                    current = parent_pid
                 return len(seen)
             for pid in sorted(wanted,key=depth):
                 budget()
-                if pid == os.getpid(): raise RuntimeError("Installer is still in the selected process tree")
                 if pid in retained: continue
                 handle = k.OpenProcess(0x1000 | 0x100000 | 1, False, pid)
                 if not handle:
@@ -1300,7 +1476,24 @@ def verify_retired_worker(retained, pid):
     return worker
 
 
-def ready_process_proof(root, previous, *, before_ms=None):
+def wait_admission_root(root, release_id, entrypoint):
+    # RuntimeHost passes this lexical root to Node in AGENT_HUB_CONFIG.
+    # The running owner uses its config's data directory without realpath.
+    if not entrypoint or not entrypoint.is_absolute():
+        raise RuntimeError("Waiting Hub has no absolute native entry point")
+    launch_root = entrypoint.parent
+    if entrypoint.resolve().parent == root/"releases"/release_id:
+        launch_root = entrypoint.parents[2]
+    if not launch_root.samefile(root):
+        raise RuntimeError("Waiting Hub launch root has different physical ownership")
+    configured_data = _read_record(root/"config.json").get("dataDir")
+    data = Path(os.path.abspath(launch_root/("data" if configured_data is None else configured_data)))
+    if not data.samefile(root/"data") or not data.parent.samefile(root):
+        raise RuntimeError("Waiting Hub data root has different physical ownership")
+    return data.parent
+
+
+def ready_process_proof(root, previous, *, before_ms=None, for_wait=False):
     if (_read_record(root/"current.json").get("current") != previous["releaseId"]
             or file_hash(root/"releases"/previous["releaseId"]/"runtime-manifest.json") != previous["manifestSha256"]):
         raise RuntimeError("Previous installation changed")
@@ -1325,7 +1518,57 @@ def ready_process_proof(root, previous, *, before_ms=None):
         finally: k.CloseHandle(handle)
     if Path(proof[0]["image"]) != root/"AgentHub.RuntimeHost.exe":
         raise RuntimeError("Previous native Host identity differs")
+    if for_wait:
+        return proof, wait_admission_root(root, previous["releaseId"], node_entrypoint(node))
     return proof
+
+
+def selected_runtime_job_scope(root, worker):
+    """Bind the named Job to the actual Ready Host and its Node before relying on it."""
+    release_id = _read_record(root/"current.json").get("current")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", release_id or ""):
+        raise RuntimeError("Selected runtime release is unavailable for Job verification")
+    previous = dict(releaseId=release_id,
+                    manifestSha256=file_hash(root/"releases"/release_id/"runtime-manifest.json"))
+    host, node = ready_process_proof(root, previous)
+    c, _, k = native_api()
+    job = k.OpenJobObjectW(4, False, f"Local\\IIITYRAELIII.AgentHub.{host['pid']}")
+    if not job:
+        raise RuntimeError("Selected runtime Job is unavailable; independence unproved")
+    try:
+        for entry in (host, node):
+            handle = k.OpenProcess(0x1000 | 0x100000, False, entry["pid"])
+            if not handle:
+                raise c.WinError(c.get_last_error())
+            try:
+                if (process_exited(handle) or root_process_identity(entry["pid"], handle) != entry
+                        or outside_jobs(handle, job)
+                        or (entry is node and process_parent(handle) != host["pid"])):
+                    raise RuntimeError("Selected runtime Job or process identity changed")
+            finally:
+                k.CloseHandle(handle)
+        if not outside_jobs(worker, job):
+            raise RuntimeError("Installer worker belongs to the selected runtime Job; independence unproved")
+    finally:
+        k.CloseHandle(job)
+    return dict(kind="selected-runtime-job-v1", host=host, node=node, **previous)
+
+
+def root_process_identity(pid, handle):
+    return dict(pid=pid, **process_identity(handle))
+
+
+def verified_worker_scope(root, cache, handle):
+    identity = root_process_identity(os.getpid(), handle)
+    if outside_jobs(handle):
+        return dict(**identity, outsideAllJobs=True)
+    proof = _read_record(cache/"worker-verified-suspended.json")
+    live_scope = selected_runtime_job_scope(root, handle)
+    if (any(proof.get(key) != value for key, value in identity.items())
+            or proof.get("outsideAllJobs") is not False
+            or proof.get("retirementScope") != live_scope):
+        raise RuntimeError("Selected runtime Job dispatch proof changed")
+    return dict(**identity, outsideAllJobs=False, retirementScope=live_scope)
 
 
 def verify_partial_stop_resume(root, retained, original):
@@ -1552,6 +1795,24 @@ if(action==='previous') {
   console.log(JSON.stringify({releaseId:pointer.current,manifestSha256:createHash('sha256').update(manifest).digest('hex')}));
   process.exit(0);
 }
+if(action==='codex-preflight') {
+  try {
+    process.env.AGENT_HUB_CONFIG=path.join(root,'config.json');
+    process.env.AGENT_HUB_RUNTIME_ROOT=root;
+    const {loadConfig}=await load('src/infrastructure/filesystem/config.mjs');
+    const {CodexExecutableUpdateService}=await load('src/infrastructure/process/codex-executable-update-service.mjs');
+    const config=await loadConfig();
+    const selector=new CodexExecutableUpdateService({stateFile:path.join(config.dataDir,'codex-executable-state.json'),
+      requestedExecutable:config.codexExecutable, autoUpdateEnabled:config.codexExecutableAutoUpdate,
+      versionPin:config.codexExecutableVersionPin, executableArgs:config.codexExecutableArgs,
+      runCanary:()=>{throw Error('Pre-stop inspection cannot launch a compatibility canary');}});
+    console.log(JSON.stringify(await selector.inspectUpgradeReadiness()));
+  } catch {
+    // An inconclusive observation cannot replace the installed runtime's checks.
+    console.log(JSON.stringify({status:'unchecked',reason:'inspection-inconclusive'}));
+  }
+  process.exit(0);
+}
 const {MaintenanceOperationStore} = await load('src/infrastructure/persistence/maintenance-operation-store.mjs');
 const store = new MaintenanceOperationStore({dataDir:path.join(root,'data')});
 // A live replacement shares SQLite with the installer. Contention must wait
@@ -1600,6 +1861,16 @@ if(action==='wait-probe') {
   const {callDesktopControl}=await load('src/infrastructure/process/desktop-control.mjs');
   console.log(JSON.stringify(await callDesktopControl('runtime-health',{}, {runtimeRoot:root,timeoutMs:5000})));
   process.exit(0);
+} else if(action==='codex-preflight-blocked') {
+  const {isCodexPreflightRejectionMessage}=await load('src/infrastructure/process/codex-executable.mjs');
+  if(!op || op.status!=='running' || !['installer-waiting','installer-stopping'].includes(op.phase)
+     || !op.metadata?.autonomousInstaller || value.status!=='blocked'
+     || !['pin-unavailable','no-eligible-trusted-codex','automatic-update-disabled'].includes(value.reason)
+     || !isCodexPreflightRejectionMessage(value.rejection)) throw Error('Invalid Codex pre-stop refusal');
+  const changed=await mutate(()=>store.transition(id,{status:'failed',outcome:'codex-preflight-refused',
+    phase:'codex-preflight-blocked',metadata:{autonomousCodexPreflight:{status:value.status,reason:value.reason,rejection:value.rejection}}},
+    {expectedRevision:op.revision}));
+  if(!changed.applied) throw Error('Codex pre-stop checkpoint changed'); op=changed.operation;
 } else if(action==='wait-failed') {
   if(!op || op.phase!=='installer-waiting' || op.metadata?.autonomousInstaller?.mode!=='wait')
     throw Error('Not a pre-stop waiting original');
@@ -1609,12 +1880,18 @@ if(action==='wait-probe') {
 } else if(action==='wait-complete') {
   if(!op || op.phase!=='installer-waiting' || op.metadata?.autonomousInstaller?.mode!=='wait')
     throw Error('Not a waiting original');
+  if(process.platform==='win32' && (await fs.realpath(op.metadata.autonomousInstaller.runtimeRoot)).toLowerCase()!==root.toLowerCase())
+    throw Error('Waiting admission root changed before stopping');
   const changed=await mutate(()=>store.transition(id,{phase:'installer-stopping',metadata:{autonomousWait:value}},
     {expectedRevision:op.revision}));
   if(!changed.applied) throw Error('Waiting checkpoint changed'); op=changed.operation;
 } else if(action==='create') {
+  if(value.physicalRuntimeRoot!==undefined && (value.mode!=='wait'
+     || value.physicalRuntimeRoot!==root
+     || (await fs.realpath(value.runtimeRoot)).toLowerCase()!==root.toLowerCase()))
+    throw Error('Waiting admission root is outside the selected runtime');
   if(!op) op=await mutate(()=>store.create({operationId:id,kind:'restart',streamId:'agent-hub-installer',
-    threadId:value.mode && process.platform==='win32'?root.toLowerCase():root,
+    threadId:value.mode && process.platform==='win32'?(value.physicalRuntimeRoot ? value.runtimeRoot : root).toLowerCase():root,
     status:'running',phase:value.mode==='wait'?'installer-waiting':'installer-stopping',metadata:{autonomousInstaller:value}}));
 } else if(action==='resume-prestop' || action==='resume-partialstop') {
   const {isDeepStrictEqual}=await import('node:util');
@@ -1667,20 +1944,44 @@ if(action==='wait-probe') {
   const {waitForRuntimeReplacement}=await load('src/runtime/publication-readiness.mjs');
   const {processIsAlive}=await load('src/infrastructure/process/process-liveness.mjs');
   const {callDesktopControl}=await load('src/infrastructure/process/desktop-control.mjs');
-  let startupFailed=false;
-  await waitForRuntimeReplacement({runtimeRoot:root,expectedReleaseId:value.releaseId,timeoutMs:Number.POSITIVE_INFINITY,
-    probe:async(...args)=>{
-      const health=await callDesktopControl(...args);
-      startupFailed=health.capabilities?.some(item=>item.state==='failed' && (item.critical || item.name==='mini_app'))===true;
-      return health;
-    },
-    now:()=>processIsAlive(value.hostPid) && !startupFailed?Date.now():Number.POSITIVE_INFINITY});
+  let startupFailed=false, signatureRejection=null;
+  try {
+    await waitForRuntimeReplacement({runtimeRoot:root,expectedReleaseId:value.releaseId,timeoutMs:Number.POSITIVE_INFINITY,
+      probe:async(...args)=>{
+        const health=await callDesktopControl(...args);
+        const diagnostic=health.diagnostics?.codexExecutableUpdate?.recordedSignatureRejection;
+        if(action==='ready' && health.process?.releaseId===value.releaseId && typeof diagnostic==='string') {
+          const {isCodexBundleSignatureRejectionMessage}=await load('src/infrastructure/process/codex-executable-bundle.mjs');
+          if(isCodexBundleSignatureRejectionMessage(diagnostic)) signatureRejection=diagnostic;
+        }
+        startupFailed=health.capabilities?.some(item=>item.state==='failed' && (item.critical || item.name==='mini_app'))===true;
+        return health;
+      },
+      now:()=>processIsAlive(value.hostPid) && !startupFailed?Date.now():Number.POSITIVE_INFINITY});
+  } catch(error) {
+    if(signatureRejection) {
+      try { await mutate(()=>store.transition(id,{metadata:{autonomousCodexStartupRejection:signatureRejection}},
+        {expectedRevision:op.revision})); }
+      catch { /* Preserve the actual readiness failure and rollback route. */ }
+    }
+    throw error;
+  }
   const health=await callDesktopControl('runtime-health',{}, {runtimeRoot:root,timeoutMs:10000});
   await assertReadyEndpoint(health,value.releaseId,value.hostPid,value.hostCreated);
   const lock=JSON.parse(await fs.readFile(path.join(root,'data/bot.lock'),'utf8'));
   const recovered=action==='recovered';
   const unresolved=recovered && value.retirementUnknown===true;
-  const metadata={...await storageCheckpoint(),[recovered?'autonomousRecovery':'autonomousReady']:{releaseId:value.releaseId,pid:lock.pid,hostPid:value.hostPid,
+  let codexPreflight;
+  if(value.codexPreflight?.status==='eligible' && typeof value.codexPreflight.rejection==='string') {
+    const {isCodexPreflightRejectionMessage}=await load('src/infrastructure/process/codex-executable.mjs');
+    const {isCodexBundleSignatureRejectionMessage}=await load('src/infrastructure/process/codex-executable-bundle.mjs');
+    if(isCodexPreflightRejectionMessage(value.codexPreflight.rejection)
+       || isCodexBundleSignatureRejectionMessage(value.codexPreflight.rejection))
+      codexPreflight={status:'eligible',rejection:value.codexPreflight.rejection};
+  }
+  const metadata={...await storageCheckpoint(),...(signatureRejection?{autonomousCodexStartupRejection:signatureRejection}:{}),
+    ...(codexPreflight?{autonomousCodexPreflight:codexPreflight}:{}),
+    [recovered?'autonomousRecovery':'autonomousReady']:{releaseId:value.releaseId,pid:lock.pid,hostPid:value.hostPid,
       ...(unresolved?{retirementUnknown:true}: {})}};
   const changed=await mutate(()=>store.transition(id,{status:unresolved?'reconciling':recovered?'failed':'succeeded',outcome:unresolved?'unknown':recovered?'rolled-back':'succeeded',phase:recovered?'previous-ready':'ready',
     metadata},{expectedRevision:op.revision}));
@@ -1711,15 +2012,19 @@ def continuation_cache(scratch, root, operation_id, installer_sha256):
 
 def autonomous_worker(request_file):
     request = _read_record(request_file); cache = request_file.parent
-    c, w, k = native_api()
-    if not outside_jobs(k.GetCurrentProcess()): raise RuntimeError("Installer worker is in a Job")
+    _, _, k = native_api()
     root = Path(request["runtimeRoot"]); _plain_chain(root)
     if _directory_identity(root) != request["runtimeIdentity"]: raise RuntimeError("Selected runtime root changed")
-    mutex = k.CreateMutexW(None, False, "Local\\AgentHubInstaller-"+hashlib.sha256(str(root).lower().encode()).hexdigest())
-    if not mutex: raise c.WinError(c.get_last_error())
-    acquired = False; admitted = False; previous = None; install_started = False; descriptor = None
+    worker_handle = k.GetCurrentProcess()
+    def recheck_job_scope():
+        if job_scope is not None and selected_runtime_job_scope(root, worker_handle) != job_scope:
+            raise RetirementScopeChanged("Selected runtime changed before retirement")
+    lock = ExitStack()
+    admitted = False; previous = None; install_started = False; descriptor = None
     waiting = False
     retirement_scope = {}
+    replacement_host = None
+    codex_preflight = None
     environment = clean_installer_environment()
     log = (cache/"worker.log").open("a", encoding="utf-8")
     def stage(name):
@@ -1745,9 +2050,10 @@ def autonomous_worker(request_file):
             raise RuntimeError("Installer owner "+action+" exited "+str(result.returncode))
         return json.loads(result.stdout)
     try:
-        if k.WaitForSingleObject(mutex, 0) not in (0, 128): raise RuntimeError("Another installer owns this runtime")
-        acquired = True
-        _write_record(cache/"worker-started.json",dict(pid=os.getpid(),outsideAllJobs=True,**process_identity(k.GetCurrentProcess())))
+        lock.enter_context(installer_runtime_mutex(root))
+        worker_proof = verified_worker_scope(root, cache, worker_handle)
+        job_scope = worker_proof.get("retirementScope")
+        _write_record(cache/"worker-started.json",worker_proof)
         stage("verifying-package")
         archive = Path(request["archive"]) if request.get("archive") else None
         checksum = request.get("sha256")
@@ -1761,10 +2067,14 @@ def autonomous_worker(request_file):
         subprocess.run([node,"-e","require('node:sqlite')"],check=True,capture_output=True,env=environment,creationflags=0x08000000)
         (cache/"installer-owner.mjs").write_text(OWNER_MODULE,encoding="utf-8")
         previous = owner("previous")
+        if job_scope is not None and any(previous.get(key) != job_scope[key]
+                                         for key in ("releaseId", "manifestSha256")):
+            raise RuntimeError("Selected runtime changed before installation admission")
         _write_record(cache/"previous.json",previous)
         mode = request["mode"]
         if mode not in INSTALL_MODES: raise ValueError("Missing explicit installation mode")
         wait_process = None
+        admission_root = root
         if mode == "wait":
             # Old APIs cannot promise a fenced drain. Never silently fall back
             # to force; keep the old Hub running and offer the explicit mode.
@@ -1773,15 +2083,17 @@ def autonomous_worker(request_file):
                     or support.get("installerCutover",{}).get("protocol") != 1):
                 raise RuntimeError("This Hub cannot confirm wait-current mode; choose --mode force explicitly")
             wait_process = support.get("process")
-            proof = ready_process_proof(root,previous)
+            proof, admission_root = ready_process_proof(root,previous,for_wait=True)
             if not wait_process or wait_process.get("pid") != proof[1]["pid"]:
                 raise RuntimeError("Waiting endpoint is not the selected native Hub")
         binding = dict(runtimeRoot=str(root),archiveSha256=file_hash(archive),releaseId=descriptor["releaseId"],previous=previous,
                        mode=mode,
                        installerSha256=request["installerSha256"],workerPid=os.getpid(),
                        packageManifestSha256=file_hash(package/"package-manifest.json"),
-                       storageScope=dict(cache=_directory_identity(cache),worker=dict(pid=os.getpid(),outsideAllJobs=True,**process_identity(k.GetCurrentProcess())),
+                       storageScope=dict(cache=_directory_identity(cache),worker=worker_proof,
                                          requestSha256=file_hash(request_file)))
+        if admission_root != root:
+            binding.update(runtimeRoot=str(admission_root),physicalRuntimeRoot=str(root))
         old = read_update_original(root,request["operationId"])
         if request.get("resumePartial"):
             if old != request["resumePartial"]["original"]: raise RuntimeError("Original changed before partial-stop continuation")
@@ -1798,18 +2110,32 @@ def autonomous_worker(request_file):
         elif old is not None:
             stage("existing-original-read-only"); _write_record(cache/"result.json",original_status(request["operationId"],old)); return
         else:
+            if mode != "wait":
+                recheck_job_scope()
             op = owner("create",binding)
             if op["metadata"].get("autonomousInstaller") != binding: raise RuntimeError("Original installer binding differs")
+        stage("checking-codex-before-stop")
+        codex_preflight = owner("codex-preflight")
+        _write_record(cache/"codex-preflight.json",codex_preflight)
+        if codex_preflight.get("status") == "blocked":
+            refused = owner("codex-preflight-blocked",codex_preflight)
+            _write_record(cache/"result.json",refused)
+            stage("codex-preflight-blocked")
+            return
         if mode == "wait":
             waiting = True; stage("waiting-current-turns")
             settled = wait_for_current_turns(lambda: owner("wait-probe"),request["operationId"],wait_process,
                 record=lambda state: stop_trace(dict(stage="waiting-current-turns",state=state)))
-            proof = ready_process_proof(root,previous)
-            if proof[1]["pid"] != wait_process["pid"]: raise RuntimeError("Waiting Hub changed before stop")
+            proof, current_admission_root = ready_process_proof(root,previous,for_wait=True)
+            if proof[1]["pid"] != wait_process["pid"] or current_admission_root != admission_root:
+                raise RuntimeError("Waiting Hub changed before stop")
+            recheck_job_scope()
             owner("wait-complete",dict(process=wait_process,state=settled,oldProcesses=proof))
             waiting = False
         admitted = True; stage("stopping-selected-runtime")
-        stopped = stop_selected(root,trace=stop_trace,capture=stop_capture,scope=retirement_scope); _write_record(cache/"retired.json",dict(processes=stopped))
+        stopped = stop_selected(root,trace=stop_trace,capture=stop_capture,scope=retirement_scope,
+                                expected_host=job_scope["host"] if job_scope is not None else None)
+        _write_record(cache/"retired.json",dict(processes=stopped))
         stage("backing-up-durable-state")
         owner("backup",dict(destination=str(cache/"backup"),python=sys.executable,installer=str(Path(__file__).resolve())))
         stage("installing-verified-package")
@@ -1823,16 +2149,16 @@ def autonomous_worker(request_file):
         with (cache/"host.stdout").open("w",encoding="utf-8") as out, (cache/"host.stderr").open("w",encoding="utf-8") as err:
             host=subprocess.Popen([str(root/"AgentHub.RuntimeHost.exe")],cwd=str(root),env=environment,
                                   stdin=subprocess.DEVNULL,stdout=out,stderr=err,creationflags=0x08000000)
-        host_created=process_identity(int(host._handle))["created"]
-        ready=owner("ready",dict(releaseId=descriptor["releaseId"],hostPid=host.pid,hostCreated=host_created,
-                                python=sys.executable,installer=str(Path(__file__).resolve())))
+        replacement_host = root_process_identity(host.pid, int(host._handle))
+        ready=owner("ready",dict(releaseId=descriptor["releaseId"],hostPid=host.pid,hostCreated=replacement_host["created"],
+                                python=sys.executable,installer=str(Path(__file__).resolve()),codexPreflight=codex_preflight))
         _write_record(cache/"result.json",ready); stage("ready")
     except BaseException as error:
         stage("error "+type(error).__name__+": "+str(error))
         if waiting:
             # A failed observation is not permission to kill/restore a live Hub.
             owner("wait-failed",dict(code=type(error).__name__,diagnostic=str(error)[:1000]))
-        if admitted and previous:
+        if admitted and previous and not isinstance(error, RetirementScopeChanged):
             # The synchronous installer child is already joined. Retire only
             # this selected installation, restore verified prior code through
             # its existing installation owner, and leave all data in place.
@@ -1847,8 +2173,12 @@ def autonomous_worker(request_file):
                         _write_record(cache/"result.json",restored); stage("previous-version-still-ready"); return
                 retirement_unknown = False
                 try:
-                    stop_selected(root,trace=stop_trace,capture=stop_capture,scope=retirement_scope)
+                    expected_host = (replacement_host or job_scope["host"]) if job_scope is not None else None
+                    stop_selected(root,trace=stop_trace,capture=stop_capture,scope=retirement_scope,
+                                  expected_host=expected_host)
                     stop_selected(root,inspect_only=True)
+                except RetirementScopeChanged:
+                    raise
                 except (OSError,RuntimeError):
                     if install_started: raise
                     # No code installation was invoked. Availability can recover
@@ -1866,7 +2196,7 @@ def autonomous_worker(request_file):
                         stdin=subprocess.DEVNULL,stdout=out,stderr=err,creationflags=0x08000000)
                 restored=owner("recovered",dict(releaseId=previous["releaseId"],hostPid=recovered_host.pid,
                     hostCreated=process_identity(int(recovered_host._handle))["created"],python=sys.executable,
-                    installer=str(Path(__file__).resolve()),retirementUnknown=retirement_unknown))
+                    installer=str(Path(__file__).resolve()),retirementUnknown=retirement_unknown,codexPreflight=codex_preflight))
                 _write_record(cache/"result.json",restored)
                 stage("previous-version-ready")
                 return
@@ -1878,10 +2208,11 @@ def autonomous_worker(request_file):
         _write_record(cache/"failure.json",dict(code=type(error).__name__,diagnostic=str(error)[:1000],effectsAdmitted=admitted))
         raise
     finally:
-        log.close()
-        for handle,_ in retirement_scope.get("handles",{}).values(): k.CloseHandle(handle)
-        if acquired: k.ReleaseMutex(mutex)
-        k.CloseHandle(mutex)
+        try:
+            log.close()
+            for handle,_ in retirement_scope.get("handles",{}).values(): k.CloseHandle(handle)
+        finally:
+            lock.close()
 
 
 def autonomous_main():
@@ -1906,7 +2237,14 @@ def autonomous_main():
     parser.add_argument("--resume-prestop",action="store_true",help="Continue the exact published pre-stop refusal, retaining its UNKNOWN history")
     parser.add_argument("--resume-partialstop",action="store_true",help="Continue the bound d148 partial-stop failure after previous Ready is restored")
     parser.add_argument("--inspect-package",action="store_true")
+    parser.add_argument("--offline",action="store_true",
+                        help="Install after Hub is fully stopped, without launching a worker or starting Hub")
     args=parser.parse_args()
+    if args.offline:
+        if (args.mode or args.operation_id or args.inspect_package or args.prepare_update or args.update_status
+                or args.resume_prestop or args.resume_partialstop):
+            parser.error("--offline is separate from autonomous installation, continuation and readback")
+        return historical_main()
     if args.inspect_package: return historical_main()
     if os.name!="nt": raise RuntimeError("This installer requires Windows")
     root=args.runtime_root.resolve(strict=True); _plain_chain(root)
@@ -1958,12 +2296,38 @@ def autonomous_main():
     if cache.exists():
         prior=_read_record(cache/'request.json')
         if prior!=selection: raise RuntimeError("Original input differs; no effects replayed")
+        retained_result = cache/'result.json'
+        dispatch_failure = cache/'worker-dispatch-failure.json'
+        if not retained_result.exists() and dispatch_failure.exists():
+            record = _read_record(dispatch_failure)
+            checks = record.get("checks")
+            report_worker_dispatch_failure(selection, checks if isinstance(checks, dict) else {}, True)
         print(json.dumps(dict(operationId=op,retained=str(cache),effectsReplayed=False,
-                             result=_read_record(cache/'result.json') if (cache/'result.json').exists() else None))); return
-    cache.mkdir(); _write_record(cache/'request.json',selection)
-    worker=cache/'install_release.py'; shutil.copyfile(Path(__file__).resolve(),worker)
-    if file_hash(worker)!=selection['installerSha256']: raise RuntimeError("Retained installer differs")
-    proof=independent_worker([sys.executable,'-X','utf8','-B',str(worker),'--autonomous-worker',str(cache/'request.json')],cache,clean_installer_environment())
+                             result=_read_record(retained_result) if retained_result.exists() else None))); return
+    request_written = False
+    started = time.monotonic()
+    try:
+        cache.mkdir()
+        _write_record(cache/'request.json',selection)
+        request_written = True
+        worker=cache/'install_release.py'
+        shutil.copyfile(Path(__file__).resolve(),worker)
+        if file_hash(worker)!=selection['installerSha256']: raise RuntimeError("Retained installer differs")
+        # A Windows virtual-environment redirector starts another Python
+        # process after Resume. Bind the actual interpreter we already run in.
+        _, _, kernel = native_api()
+        worker_executable = process_identity(kernel.GetCurrentProcess())["image"]
+    except (OSError, ValueError, RuntimeError) as error:
+        checks = dict(stage="prepare-worker", windowsBuild=sys.getwindowsversion().build,
+                      workerIdentityVerified=False, resumeAttempted=False, winerror=getattr(error,"winerror",None))
+        record_saved = request_written and retain_worker_dispatch_failure(cache, error, checks, started)
+        report_worker_dispatch_failure(selection, checks, record_saved)
+    try:
+        proof=independent_worker([worker_executable,'-X','utf8','-B',str(worker),'--autonomous-worker',str(cache/'request.json')],
+                                 cache,clean_installer_environment(),
+                                 runtime_root=None if selection.get("resume") or selection.get("resumePartial") else root)
+    except WorkerDispatchError as error:
+        report_worker_dispatch_failure(selection, error.checks, error.record_saved)
     _write_record(cache/'dispatch.json',proof)
     # Acknowledgement is dispatch only. Durable original/result is the outcome.
     print(json.dumps(dict(operationId=op,worker=proof,retained=str(cache),resultFile=str(cache/'result.json'),status='dispatched')),flush=True)

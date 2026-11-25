@@ -12,6 +12,7 @@ import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { TaskGitHistoryRejectedError, normalizedInitialNativeTest, normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
 import { nativeTestMetadataDrift, sameTaskWorkflowState } from "../domain/native-test-terminal-recovery.mjs";
 import { mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
+import { taskGitIdentityHash } from "../domain/task-git-reference.mjs";
 
 export class TaskIntegrationRejectedError extends Error {
   constructor(cause) {
@@ -103,9 +104,12 @@ function confirmation(task, action, preview) {
     absorbedInto: preview.absorbedInto ?? null,
     releaseService: preview.releaseService ?? null,
     ...(preview.manualDelivery ? { manualDelivery: preview.manualDelivery } : {}),
+    ...(preview.manualCleanup ? { manualCleanup: preview.manualCleanup,
+      publishedCleanupReferences: preview.publishedCleanupReferences ?? [] } : {}),
     ...(preview.publishedDelivery ? { publishedDelivery: preview.publishedDelivery,
       publishedCleanupReferences: preview.publishedCleanupReferences ?? [] } : {}),
     deleting: preview.deleting ?? [],
+    ...(preview.archive ? { archive: true, retainArtifacts: preview.retainArtifacts, remainingArtifacts: preview.remainingArtifacts } : {}),
   })).digest("hex");
   return {
     confirmationRequired: true,
@@ -192,6 +196,21 @@ export class TaskLifecycleService {
     } catch (persistenceError) {
       throw new TaskLifecyclePersistenceError(error, persistenceError);
     }
+  }
+
+  async withManualDeliveryReleaseReference({ taskId, reference, operationId }, operation) {
+    requiredMethod(this.taskBoard, "manualDeliveryReleaseReference");
+    requiredMethod(this.taskGitWorkspaces, "verifyManualDeliveryReferenceSourceOwned");
+    const run = () => this.#withLock(taskId, async lease => {
+      const read = () => this.taskBoard.manualDeliveryReleaseReference({ taskId, reference });
+      const accepted = read();
+      await this.taskGitWorkspaces.verifyManualDeliveryReferenceSourceOwned({ task: this.#task(taskId), accepted, lease });
+      await this.#assertOwned(lease);
+      if (taskGitIdentityHash(read()) !== taskGitIdentityHash(accepted)) throw Error("Manual release reference outcome changed");
+      return operation(); // Existing short checklist transaction rechecks canonical evidence and CAS.
+    });
+    return this.taskGitWorkspaces.withOperationTrace
+      ? this.taskGitWorkspaces.withOperationTrace({ operationId, taskId }, run) : run();
   }
 
   async updateWorkflowStatus(options = {}) {
@@ -2017,6 +2036,49 @@ export class TaskLifecycleService {
     });
   }
 
+  async #completeAbandonedReleaseService({ taskId, operationId, confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments, releaseActor }) {
+    requiredMethod(this.taskGitWorkspaces, "abandonedReleaseServiceEvidenceOwned");
+    requiredMethod(this.releasePreflight, "withAwaitTransition");
+    const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
+    if (outcome?.taskId === taskId && outcome.kind === "complete"
+        && outcome.result?.evidence?.releaseService?.mode === "abandoned_release_service"
+        && JSON.stringify(outcome.result.evidence.originalArguments) === JSON.stringify(originalArguments)) return outcome.result.result;
+    const workspaceId = this.#task(taskId).workspaceId;
+    // Same resource/order as release continuation and composition. This path only
+    // archives the service card; it neither schedules nor mutates the release.
+    return this.releasePreflight.withAwaitTransition(workspaceId, () => this.#withLock(taskId, async lease => {
+      const task = this.#task(taskId), resumed = this.taskBoard.lifecycleTransition?.(operationId), prior = resumed?.evidence;
+      if (task.status === "done" || !["new", "in_progress", "blocked"].includes(task.workflowStatus)) throw new Error("Abandoned release service must remain open outside Test/Await");
+      const read = async () => {
+        const actor = releaseActor && this.workspaceCatalog.stream(releaseActor.streamId);
+        if (!actor || releaseActor.workspaceId !== task.workspaceId || actor.workspaceId !== task.workspaceId
+            || actor.settings?.releaseManager !== true) throw new Error("Abandoned release requires its current Workspace RM actor");
+        const proof = await this.taskGitWorkspaces.abandonedReleaseServiceEvidenceOwned({ source: task, input: abandonedRelease, lease, actor: releaseActor });
+        return proof;
+      };
+      const releaseService = await read();
+      const cleanup = { taskId, workspaces: [], gitReferences: [], dirty: false, unpublished: [], deleting: [],
+        preserving: releaseService.preserving, releaseService };
+      const preview = confirmation(task, "complete", cleanup);
+      preview.warning = "Archive this abandoned release service card only. FAILED and unknown effects remain unchanged; no publication or source deletion.";
+      if (confirmCleanup !== true) {
+        if (resumed) throw new Error("Closure already admitted; reconcile the original confirmed operation");
+        return preview;
+      }
+      if (expectedCleanupToken !== preview.cleanupToken) throw new Error("Abandoned release confirmation is stale");
+      if (resumed && (resumed.taskId !== taskId || resumed.kind !== "complete" || resumed.phase !== "cleanup"
+          || resumed.expectedRevision !== task.revision || JSON.stringify(prior?.releaseService) !== JSON.stringify(releaseService)
+          || JSON.stringify(prior?.originalArguments) !== JSON.stringify(originalArguments))) throw new Error("Original abandoned release closure differs");
+      const evidence = prior ?? { releaseService, cleanup, originalArguments };
+      await this.#assertOwned(lease);
+      if (!resumed) await this.#mutation(() => this.taskBoard.beginLifecycleTransition({ id: taskId, operationId,
+        kind: "complete", expectedRevision: task.revision, evidence }), operationId);
+      if (JSON.stringify(await read()) !== JSON.stringify(releaseService)) throw new Error("Abandoned release changed before archive");
+      await this.#assertOwned(lease);
+      return this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, { receiptEvidence: evidence }), operationId);
+    }));
+  }
+
   async #completePublishedDelivery({ taskId, operationId, confirmCleanup, expectedCleanupToken, publishedDelivery, originalArguments, operational = false, completedOperationRequestId = null }) {
     requiredMethod(this.taskGitWorkspaces, "publishedDeliveryPreviewOwned");
     const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
@@ -2102,47 +2164,151 @@ export class TaskLifecycleService {
     });
   }
 
-  async #completeManualDelivery({ taskId, operationId, confirmCleanup, expectedCleanupToken, manualDelivery, originalArguments, retainedRepositories }) {
-    requiredMethod(this.taskGitWorkspaces, "manualDeliveryPreviewOwned");
+  async #completeManualDelivery({ taskId, operationId, confirmCleanup, expectedCleanupToken, manualDelivery, originalArguments, retainedRepositories, completedOperationRequestId }) {
+    requiredMethod(this.taskGitWorkspaces, "manualDeliveryCleanupPreviewOwned");
     const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
     if (outcome?.taskId === taskId && outcome.kind === "complete" && outcome.result?.evidence?.manualDelivery) return outcome.result.result;
     return this.#withLock(taskId, async lease => {
       const task = this.#task(taskId);
-      if (task.workflowStatus !== "done") throw Error("Manual delivery completion requires workflow Done");
-      const read = () => this.taskGitWorkspaces.manualDeliveryPreviewOwned({ task, input: manualDelivery, lease, retainedRepositories });
-      const retained = await read();
-      const preview = confirmation(task, "complete", retained);
-      preview.warning = "Close this verified manually delivered Task. All branches, worktrees, ignored files and history are preserved; cleanup is separate.";
+      if (task.workflowStatus !== "done" && task.status !== "done") throw Error("Manual delivery completion requires workflow Done or an already closed archive");
+      const resumed = this.taskBoard.lifecycleTransition?.(operationId), prior = resumed?.evidence;
+      if (resumed && (resumed.taskId !== taskId || resumed.kind !== "complete" || resumed.phase !== "cleanup"
+          || resumed.expectedRevision !== task.revision
+          || JSON.stringify(prior?.originalArguments) !== JSON.stringify(originalArguments))) throw Error("Manual completion original changed");
+      let acceptedSource = null;
+      if (completedOperationRequestId) {
+        const completed = this.taskBoard.lifecycleOutcome(completedOperationRequestId);
+        acceptedSource = completed?.result?.evidence?.manualDelivery;
+        if (task.status !== "done" || completed?.taskId !== taskId || completed.kind !== "complete"
+            || acceptedSource?.taskId !== taskId || completed.result?.result?.status !== "done") {
+          throw Error("Historical manual cleanup requires its exact canonical completed outcome");
+        }
+      }
+      // A previously admitted preserve-only original keeps its original meaning.
+      // New cleanup is never retrofitted to that old confirmation.
+      const legacy = Boolean(prior && !prior.cleanup?.manualCleanup);
+      const read = () => legacy
+        ? this.taskGitWorkspaces.manualDeliveryPreviewOwned({ task, input: manualDelivery, lease, retainedRepositories })
+        : this.taskGitWorkspaces.manualDeliveryCleanupPreviewOwned({ task, input: manualDelivery, lease, retainedRepositories,
+          admitted: prior?.cleanup?.manualCleanup ?? null, acceptedSource });
+      const cleanup = await read(), retained = cleanup.manualCleanup?.source ?? cleanup;
+      const preview = confirmation(task, "complete", cleanup);
+      preview.warning = legacy
+        ? "Finish the original preserve-only confirmation; its branches, worktrees and local data remain preserved."
+        : "Remove only the listed verified published clean Task branches/worktrees, then close the card. Local data or later work blocks cleanup; history remains.";
       if (!confirmCleanup) return preview;
-      if (expectedCleanupToken !== preview.cleanupToken) throw new TaskCleanupConfirmationRejectedError(taskId, "complete");
+      if (expectedCleanupToken !== (prior?.confirmationToken ?? preview.cleanupToken)) throw new TaskCleanupConfirmationRejectedError(taskId, "complete");
       if (originalArguments?.task_id !== taskId || originalArguments.request_id !== operationId
           || originalArguments.completion_mode !== "manual_delivery" || originalArguments.confirm_cleanup !== true) {
         throw Error("Manual completion requires its exact original business arguments");
       }
-      const resumed = this.taskBoard.lifecycleTransition?.(operationId);
-      if (resumed && (resumed.taskId !== taskId || resumed.kind !== "complete" || resumed.phase !== "cleanup"
-          || resumed.expectedRevision !== task.revision
-          || JSON.stringify(resumed.evidence?.manualDelivery) !== JSON.stringify(retained)
-          || JSON.stringify(resumed.evidence?.originalArguments) !== JSON.stringify(originalArguments))) throw Error("Manual completion original changed");
-      if (JSON.stringify(await read()) !== JSON.stringify(retained)) throw Error("Manual delivery or retained artifacts changed before closure");
+      if (legacy && JSON.stringify(prior.manualDelivery) !== JSON.stringify(retained)) throw Error("Manual completion original changed");
+      if (prior?.cleanup) {
+        const before = prior.cleanup, pin = r => JSON.stringify({ ...r, branchHeadCommit: null });
+        if (cleanup.workspaces.some(w => !before.workspaces.some(p => JSON.stringify(w) === JSON.stringify(p)))
+            || cleanup.deleting.some(d => !before.deleting.some(p => JSON.stringify(d) === JSON.stringify(p)))
+            || [...cleanup.gitReferences, ...(cleanup.publishedCleanupReferences ?? [])].some(r =>
+              ![...before.gitReferences, ...(before.publishedCleanupReferences ?? [])].some(p => pin(r) === pin(p)))) {
+          throw Error("Remaining manual cleanup artifacts differ from the admitted original");
+        }
+      }
+      if (!legacy && (cleanup.dirty || cleanup.unpublished.length || cleanup.retainedIgnored.length)) {
+        throw Error("Manual cleanup blocked: unpublished or local data requires preservation by its artifact owner");
+      }
+      if (JSON.stringify(await read()) !== JSON.stringify(cleanup)) throw Error("Manual delivery or retained artifacts changed before closure");
       await this.#assertOwned(lease);
+      const evidence = prior ?? { manualDelivery: retained, cleanup, confirmationToken: preview.cleanupToken, originalArguments };
       if (!resumed) await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
-        id: taskId, operationId, kind: "complete", expectedRevision: task.revision, evidence: { manualDelivery: retained, originalArguments },
+        id: taskId, operationId, kind: "complete", expectedRevision: task.revision, evidence,
       }), operationId);
-      try {
+      // Preserve the admitted cleanup phase on partial Git or SQL failure.
+      // Existing addressed reconciliation continues only this original intent.
+      if (!legacy) await this.taskGitWorkspaces.cleanupOwned(taskId, { lease, allowDirty: false, requirePublished: true,
+        gitReferences: task.gitReferences, expectedPreview: cleanup, manualCleanup: cleanup.manualCleanup });
+      await this.#assertOwned(lease);
+      return this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
+        receiptEvidence: evidence, preserveCompletedTask: task.status === "done",
+      }), operationId);
+    });
+  }
+
+  async #archiveTask({ taskId, operationId, confirmCleanup, expectedCleanupToken, retainArtifacts, originalArguments }) {
+    const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
+    if (outcome?.taskId === taskId && outcome.kind === "complete" && outcome.result?.evidence?.archive
+        && JSON.stringify(outcome.result.evidence.originalArguments) === JSON.stringify(originalArguments)) {
+      return outcome.result.result.confirmationRequired ? outcome.result.result
+        : { ...outcome.result.result, archive: { remainingArtifacts: outcome.result.evidence.remainingArtifacts }, cleanupToken: expectedCleanupToken };
+    }
+    return this.#withLock(taskId, async lease => {
+      const task = this.#task(taskId);
+      const transition = this.taskBoard.lifecycleTransition?.(operationId);
+      const admitted = transition?.evidence;
+      if (transition && (transition.taskId !== taskId || transition.kind !== "complete" || transition.phase !== "cleanup"
+          || transition.expectedRevision !== task.revision || admitted?.archive !== true
+          || JSON.stringify(admitted.originalArguments) !== JSON.stringify(originalArguments))) {
+        throw new Error("Original Task archive authority changed");
+      }
+      const read = async (retain) => {
+        const plan = await this.taskGitWorkspaces.archiveCleanupPreview(task, {
+          retainArtifacts: retain, registeredProjectRoot: this.#projectRoot(task),
+        });
+        return { ...plan, confirmation: confirmation(task, "complete", {
+          ...(plan.cleanup ?? {}), archive: true, retainArtifacts: retain,
+          remainingArtifacts: plan.remainingArtifacts,
+        }) };
+      };
+      // Once cleanup was admitted, an interrupted owner may only observe it.
+      // A new explicit confirmation is needed before closing with leftovers.
+      const plan = await read(retainArtifacts || Boolean(transition));
+      if (!confirmCleanup) {
+        if (Buffer.byteLength(JSON.stringify(plan.confirmation.preview)) > 48 * 1024) {
+          await this.#assertOwned(lease);
+          await this.#mutation(() => this.taskBoard.recordArchivePreview(task.id, operationId, plan.confirmation,
+            { archive: true, originalArguments }), operationId);
+        }
+        return plan.confirmation;
+      }
+      if (!transition && expectedCleanupToken !== plan.confirmation.cleanupToken) {
+        throw new TaskCleanupConfirmationRejectedError(task.id, "complete");
+      }
+      const evidence = admitted ?? { archive: true, originalArguments, cleanup: plan.cleanup,
+        remainingArtifacts: plan.remainingArtifacts };
+      if (!transition) {
         await this.#assertOwned(lease);
-        return await this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
-          receiptEvidence: { manualDelivery: retained, originalArguments },
+        await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
+          id: task.id, operationId, kind: "complete", expectedRevision: task.revision, evidence,
         }), operationId);
-      } catch (error) { await this.#failWhileOwned(lease, operationId, error); throw error; }
+      }
+      let current = plan;
+      if (plan.cleanup) {
+        try {
+          await this.taskGitWorkspaces.cleanupOwned(task.id, { lease, allowDirty: false, requirePublished: true,
+            gitReferences: task.gitReferences, squashAbsorbedBy: task.squashAbsorbedBy,
+            archiveTaskNumber: task.taskNumber ?? "", expectedPreview: plan.cleanup });
+        } catch {
+          await this.#assertOwned(lease);
+        }
+        current = await read(true);
+      }
+      await this.#assertOwned(lease);
+      const remainingArtifacts = current.remainingArtifacts;
+      const approved = !remainingArtifacts.length || (!plan.cleanup && (!transition
+        || JSON.stringify(remainingArtifacts) === JSON.stringify(evidence.remainingArtifacts)));
+      const result = await this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
+        preserveCompletedTask: task.status === "done",
+        archiveConfirmation: approved ? null : current.confirmation,
+        receiptEvidence: { ...evidence, remainingArtifacts },
+      }), operationId);
+      return approved ? { ...result, archive: { remainingArtifacts }, cleanupToken: expectedCleanupToken } : result;
     });
   }
 
   async complete({
-    taskId, operationId, confirmCleanup = false, expectedCleanupToken = null,
+    taskId, operationId, confirmCleanup = false, expectedCleanupToken = null, retainArtifacts = false,
     absorbedIntoTaskId = null, absorptionMode = null, completionMode = null, publishedDelivery = null, manualDelivery = null, retainedRepositories = [], originalArguments = null, completedOperationRequestId = null,
+    abandonedRelease = null, releaseActor = null,
   } = {}) {
-    if (completionMode != null && !["published_release_service", "published_delivery", "operational", "manual_delivery"].includes(completionMode)) {
+    if (completionMode != null && !["published_release_service", "published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"].includes(completionMode)) {
       throw new Error("Unsupported Task completion mode");
     }
     if (completionMode && (absorptionMode || absorbedIntoTaskId)) {
@@ -2151,9 +2317,16 @@ export class TaskLifecycleService {
     if (publishedDelivery && completionMode !== "published_delivery") throw Error("Direct publication evidence requires its explicit completion mode");
     if (manualDelivery && completionMode !== "manual_delivery") throw Error("Manual delivery requires its explicit completion mode");
     if (retainedRepositories.length && completionMode !== "manual_delivery") throw Error("Repository retention pins require manual delivery mode");
-    if (completedOperationRequestId && completionMode !== "operational") throw Error("Historical completion proof requires operational cleanup mode");
+    if (completedOperationRequestId && !["operational", "manual_delivery"].includes(completionMode)) throw Error("Historical completion proof requires operational or manual cleanup mode");
+    if (retainArtifacts && completionMode !== "archive") throw Error("Artifact retention requires archive mode");
+    if (abandonedRelease && completionMode !== "abandoned_release_service") throw Error("Abandoned release proof requires its explicit completion mode");
+    if (completionMode === "abandoned_release_service") return this.#completeAbandonedReleaseService({ taskId, operationId,
+      confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments, releaseActor });
+    if (completionMode === "archive") return this.#archiveTask({
+      taskId, operationId, confirmCleanup, expectedCleanupToken, retainArtifacts, originalArguments,
+    });
     if (completionMode === "manual_delivery") return this.#completeManualDelivery({ taskId, operationId,
-      confirmCleanup, expectedCleanupToken, manualDelivery, originalArguments, retainedRepositories });
+      confirmCleanup, expectedCleanupToken, manualDelivery, originalArguments, retainedRepositories, completedOperationRequestId });
     if (["published_delivery", "operational"].includes(completionMode)) return this.#completePublishedDelivery({ taskId, operationId,
       confirmCleanup, expectedCleanupToken, publishedDelivery, originalArguments, operational: completionMode === "operational", completedOperationRequestId });
     if (completionMode === "published_release_service") return this.#completePublishedReleaseService({

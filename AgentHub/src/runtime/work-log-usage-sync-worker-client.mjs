@@ -19,6 +19,7 @@ const TRACE_MEASUREMENTS = [
   "expectedRevision", "revision",
   "revisionCheckMs", "workspaceBatchCount", "workspaceReferenceCount",
   "accountingPointReads",
+  "sourceRecords", "eligibleRecords", "targetLookups", "recordBytes",
 ];
 
 function workerError(value) {
@@ -198,6 +199,15 @@ export class WorkLogUsageSyncWorkerStore {
     return this.#request("synchronize-task-titles", {
       ...payload, serializeMutation: typeof mutationLock === "function",
     }, { mutationLock });
+  }
+
+  readTestContourJournalPage(payload) {
+    return this.#request("read-test-contour-journal", payload, { traceCommandId: payload.operationId });
+  }
+
+  acknowledgeTestContourJournalPage(payload, { mutationLock } = {}) {
+    if (typeof mutationLock !== "function") return Promise.reject(new Error("Test Contour checkpoint requires the journal mutation owner"));
+    return this.#request("ack-test-contour-journal", payload, { mutationLock, traceCommandId: payload.operationId });
   }
 
   usageSyncSnapshot(payload) {

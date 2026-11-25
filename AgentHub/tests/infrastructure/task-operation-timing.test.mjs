@@ -55,6 +55,32 @@ test("operation progress projects the existing timing log and remains non-author
   assert.equal(record.readProgress(identity).canonicalOutcome, null);
 });
 
+test("Await progress reports acquisition only until the repository lock is held", async t => {
+  const { withInterprocessLocks } = await import("../../src/infrastructure/process/interprocess-lock.mjs");
+  const root = await mkdtemp(path.join(os.tmpdir(), "hub-await-progress-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const record = createTaskOperationTimingLogRecorder({
+    logFile: path.join(root, "timing.log"), maxBytes: 1024 * 1024, maxFiles: 1, maxEvents: 1,
+  });
+  const identity = { operationId: "await-progress", taskId: "task" };
+  const stages = new Set();
+  await withTaskOperationTiming({ ...identity, record(event) {
+    record(event);
+    const { stage } = record.readProgress(identity) ?? {};
+    if (stage) stages.add(stage);
+  } }, () => measureTaskOperation("release:await-owned", () =>
+    measureTaskOperation("lock", () => withInterprocessLocks([path.join(root, "repository")], () => {
+      assert.equal(record.readProgress(identity).stage, "release:await-owned");
+      return measureTaskOperation("native:promotion-authority", () => {
+        assert.equal(record.readProgress(identity).stage, "native:promotion-authority");
+        assert.equal(record.readProgress(identity).canonicalOutcome, null);
+      });
+    }))));
+  assert.ok(stages.has("lock-native-acquire"));
+  assert.ok(!stages.has("lock"));
+  assert.equal(record.readProgress(identity).phase, "end");
+});
+
 test("a Task lock waiter names the active in-process original without changing ownership", async context => {
   const { withInterprocessLocks } = await import("../../src/infrastructure/process/interprocess-lock.mjs");
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-claim-holder-"));

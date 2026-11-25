@@ -43,6 +43,7 @@ async function callCanaryRead(contextToken) {
   if (!response.ok || message.error || message.result?.isError) {
     throw new Error(message.error?.message ?? "Agent Hub MCP canary read failed");
   }
+  return message.result;
 }
 
 let turnSequence = 0;
@@ -53,6 +54,8 @@ const pendingElicitations = new Map();
 const pendingCommands = new Map();
 let previousCommand = null;
 const commandCase = process.argv.find(arg => arg.startsWith("--command-case="))?.split("=")[1] ?? "normal";
+const execCase = process.argv.find(arg => arg.startsWith("--exec-case="))?.slice("--exec-case=".length) ?? "normal";
+const mcpRpcCase = process.argv.find(arg => arg.startsWith("--mcp-rpc-case="))?.split("=")[1] ?? "normal";
 const toolLedger = process.argv.find(arg => arg.startsWith("--tool-ledger="))?.slice("--tool-ledger=".length);
 const delayedTurnMs = Number(process.argv.find((argument) => argument.startsWith("--delay-turn-ms="))?.split("=")[1]) || 0;
 
@@ -114,6 +117,64 @@ async function handle(message) {
   }
   if (message.method === "thread/resume") {
     write({ id: message.id, result: { thread: { id: params.threadId, cwd: process.cwd() } } });
+    return;
+  }
+  if (message.method === "mcpServer/tool/call") {
+    if (mcpRpcCase === "unsupported") {
+      write({ id: message.id, error: { code: -32601, message: "Method not found" } });
+      return;
+    }
+    if (params.threadId !== `canary-thread-${threadSequence}` || params.server !== "agent_hub" || params.tool !== "hub_canary_read") {
+      throw new Error("Unexpected canary MCP request scope");
+    }
+    const token = params.arguments?.context_token;
+    const result = mcpRpcCase === "no-server-read"
+      ? { structuredContent: { ok: true, isolated: true, version: 1 }, isError: false }
+      : await callCanaryRead(token);
+    if (mcpRpcCase === "unsupported-after-read") {
+      write({ id: message.id, error: { code: -32601, message: "Method not found" } });
+      return;
+    }
+    if (mcpRpcCase === "duplicate") await callCanaryRead(token);
+    if (mcpRpcCase === "tool-error") result.isError = true;
+    if (mcpRpcCase === "invalid-error-flag") result.isError = "false";
+    if (mcpRpcCase === "omit-error-flag") delete result.isError;
+    if (mcpRpcCase === "null-error-flag") result.isError = null;
+    if (mcpRpcCase === "hang-after-read") return;
+    write({ id: message.id, result });
+    return;
+  }
+  if (message.method === "command/exec") {
+    if (execCase === "unsupported") {
+      write({ id: message.id, error: { code: -32601, message: "Method not found" } });
+      return;
+    }
+    const shell = path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows", "System32/WindowsPowerShell/v1.0/powershell.exe");
+    const [executable, noProfile, nonInteractive, commandFlag, command, ...extra] = params.command ?? [];
+    if (path.win32.normalize(executable ?? "").toLowerCase() !== shell.toLowerCase()
+      || noProfile !== "-NoProfile" || nonInteractive !== "-NonInteractive" || commandFlag !== "-Command"
+      || !/^Write-Output HUB_CANARY_TOOL_[a-f0-9]{24}$/u.test(command ?? "") || extra.length !== 0
+      || path.normalize(params.cwd ?? "") !== process.cwd()
+      || params.sandboxPolicy?.type !== "readOnly" || params.sandboxPolicy?.networkAccess !== false
+      || !Number.isInteger(params.timeoutMs) || params.timeoutMs <= 0 || params.timeoutMs > 10_000
+      || params.outputBytesCap !== 1024) throw new Error("Unexpected isolated command RPC");
+    if (execCase === "rpc-error") {
+      write({ id: message.id, error: { code: -32000, message: "Safe probe refused" } });
+      return;
+    }
+    if (process.argv.includes("--no-safe-tool")) {
+      write({ id: message.id, result: { exitCode: 0, stdout: "", stderr: "" } });
+      return;
+    }
+    const { stdout, stderr } = await promisify(execFile)(executable, [noProfile, nonInteractive, commandFlag, command],
+      { cwd: params.cwd, windowsHide: true });
+    if (toolLedger) await appendFile(toolLedger, "command/exec\n");
+    if (execCase === "timeout-after-effect") return;
+    write({ id: message.id, result: {
+      exitCode: execCase === "bad-exit" ? 1 : 0,
+      stdout: execCase === "bad-output" ? "unrelated output" : stdout,
+      stderr: execCase === "bad-stderr" ? "unrelated stderr" : stderr,
+    } });
     return;
   }
   if (message.method === "turn/start") {
@@ -193,13 +254,24 @@ async function handle(message) {
       interruptedTurns.add(id);
       return;
     }
-    if (/hub_canary_read/u.test(prompt)) {
+    if (/CANARY_CONTEXT_/u.test(prompt) || /hub_canary_read/u.test(prompt)) {
       const instructions = !process.argv.includes("--ignore-application-context")
         ? Object.entries(params.additionalContext ?? {})
           .filter(([key, entry]) => key.startsWith("agent-hub") && entry.kind === "application")
           .sort(([left], [right]) => left.localeCompare(right))
           .map(([, entry]) => entry.value.slice(entry.value.indexOf("\n\n") + 2)).join("")
         : "";
+      if (/CANARY_CONTEXT_/u.test(prompt)) {
+        const code = instructions.match(/CANARY_CONTEXT_[a-f0-9]{16}/u)?.[0] ?? "";
+        write({ method: "item/completed", params: { threadId: params.threadId, turnId: id,
+          item: { id: `answer-${id}`, type: "agentMessage", text: code } } });
+        complete(id);
+        return;
+      }
+      if (process.argv.includes("--skip-model-mcp")) {
+        complete(id);
+        return;
+      }
       const contextToken = instructions.match(/context_token\s+([0-9A-Za-z_-]+)/u)?.[1] ?? "";
       if (!contextToken) {
         setImmediate(() => complete(id, "failed"));

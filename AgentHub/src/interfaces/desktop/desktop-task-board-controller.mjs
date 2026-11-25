@@ -41,7 +41,10 @@ export class DesktopTaskBoardController {
     };
   }
 
-  read({ id, operationRequestId, argumentsHash } = {}) {
+  read({ id, operationRequestId, argumentsHash, archivePreviewPage } = {}) {
+    if (archivePreviewPage) return { archivePreviewPage: this.hubMcpService.readDesktopArchivePreviewPage(
+      { id }, operationRequestId, argumentsHash, archivePreviewPage,
+    ) };
     const operation = operationRequestId
       ? this.hubMcpService.readDesktopTaskOperation({ id }, operationRequestId, argumentsHash) : null;
     let task = null;
@@ -240,15 +243,23 @@ export class DesktopTaskBoardController {
   async complete(params, context = {}) {
     if (!this.taskLifecycle) throw new Error("Task lifecycle service is unavailable");
     const operationId = String(params.operationId ?? context.commandId ?? "").trim();
+    const parameters = {
+      confirm_cleanup: params.confirmCleanup === true,
+      expected_cleanup_token: params.expectedCleanupToken ?? null,
+      ...(params.completionMode === "archive" ? { completion_mode: "archive", retain_artifacts: params.retainArtifacts === true } : {}),
+    };
     const run = () => this.taskLifecycle.complete({
       taskId: params.id, operationId,
-      confirmCleanup: params.confirmCleanup === true,
-      expectedCleanupToken: params.expectedCleanupToken ?? null,
+      confirmCleanup: parameters.confirm_cleanup,
+      expectedCleanupToken: parameters.expected_cleanup_token,
+      ...(parameters.completion_mode ? {
+        completionMode: "archive", retainArtifacts: parameters.retain_artifacts,
+        originalArguments: { request_id: operationId, task_id: params.id, ...parameters },
+      } : {}),
     });
     if (context.taskOperationReceipt && this.hubMcpService) return this.hubMcpService.runDesktopTaskOperation(
       this.taskBoard.task(params.id), operationId, null, run,
-      { receiptOnly: true, toolName: "hub_task_complete", parameters: { confirm_cleanup: params.confirmCleanup === true,
-        expected_cleanup_token: params.expectedCleanupToken ?? null } });
+      { receiptOnly: true, toolName: "hub_task_complete", parameters });
     const result = await run();
     return { ...await this.snapshot({ refresh: true }), lifecycleResult: result };
   }

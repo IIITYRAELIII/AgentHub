@@ -705,6 +705,38 @@ export class JournalDatabase {
     }
   }
 
+  async testContourJournalCheckpoint() {
+    const value = storeMetadataValue(await this.#open(), "test_contour_journal_checkpoint_v1");
+    if (value.length > 4096) throw new Error("Oversized Test Contour journal checkpoint");
+    return value;
+  }
+
+  async acknowledgeTestContourJournalPage({ expectedCheckpoint, nextCheckpoint }) {
+    if (typeof nextCheckpoint !== "string" || nextCheckpoint.length > 4096) {
+      throw new Error("Invalid Test Contour journal checkpoint");
+    }
+    const next = JSON.parse(nextCheckpoint);
+    const database = await this.#open();
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      const current = storeMetadataValue(database, "test_contour_journal_checkpoint_v1");
+      const revision = revisionOf(database);
+      // Capture target revision after durable import. A lost ACK is idempotent.
+      const candidate = JSON.stringify({ ...next, targetRevision: revision });
+      if (current !== expectedCheckpoint) {
+        let previous;
+        try { previous = JSON.parse(current); } catch { /* CAS fails below. */ }
+        if (!previous || JSON.stringify({ ...previous, targetRevision: next.targetRevision }) !== nextCheckpoint) {
+          const error = new Error("Test Contour journal checkpoint changed before acknowledgement");
+          error.code = "TEST_CONTOUR_CHECKPOINT_CONFLICT";
+          throw error;
+        }
+      } else writeStoreMetadataValue(database, "test_contour_journal_checkpoint_v1", candidate);
+      database.exec("COMMIT");
+      return { revision };
+    } catch (error) { database.exec("ROLLBACK"); throw error; }
+  }
+
   async ledgerStatus() {
     const database = await this.#open();
     return {
@@ -986,6 +1018,8 @@ export class JournalDatabase {
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
       `).run(String(Number(ledger?.version) || LEDGER_VERSION));
       revision = advanceRevision(database);
+      writeStoreMetadataValue(database, "journal_ingest_reset_revision", revision);
+      database.prepare("DELETE FROM journal_store_meta WHERE key = 'test_contour_journal_checkpoint_v1'").run();
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");
@@ -1122,6 +1156,10 @@ export class JournalDatabase {
         deleted += Number(remove.run(value.provider, value.threadId, value.turnId).changes) || 0;
       }
       revision = deleted ? advanceRevision(database) : revisionOf(database);
+      if (deleted) {
+        writeStoreMetadataValue(database, "journal_ingest_reset_revision", revision);
+        database.prepare("DELETE FROM journal_store_meta WHERE key = 'test_contour_journal_checkpoint_v1'").run();
+      }
       database.exec("COMMIT");
     } catch (error) {
       database.exec("ROLLBACK");

@@ -3,8 +3,14 @@
 RM-only `hub_task_complete` supports explicit `manual_delivery` with exact
 revision/release/manifest hash and the configured installation root. Existing
 authenticated mutation, original receipt, preview token and Task CAS remain
-owners. It closes a verified Done card while preserving its artifacts; WIP
-cleanup and publication history remain separate (ADR-HUB-466).
+owners. It removes the previewed clean published Task branches/worktrees before
+closing a verified Done card. Local/ignored/unpublished/later work blocks cleanup;
+card/history/publication evidence remain (ADR-HUB-466). An already closed card
+can preview and confirm its remaining cleanup without a new workflow transition
+or completion timestamp. Optional completed_operation_request_id in this mode
+binds an old canonical manual Complete's exact source. No old completed operation
+is replayed. A partial new cleanup uses its admitted original and the existing
+addressed reconciliation; a changed source or remaining artifact set refuses.
 Exact `retained_repositories` pins preserve unrepresented historical worktrees
 without claiming them delivered. RM Done may accept the same `manual_delivery`
 proof plus exact Task/status CAS for owned source without a Test reference.
@@ -135,6 +141,17 @@ The existing operation-reconcile CLI exposes the same cancel command via
 `--cancel-arguments <json>` with local provider/thread/Stream identity. A first
 request waiting for legacy retirement is not silently restarted or published.
 See [Task operation interruption](../decisions/ADR-HUB-368-task-operation-interruption.md).
+
+## Archive the service card of an abandoned attempt
+
+Release Manager-only `hub_task_complete completion_mode=abandoned_release_service`
+requires `abandoned_release` with the exact original operation ID, revision and
+generation. Its preview reads retained facts and binds the same actor, Task,
+custody and original selection for a separate confirmation. It archives the
+service card with its existing workflow status. Original release outcomes,
+member Tasks and any retained source are preserved. Confirmed reconciliation
+requires the same admitted original and lifecycle evidence; unproven historical
+outcomes remain unknown.
 
 ## Historical direct publication cleanup
 
@@ -538,6 +555,16 @@ decomposition owner and all archived rows. The existing request hash includes
 this binding only when supplied; old receipt identities remain unchanged.
 No alternate CLI, historical UNKNOWN replay, publication or absorption credit is
 introduced. Desktop checklist mutations cannot author or change this RM relation.
+For an already canonical manual Done without Test refs, the same reference may
+instead name `manualDelivery: { requestId, argumentsHash }` with the fresh Task
+revision. The existing successful status-operation receipt and workflow outcome
+must prove verified manual delivery of that Task's exact owned source. The Task
+owner freshly verifies unchanged clean managed heads under its lock before the
+short checklist transaction rechecks the receipt, Done state,
+empty refs, revision and Workspace. Empty refs or analysis Done alone never supply
+membership authority. The accepted outcome retains its actual publication proof;
+a later runtime or publication does not have to remain that historical release.
+The ordinary full-Git-reference form stays unchanged.
 
 Checklist event delivery is an internally managed effect (ADR-0029): its
 single-flight durable outbox drain invokes delivery outside SQL retry and queues
@@ -825,13 +852,18 @@ late supported legacy writes are rejected or confined to the old checkout.
 The historical UNKNOWN is unchanged. This is the exact authorized historical
 claim scope in ADR-0131, not a default substitute for missing retirement proof.
 
-Only ordinary successor `hub_task_claim` with the declared ID and
-`forward_custody_request_id` assigns the Task. It retains the current executor's
+The addressed successor `hub_task_claim` continues with the declared ID and
+`forward_custody_request_id`. It retains the current executor's
 active/queued-work guard through the SQL commit and uses the existing managed
 Git owner for read-only source reuse. Original dependency preparation is not
 replayed, and its response says so. Late originals are fenced before any binding
 or baseline update, including receipt writes; exact post-commit retry reuses the
-same binding and assignment. See [ADR-0131](../decisions/ADR-0131-claim-forward-custody.md).
+same binding and assignment. An ordinary claim can use the established Task
+checkout even when that successor has not bound. It uses the ordinary Task
+access and busy checks, independent of the fence's historical actor or Task
+revision. The binding transaction checks the claimant's captured run is still
+current. Its new binding prevents an unconsumed declared successor from later
+assigning the Task. See [ADR-0131](../decisions/ADR-0131-claim-forward-custody.md).
 
 If the pinned current executor is already the successor Stream, only the exact
 current claimant run is excluded from that busy check. Its nonempty run ID,
@@ -991,6 +1023,20 @@ establishes business completion. Existing domain, source, actor, CAS, Task/repo
 lease, cleanup and publication guards remain mandatory.
 
 ## Durable cleanup confirmation capsules (ADR-HUB-434)
+
+Task Complete in explicit archive mode uses the same preview and receipt
+protocol. The receipt distinguishes card closure from a confirmation describing
+leftovers after an incomplete cleanup. An exact original reconciles by
+readback and cannot rerun its deletion. The agent result includes the remaining
+artifacts and "УДАЛИ ФАЙЛЫ САМ, ОБЯЗАТЕЛЬНО И ПРЯМО СЕЙЧАС".
+This instruction is projected after receipt lookup and is absent from
+authenticated Desktop results and stored outcomes. If a full archive preview
+or archived artifact list exceeds the receipt cap, the original Task outcome
+keeps it. Desktop Task read or MCP operation get reads bounded pages under the
+same Task, original arguments hash, confirmation token and preview digest.
+Dashboard verifies the complete digest before rendering the confirmation.
+A compacted reconciliation keeps its business outcome and the original
+operation ID and arguments hash for the same page reads.
 
 Successful complete/delete preview compaction preserves action, token, exact
 Task identity/revision and the complete preview digest/length within 64 KiB.

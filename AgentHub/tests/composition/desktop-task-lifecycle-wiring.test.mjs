@@ -9,6 +9,8 @@ import { createWorkspaceActions } from "../../src/composition/desktop-command-wi
 import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
 import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { MessageReceiptRegistry } from "../../src/infrastructure/persistence/message-receipts.mjs";
+import { RuntimeStateStore } from "../../src/infrastructure/persistence/runtime-state-store.mjs";
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
 
 async function loadComposition(filename, overrides = {}) {
@@ -95,7 +97,9 @@ async function composedBoardFixture(t) {
   const store = new TaskBoardStore({ databaseFile });
   const externalStore = new TaskBoardStore({ databaseFile });
   const journal = new JournalDatabase(databaseFile);
+  const runtimeStateStore = new RuntimeStateStore({ dataDir: root });
   t.after(async () => {
+    await runtimeStateStore.close();
     journal.close(); externalStore.close(); store.close(); catalog.close();
     await rm(root, { recursive: true, force: true });
   });
@@ -121,7 +125,7 @@ async function composedBoardFixture(t) {
   });
   const taskRuns = { revision: 0, values: () => [], forTask: () => null };
   const preferences = { snapshot: () => ({}), current: () => ({}) };
-  const receipts = { revision: 0, snapshot: () => [], get: () => null, findAllByTurn: () => [] };
+  const receipts = new MessageReceiptRegistry();
   const project = { path: root, name: "Fixture" };
   const models = { codexModels: [], codexModelLabel: () => "Test", claudeModels: [],
     claudeModelLabels: {}, reasoningEfforts: [], claudeReasoningEfforts: [],
@@ -136,7 +140,7 @@ async function composedBoardFixture(t) {
       selectedTask: () => ({}), selectedTurnTarget: () => ({}), activeProject: () => project },
     catalog: { getTaskCatalog: () => [], findProject: () => project,
       taskCatalogService: { entries: [], snapshotRevision: 0, stale: false } },
-    runtime: { taskBoard: board, workspaceCatalogStore: catalog, taskRuns,
+    runtime: { taskBoard: board, workspaceCatalogStore: catalog, taskRuns, runtimeStateStore,
       taskSyncStore: { revision: 0 }, messagePins: { revision: 0, snapshot: () => [] },
       pendingInputs: new Map(), queuedInputs: new Map(), approvalController: { pending: new Map(), snapshot: () => [] },
       contextCompactions: { runningCount: () => 0 }, streamMaintenance: { entry: () => null },
@@ -150,8 +154,139 @@ async function composedBoardFixture(t) {
   });
   return { snapshot: (options) => bound.snapshot(options), boardReads: () => boardReads,
     onBoardRead: (callback) => { afterBoardRead = callback; }, taskRuns, board, store, externalStore,
-    journal, workspace, root };
+    journal, workspace, root, receipts, runtimeStateStore };
 }
+
+
+test("addressed snapshot retains an accepted steer from runtime receipts during and beyond the recent window", async t => {
+  const f = await composedBoardFixture(t);
+  const identity = { provider: "codex", threadId: "thread-a", clientUserMessageId: "android-original" };
+  f.receipts.reserve(identity, "original-fingerprint", {
+    id: "intake-original", streamId: "stream-a", accepted: true, providerAccepted: false, queued: true, deferred: true,
+    displayText: "One original submission",
+  });
+  const receipt = value => value.messageReceipts.find(row => row.clientUserMessageId === identity.clientUserMessageId);
+  // Runtime receipt-only compatibility is real: a registry receipt can exist
+  // without a corresponding row in the durable message-command ledger.
+  assert.equal(f.runtimeStateStore.messageCommand(identity.clientUserMessageId) ?? null, null);
+  const queued = await f.snapshot();
+  assert.equal(receipt(queued)?.queued, true);
+  const addressed = params => f.snapshot({ messageReceiptIds: [identity.clientUserMessageId, "missing"], ...params });
+  assert.deepEqual(receipt(await addressed()), receipt(queued));
+  f.receipts.updateResult(identity, { ...f.receipts.get(identity).result,
+    turnId: "active-turn", providerAccepted: true, steered: true, queued: false, deferred: false });
+  const accepted = await addressed({ knownVersion: queued.version });
+  assert.deepEqual(receipt(accepted), receipt(await f.snapshot()));
+  assert.equal(receipt(accepted)?.turnId, "active-turn");
+  assert.equal(receipt(accepted)?.providerAccepted, true);
+  assert.equal(receipt(accepted)?.steered, true);
+  assert.equal(accepted.messageReceipts.some(row => row.clientUserMessageId === "missing"), false);
+  for (let i = 0; i < 101; i += 1) {
+    f.receipts.reserve({ ...identity, clientUserMessageId: `later-${i}` }, `fingerprint-${i}`, { accepted: true });
+  }
+  assert.equal(receipt(await f.snapshot()), undefined);
+  assert.deepEqual(receipt(await addressed()), receipt(accepted));
+  const repeated = await addressed();
+  assert.equal((await addressed({ knownVersion: repeated.version })).notModified, true);
+});
+
+
+test("Android bridge HTTP reconnect removes the exact delivered steer card", { timeout: 45_000 }, async t => {
+  const { launchBrowser, openFixture, snapshot, submit } = await import("../public/composer-production.fixture.mjs");
+  const f = await composedBoardFixture(t);
+  const browser = await launchBrowser();
+  t.after(() => browser.close());
+  const viewport = { width: 390, height: 844 };
+  const page = await browser.newPage({ viewport, hasTouch: true, isMobile: true });
+  await page.addInitScript(() => { window.AgentHubAndroid = {}; });
+  const identity = { provider: "codex", threadId: "thread-a", streamId: "stream-a" };
+  const text = "One message sent using the Android bridge";
+  const controls = ["queued", "unknown", "paused"].map(state => ({
+    ...identity, id: `control-${state}`, clientUserMessageId: `client-${state}`, state, text,
+    accepted: true, providerAccepted: false, deferred: true,
+  }));
+  const view = receipts => ({ ...snapshot(receipts), deferredInputs: controls });
+  const trace = [];
+  page.on("request", request => {
+    if (request.url().endsWith("/api/command-trace/client-events")) trace.push(...(request.postDataJSON()?.events ?? []));
+  });
+  const errors = await openFixture(page, { surface: "web", fixtureSnapshot: view([]) });
+  await page.evaluate(() => window.AgentHub.showSelectedTask());
+  assert.equal(new URL(page.url()).hostname, "agent-hub.test");
+  assert.ok((await page.title()).includes("Agent Hub"));
+  const calls = [];
+  let id = null, reads = 0, notModified = 0;
+  const read = async ({ messageReceiptIds, knownVersion }) => {
+    const wire = await f.snapshot({ messageReceiptIds, knownVersion });
+    if (messageReceiptIds?.includes(id)) reads += 1;
+    if (wire.notModified) { notModified += 1; return wire; }
+    return { ...view(wire.messageReceipts), version: wire.version };
+  };
+  const sendJSON = (route, value) => route.fulfill({ contentType: "application/json", body: JSON.stringify(value) });
+  await page.route("**/api/snapshot*", route => read({
+    knownVersion: new URL(route.request().url()).searchParams.get("knownVersion") ?? "",
+  }).then(value => sendJSON(route, value)));
+  await page.route("**/api/control", async route => {
+    const { action, params } = route.request().postDataJSON();
+    if (action === "snapshot") return sendJSON(route, { ok: true, result: await read(params) });
+    if (action !== "send-message") return route.fallback();
+    calls.push(params.clientUserMessageId);
+    id = params.clientUserMessageId;
+    const queued = { id: "intake-item", ...identity, accepted: true, providerAccepted: false,
+      queued: true, deferred: true, displayText: text, clientProjectionIntent: "queue" };
+    f.receipts.reserve({ ...identity, clientUserMessageId: id }, "exact-intake", queued);
+    return sendJSON(route, { ok: true, result: queued });
+  });
+  const intake = page.waitForResponse(response => response.url().endsWith("/api/control")
+    && response.request().postDataJSON()?.action === "send-message");
+  await submit(page, { text });
+  await (await intake).finished();
+  await page.waitForFunction(() => document.querySelectorAll(".queue-item").length === 4);
+  assert.ok(id);
+  const originalCard = page.locator(`.queue-item[data-queue-id="local:${id}"]`);
+  await originalCard.waitFor({ state: "visible" });
+  const command = { ...identity, clientUserMessageId: id };
+  f.receipts.updateResult(command, { ...f.receipts.get(command).result, providerAccepted: true,
+    steered: true, queued: false, deferred: false, turnId: "active-turn" });
+  const committedAt = Date.now();
+  await page.locator("[data-provider-connection-retry]").evaluate(button => button.click());
+  await originalCard.waitFor({ state: "detached", timeout: 5_000 });
+  await page.locator(".msg[data-delivery-state='running']").filter({ hasText: text }).waitFor({ state: "visible" });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const paintedAt = Date.now();
+  assert.ok(reads > 0, "Android used its addressed HTTP snapshot path");
+  assert.equal(await page.locator(".queue-item").count(), 3);
+  for (const { id: controlId } of controls) assert.equal(await page.locator(`.queue-item[data-queue-id="${controlId}"]`).count(), 1);
+  const isPaint = event => event.commandId === id && event.outcome === "succeeded"
+    && event.metadata?.surface === "android" && event.metadata.action === "message-receipt-queue-paint"
+    && event.metadata.retained === false;
+  if (!trace.some(isPaint)) {
+    await page.waitForRequest(request => request.url().endsWith("/api/command-trace/client-events")
+      && (request.postDataJSON()?.events ?? []).some(isPaint), { timeout: 6000 }).catch(error => {
+      const seen = trace.filter(event => event.commandId === id).map(({ stage, outcome, metadata }) =>
+        ({ stage, outcome, action: metadata?.action, view: metadata?.view, retained: metadata?.retained }));
+      assert.fail(`${error.message}
+Observed original trace: ${JSON.stringify(seen)}`);
+    });
+  }
+  const priorCache = notModified;
+  const repeated = page.waitForResponse(response => notModified > priorCache
+    && response.url().includes("/api/snapshot"));
+  await page.locator("[data-provider-connection-retry]").evaluate(button => button.click());
+  await (await repeated).finished();
+  await page.reload();
+  await page.evaluate(() => window.AgentHub.showSelectedTask());
+  await page.locator(".msg[data-delivery-state='running']").filter({ hasText: text }).waitFor({ state: "visible" });
+  assert.equal(await originalCard.count(), 0);
+  assert.equal(await page.locator(".queue-item").count(), 3);
+  assert.deepEqual(calls, [id]);
+  assert.deepEqual(errors, []);
+  if (process.env.AGENT_HUB_TEST_ARTIFACT_DIR) {
+    await page.screenshot({ path: path.join(process.env.AGENT_HUB_TEST_ARTIFACT_DIR, "android-receipt-after.png") });
+  }
+  console.log(JSON.stringify({ surface: "android-bridge-fixture", viewport, commandId: id,
+    receiptToPaintUpperBoundMs: paintedAt - committedAt, addressedReads: reads, notModified }));
+});
 
 test("composed board snapshot reuses the board across conversation-only revisions", async (t) => {
   const f = await composedBoardFixture(t);

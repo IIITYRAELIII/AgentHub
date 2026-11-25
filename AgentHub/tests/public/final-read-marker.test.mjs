@@ -452,3 +452,27 @@ for (const pending of [false, true]) {
     } finally { await page.close(); await browser.close(); }
   });
 }
+
+test('activity eyes clear only the requested exact ready finals', async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1680, height: 1000 } });
+    const next = readySnapshot();
+    await readFixture(page, next);
+    const service = page.getByRole('button', { name: 'Снять отметки с межпоточных ответов' });
+    const all = page.getByRole('button', { name: 'Снять отметки со всех готовых ответов' });
+    await service.click();
+    assert.equal(await page.evaluate(() => window.__readRequests.length), 0);
+    await all.click();
+    await page.waitForFunction(() => window.__readRequests.length === 1);
+    const newer = readySnapshot(2);
+    newer.tasks.find(task => task.streamId === 'stream-b').latestFinal.interstreamOnly = true;
+    await applyFixtureSnapshot(page, newer);
+    await service.click();
+    await page.waitForFunction(() => window.__readRequests.length === 2);
+    assert.deepEqual(await page.evaluate(() => window.__readRequests.map(message =>
+      [message.params.streamId, message.params.final.revision])), [['stream-b', 1], ['stream-b', 2]]);
+  } finally {
+    await browser.close();
+  }
+});

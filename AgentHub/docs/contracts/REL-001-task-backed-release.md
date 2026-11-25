@@ -1,5 +1,79 @@
 # REL-001 — Task Git integration
 
+## Connected GitHub account (ADR-HUB-254)
+
+The Hub owns one optional GitHub connection for its managed Git work. Protected
+local control verifies the account before saving its credential under current-user
+Windows DPAPI and the existing private-directory ACL. No credential enters a Task,
+command receipt, agent instruction, provider environment or ordinary diagnostic.
+The shared public profile contains only name/email and a generation-bound credential
+helper locator. GitHub permissions remain those of the user's access token.
+Browser OAuth uses the shared registered application. Only explicit local sign-in
+starts it. The GitHub callback marks its bounded attempt at the isolated OAuth Worker.
+The initiating Hub polls over HTTPS and proves its possession of the PKCE verifier.
+The exchange uses the Worker's secret, redeems only once, and sends the token only to
+that caller without storing it at the Worker. The existing account owner verifies
+the final token before atomic selection. The OAuth
+request matches the existing Git and GitHub CLI scope set
+`gist read:org repo workflow`. Actual permissions are the intersection of the grant,
+account rights, and organization policies. No separate private email scope is
+requested; the authenticated account's numeric noreply address is the fallback.
+The shared Git/gh/API credential owner enforces expiry and renews an expired
+access token on demand when the connection has a valid refresh grant. Authenticated
+sign-in can return both tokens to a compatible Hub. Both tokens are protected by
+DPAPI and rotated atomically under the same Git profile identity. The refresh
+operation uses the Worker's existing durable owner. It retains a short-lived
+encrypted result so a lost response can be read back using the same attempt.
+An uncertain GitHub exchange cannot trigger another exchange of the same grant.
+The account stays selected on temporary failures. A legacy connection without
+a refresh grant, an expired or rejected grant, or an unrecoverable exchange
+requires explicit sign-in. Application registration and real grants belong to
+the deployment owner.
+Cancellation/replacement invalidate pending authorization immediately, but replies
+join the existing credential writer through publication/readback and cleanup.
+Pre-publication cancellation preserves the original selection; a publication that
+wins is reported as the actual selected account. A completed reply cannot report
+an old account and then be followed by that cancelled attempt's publication.
+Quiesced snapshots join the same section; ordinary live reads stay independent.
+
+Internal commit/merge/commit-tree writers and both provider launch paths consume
+that same profile for new work. A persistent provider reads the latest atomic profile
+on each Git invocation; reconnect does not restart a turn. GitHub HTTPS credentials
+go only to Git's credential pipe; the gh launcher supplies its token only to its own
+GitHub CLI child and redacts accidental token output. Foreign hosts receive no Hub
+credential. HTTP 401 and Git rejection apply only to the exact credential used.
+An earlier credential cannot reject a newer pair. Authenticated requests are
+never repeated after a permission refusal.
+
+Global Git configuration, existing keys, original commit objects/authors/hashes,
+Task ownership/CAS and native content/history guards are unchanged. New synthetic
+archive anchors bind their Git identity once to the original archive receipt, so
+retry cannot change an already-created anchor after account reconnection. With no
+connection the previous Git defaults remain; this is not a server-side authorship
+enforcement or signature policy. Offline historical source projection is not a new
+interactive writer and must not re-attribute historical work to the current account.
+
+## Exact retained insertion (ADR-HUB-460)
+
+The existing literal replay proof may also verify one pure insertion independently
+of Git's ambiguous hunk alignment. For unchanged regular-file mode and nonbinary
+UTF-8 bytes, the exact inserted block must already occur in the candidate and its
+reinsertion must reproduce the entire replay byte for byte. No removal,
+replacement, semantic or cyclic equivalence gains this credit. Native graph,
+selection, identity, replay boundaries and the other content proofs remain intact.
+
+## Task card archive (ADR-HUB-466)
+
+Ordinary card archive does not attest delivery. It can clean exact, clean,
+Task-owned branches and worktrees using the existing published-result proof
+independently of which runtime is currently installed. Unverified repositories,
+later or foreign branches, and dirty or ignored data are preserved. Confirmation
+binds current Task revision, the exact cleanup preview and any retained
+artifacts. Partial cleanup leaves its originally admitted plan for readback,
+and an addressed continuation observes the remaining artifacts without
+repeating the deletion. Closure with unapproved leftovers requires a fresh
+explicit confirmation.
+
 ## Verified manual delivery (ADR-HUB-466)
 
 RM Task Complete may explicitly verify a real manual installation instead of
@@ -7,12 +81,58 @@ consulting an old publication generation. Exact runtime/manifest/source,
 main/origin and Task-result containment are mandatory. Workflow Done precedes
 closing. Ready requires the existing authenticated live desktop control owner,
 matching PID/release and a stable endpoint, not a retained Ready lock alone.
-Preview/confirmation uses existing Task CAS. All Task Git artifacts,
-ignored WIP and dependency receipts are preserved. Cleanup is separate.
+Preview/confirmation uses existing Task CAS. Complete removes only the listed
+clean managed branches/worktrees after exact published result/current HEAD
+verification, then archives the card. Every present worktree must independently
+pass current Task ownership before planning and again when consuming cleanup,
+including repositories with canonical Git refs and historical source pins.
+A published HEAD alone grants no ref ownership.
+An absent historical workspace can supply an artifact-only branch only when its
+name matches the existing Task UUID/repository branch or current numbered Task
+branch. This check also applies on consumption/reopen; old evidence is not a waiver.
+Ignored WIP/dependency receipts and dirty or unpublished/later work block cleanup
+and remain intact. Their artifact owner retires them separately.
+A partial cleanup retains its admitted original intent;
+addressed reconciliation checks the remaining subset and finishes that original.
+An already closed archive can receive a fresh read-only cleanup preview and
+confirmation without rewriting its status, workflow or completion time. An old
+canonical manual Complete can pin its source via completed_operation_request_id;
+missing receipts require the full fresh delivery proof, never archive status or
+ancestry alone. Preserve-only old confirmations retain their original meaning.
+If physical cleanup already removed the exact owned Task/repository-key path,
+its still-registered Git worktree can be listed separately in the same preview.
+Positive path absence, unchanged branch/head and the exact non-reparse managed
+Task parent are checked again before targeted native worktree removal and branch
+CAS. Existing/replaced/foreign paths refuse. No global worktree prune is used.
+When the registered primary remains behind an already published main, the
+configured Hub-owned standalone clone is the read-only delivery authority.
+Its existing marker must bind this primary/common directory and managed layout;
+its clean main/HEAD/origin and actual origin main must match the installed
+revision. A foreign remote/root, stale tracking, or changing identity refuses.
+Proof and confirmation retain that binding while primary HEAD/index/tree stay
+unchanged. Without an existing clone, the retained primary-only proof remains.
 The explicit main-to-dev service may bind the same proof to its existing
 isolated native sync journal and expected dev revision. Normal conflict
 resolution and fresh delivery fences precede dev CAS. Historical publication
 and UNKNOWN receipts retain their meaning; no release generation is made.
+Distinct dev and published object closures are combined by the existing owned
+object store and invocation-only math view, not by fetching into primary or
+altering its refs. The normal isolated journal still owns resolution and dev CAS.
+When the issued manual merge needs additional Task compatibility beyond its
+automatic/conflict composition, the same service can receive a separate exact
+`nativeResolutionReview` (`requestId`, original `text`). Its existing
+`native-merge-review-v1` envelope must be a successful authenticated independent
+inter-Stream receipt to the current RM; author text or an imported artifact is
+not authority. No review is required for ordinary conflict-only merges.
+The bound operation/delivery/identity, all bases, original journal and issued
+stages, canonical automatic inventory, exact candidate/tree and complete
+before/after changes are recomputed. The full selected-content consumer accepts
+only that exact reviewed delta. Foreign/stale/changed/unaccepted input refuses.
+The same native journal retains this input before normal continuation; reopen
+cannot lose it by omitting an optional argument. Its real receipt is rechecked
+through full validation and delivery fences. Business identity and original
+manualSync arguments remain unchanged. No release worker, new approval ledger,
+path allowlist or fake publication evidence is introduced (ADR-HUB-466).
 The native sync math binds every best merge base for both retained publication
 and verified manual policies, including criss-cross histories. It rejects a
 changed set rather than selecting one convenient base.
@@ -22,7 +142,8 @@ actual installation/managed-head evidence without manufacturing a Test result.
 An unrepresented historical repository may only be explicitly retained with
 its exact managed path/head pin. Its contents are preserved, not certified
 published. Canonical referenced repositories and managed source still require
-the full delivery proof; retention cannot exclude them from it.
+the full delivery proof; retention cannot exclude them from it. A cleanup preview
+identifies this retained repository as an obstacle instead of deleting it.
 
 ## Scope after removal of the release mechanism (ADR-HUB-463)
 
@@ -82,7 +203,23 @@ Task Git still validates exact main/publication baseline, registered repository
 identity, branch, commit, selected content and worktree state. It does not adopt
 rolling dev, another checkout or a broader operational aggregate as Task source.
 Dependency ensure, explicit reviewed custody recovery, empty-WIP fencing and
-committed claim readback retain their existing checks and receipts.
+committed claim readback retain their existing checks and receipts. A historical
+forward fence does not reserve the working copy against ordinary claims. Task
+Git uses the established Task checkout and its existing locks. The withdrawn
+request remains fenced from assignment and result writes. A new ordinary binding
+also supersedes an unconsumed declared successor.
+
+Dependency ensure reuses the existing installed set by exact dependency
+compatibility under the shared input owner. That source remains stable across
+updates of a regular checkout's `node_modules`. Each Task keeps a local
+`node_modules` directory and its own cache. A warm attachment publishes
+package directory references once without rehashing or linking individual
+package payload files. Explicit verify still validates the installed source.
+When the shared input is absent, a compatible installation already in the
+registered main checkout seeds it once without running npm. The shared input
+owns its own bytes so an update of main cannot change a running Task's
+packages. Replaced per-file attachments retain their local files and cache. A
+project with task-local install inputs keeps its local npm path.
 
 Test integrates the addressed Task result into dev through the existing native
 Git owner. A conflict issues a bound native checkout; a normal resolution commit
@@ -137,6 +274,15 @@ validation. Its pure legacy decoder is not a store, writer, state machine,
 worker or new publication authority. Missing, ambiguous, foreign or tampered
 facts refuse; reads never create a database or settle historical outcomes.
 Legacy database tables, archived artifacts and retained runtime records remain.
+
+A Release Manager may preview and confirm an archive-only Complete for the
+service card of an explicitly abandoned attempt. The historical owner checks
+the exact original revision, idle FAILED state, immutable generation, actor and
+original selection against the service checklist. The confirmation binds the
+same Task revision and custody. The archive keeps the card's workflow status,
+member Tasks, all source custody and the original failure and effects as
+recorded. It does not produce a release result or delete a worktree. The Task
+lifecycle owns the archive receipt, and the legacy decoder is read-only.
 
 ## Build, installation and manual delivery
 

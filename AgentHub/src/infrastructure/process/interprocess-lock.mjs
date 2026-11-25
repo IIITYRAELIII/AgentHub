@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
@@ -15,6 +16,16 @@ const inProcessLocks = new Map();
 // No names, ages or foreign on-disk owner claims grant this capability.
 const ownedDirectories = new Set();
 const directoryObservers = new Set();
+const leaseAssertionScope = new AsyncLocalStorage();
+
+export async function assertInterprocessLeasesOwned(...leases) {
+  // This composition owns one fresh observation per concurrently checked
+  // lease. Join the complete set even when one assertion fails.
+  const check = () => Promise.allSettled([...new Set(leases)].map(async lease => lease.assertOwned()));
+  const results = await (leaseAssertionScope.getStore() ? check() : leaseAssertionScope.run(new Map(), check));
+  const failure = results.find(result => result.status === "rejected");
+  if (failure) throw failure.reason;
+}
 
 function observeOwnedDirectory(file) {
   let resolveIdentity;
@@ -632,7 +643,7 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
     leaseError = error instanceof Error ? error : new Error(String(error));
     leaseController.abort(leaseError);
   };
-  const assertOwned = async () => {
+  const verifyOwnership = async () => {
     if (leaseError) throw leaseError;
     const ownership = await Promise.all(acquired.map((record) => (
       renewLease(record.lockPath, record.token, 0, record)
@@ -643,12 +654,25 @@ export async function withInterprocessLocks(paths, operation, options = {}) {
     }
     if (leaseError) throw leaseError;
   };
+  const assertOwned = async () => {
+    if (leaseError) throw leaseError;
+    const pending = leaseAssertionScope.getStore();
+    if (!pending) return verifyOwnership();
+    const current = pending.get(verifyOwnership);
+    if (current) return current;
+    // Nested wrappers can check the same exact lease at the same time. Share
+    // its in-flight read only inside this composed check, never a settled proof.
+    const check = verifyOwnership();
+    pending.set(verifyOwnership, check);
+    try { return await check; }
+    finally { pending.delete(verifyOwnership); }
+  };
   try {
     for (const lockPath of lockPaths) {
       localReleases.push(await acquireInProcessLock(lockPath, options.signal));
     }
     for (const lockPath of lockPaths) {
-      acquired.push(await acquire(lockPath, options, publisher));
+      acquired.push(await measureTaskOperation("lock-native-acquire", () => acquire(lockPath, options, publisher)));
     }
     const staleMs = Math.max(500, Number(options.staleMs) || 60_000);
     const renew = typeof options.renewLease === "function" ? options.renewLease : renewLease;

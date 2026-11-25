@@ -153,6 +153,7 @@ export function serverPageSnapshot({
   autostart = { supported: false, enabled: false },
   pendingConfiguration = {},
   accounts = [],
+  githubAccount = { status: "unavailable", account: null },
 } = {}) {
   const webAppEnabled = config?.miniApp?.enabled === true
     || config?.components?.miniApp === true
@@ -174,6 +175,11 @@ export function serverPageSnapshot({
     // Sign-in state and allowlisted account display. Sign-in links remain in
     // local start responses; credentials never enter this shared snapshot.
     accounts: publicProviderAccounts(accounts),
+    githubAccount: {
+      status: ["connected", "disconnected", "expired"].includes(githubAccount.status) ? githubAccount.status : "unavailable",
+      account: githubAccount.account ? { id: githubAccount.account.id, login: githubAccount.account.login,
+        name: githubAccount.account.name, email: githubAccount.account.email } : null,
+    },
     autostart: {
       supported: autostart.supported === true,
       enabled: autostart.enabled === true,

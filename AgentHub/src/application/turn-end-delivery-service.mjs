@@ -188,6 +188,9 @@ export class TurnEndDeliveryService {
       turnId: completion.turnId,
       startedAt: completion.startedAt,
       operationKind: completion.operationKind,
+      prompt: completion.prompt,
+      messageOrigin: completion.messageOrigin,
+      userMessages: completion.userMessages,
       clientUserMessageId: completion.clientUserMessageId,
       status: completion.status,
     }, notificationBody, {

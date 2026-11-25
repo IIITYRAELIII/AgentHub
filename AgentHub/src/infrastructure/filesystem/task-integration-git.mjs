@@ -96,14 +96,19 @@ function samePath(left, right) {
 }
 
 async function dirtyState(root) {
-  const [unstaged, staged, untracked, indexEntries] = await Promise.all([
+  const [status, indexEntries] = await Promise.all([
+    runGit(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all",
+      "--ignore-submodules=none", "--no-renames"], { cwd: root }),
+    runGit(["ls-files", "--stage", "-z"], { cwd: root }),
+  ]);
+  // Preserve the existing path/fingerprint format for dirty or unmerged
+  // primary checkouts. Nothing has to be enumerated again on a clean checkout.
+  const changed = status ? await Promise.all([
     runGit(["diff", "--name-only", "-z", "--"], { cwd: root }),
     runGit(["diff", "--cached", "--name-only", "-z", "--"], { cwd: root }),
     runGit(["ls-files", "--others", "--exclude-standard", "-z"], { cwd: root }),
-    runGit(["ls-files", "--stage", "-z"], { cwd: root }),
-  ]);
-  const paths = [...new Set([unstaged, staged, untracked]
-    .flatMap((value) => value.split("\0").filter(Boolean)))].sort();
+  ]) : [];
+  const paths = [...new Set(changed.flatMap(value => value.split("\0").filter(Boolean)))].sort();
   const files = [];
   for (const relativePath of paths) {
     const bytes = await readFile(path.join(root, relativePath)).catch((error) => {
@@ -945,7 +950,7 @@ export class TaskIntegrationGitService {
     });
   }
 
-  async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks, expectedPublishedMetadata = undefined }) {
+  async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks, expectedPublishedMetadata = undefined, primary = null }) {
     return measureTaskOperation("native:history-authority", async () => {
     if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
       const verified = await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
@@ -957,7 +962,7 @@ export class TaskIntegrationGitService {
         ...(verified.changelogEntries ? { changelogEntries: verified.changelogEntries } : {}),
         adoptions: verified.adoptions ?? [] };
     }
-    const initial = await primarySnapshot(projectRoot);
+    const initial = primary ?? await primarySnapshot(projectRoot);
     const adoptions = await readNativeUpstreamAdoptions({
       git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }), tasks,
       repositoryRoot: initial.root, localMainCommit: initial.mainCommit });
@@ -1480,7 +1485,7 @@ export class TaskIntegrationGitService {
           throw new Error("Publication authority changed during native release preparation");
         }
         await validateLocalSource();
-        historyAuthority = await this.#nativeHistoryAuthority(historyRequest);
+        historyAuthority = await this.#nativeHistoryAuthority({ ...historyRequest, primary: current });
         await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority }));
         if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
           git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
@@ -1499,8 +1504,10 @@ export class TaskIntegrationGitService {
         }
       });
       const requireCheckout = async (head) => {
-        if (await git(["rev-parse", "HEAD^{commit}"]) !== head
-            || await git(["write-tree"]) !== await git(["rev-parse", `${head}^{tree}`])
+        const [actualHead, actualTree, ...extra] = String(await git(
+          ["rev-parse", "HEAD^{commit}", "HEAD^{tree}"])).split(/\r?\n/u);
+        if (actualHead !== head || !actualTree || extra.length
+            || await git(["write-tree"]) !== actualTree
             || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
           throw Object.assign(new Error("Native release checkout changed; foreign bytes retained"), { code: "AWAIT_PREPARATION_UNKNOWN" });
         }

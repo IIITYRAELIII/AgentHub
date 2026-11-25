@@ -2,7 +2,8 @@ import { appendRotatingLog } from "./rotating-log.mjs";
 import { createTaskOperationTimingBatchRecorder } from "../process/task-operation-timing.mjs";
 import { open } from "node:fs/promises";
 
-const PROGRESS_STAGES = new Set(["workflow", "lock", "lock-local-acquire", "prepare-task", "prepare-dev",
+const PROGRESS_STAGES = new Set(["workflow", "lock-local-acquire", "lock-native-acquire",
+  "release:await-owned", "native:promotion-authority", "prepare-task", "prepare-dev",
   "sparse-worktree", "dependency-project", "dependency-inventory", "dependency-full-proof",
   "dependency-installed-lock-proof", "dependency-npm", "task-binding", "mcp:receipt"]);
 

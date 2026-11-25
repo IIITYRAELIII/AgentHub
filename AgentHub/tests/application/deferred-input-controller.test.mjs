@@ -1218,3 +1218,22 @@ test("DeferredInputController does not serialize unrelated tasks", async () => {
 
   assert.deepEqual(started.sort(), ["a", "b"]);
 });
+
+test("deferred rollout failure retains only bounded numeric worker timings", async () => {
+  let observed;
+  const owner = Object.create(DeferredInputController.prototype);
+  owner.commandTrace = {
+    startBestEffortSpan: (input) => ({
+      finish(output) { observed = { ...input, ...output }; },
+    }),
+  };
+  const badRead = Object.assign(new Error("contents must not enter telemetry"), {
+    code: "ERR_IO_FIXTURE",
+    timing: { queueWaitMs: 17, readMs: 42, source: "internal path" },
+  });
+  await assert.rejects(owner.traceAdmissionStep({ clientUserMessageId: "original" },
+    "deferred-rollout-read", async () => { throw badRead; }), badRead);
+  assert.equal(observed.commandId, "original");
+  assert.equal(observed.outcome, "failed");
+  assert.deepEqual(observed.metadata, { errorCode: "ERR_IO_FIXTURE", queueWaitMs: 17, readMs: 42 });
+});

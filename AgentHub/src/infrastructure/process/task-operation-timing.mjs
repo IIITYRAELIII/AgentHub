@@ -4,18 +4,23 @@ import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 const context = new AsyncLocalStorage();
 const MAX_DETAIL_SPANS = 512;
 // Fixed diagnostic classes only; no argv, paths or caller-provided stage labels.
-const AGGREGATE_STAGES = new Set(["git-child", "owned-command", "lease-assert", "process-guard",
+const AGGREGATE_AWAITS = new Set(["lock-owner-readdir-await", "lock-owner-read-await"]);
+const AGGREGATE_STAGES = new Set([...AGGREGATE_AWAITS, "git-child", "owned-command", "lease-assert", "process-guard",
   "dependency-project", "dependency-inventory", "dependency-full-proof", "dependency-npm",
   "dependency-installed-lock-proof", "lock-local-acquire", "task-binding", "mcp:receipt",
   "native-retire:owned-setup", "native-retire:current", "native-retire:source-pins", "native-retire:archive-read",
   "native-retire:archive-lease-wait", "native-retire:archive-intake", "native-retire:archive-verification", "native-retire:native-call",
+  "native:object-pool", "native:object-import", "native:object-inventory", "native:object-pack-indexes", "native:object-aliases",
+  "native:object-closure", "native:object-connectivity", "native:merge", "native:prefix-recheck",
   "repository-guards", "release:git-command", "release:git-input", "release:base-evidence",
   "release:integration-evidence", "native:history-authority", "native:task-histories",
   "native:cutover", "native:promotion-authority", "lock-native-bootstrap", "lock-native-publish",
   "release:planner", "release:publication", "release:main-validation", "release:primary-validation", "release:validate-prepared", "release:prepared-source", "release:promotion-validate", "release:promotion-checkout", "release:freeze-admission", "release:freeze-owned", "release:freeze-candidate", "release:freeze-base", "release:freeze-installed-baseline", "release:freeze-callback", "release:freeze-callback-baseline"]);
 const AGGREGATE_COMMANDS = new Set(["rev-parse", "status", "log", "show", "diff", "merge-base", "merge",
   "worktree", "sparse-checkout", "config", "symbolic-ref", "update-ref", "for-each-ref", "cat-file",
-  "rev-list", "add", "commit", "reset", "read-tree", "checkout", "ls-files", "merge-abort", "external"]);
+  "rev-list", "add", "commit", "reset", "read-tree", "checkout", "ls-files", "merge-abort", "external",
+  "ls-tree", "merge-tree", "diff-files", "init", "fetch", "clone", "bundle", "ls-remote",
+  "fsck", "pack-objects", "index-pack", "show-index", "verify-pack", "hash-object"]);
 
 function aggregate(state, stage, metadata, durationMs, outcome, suppressed) {
   try {
@@ -133,6 +138,7 @@ export async function measureTaskOperationAwait(stage, operation, { reportAtMs =
   catch (error) { outcome = "error"; throw error; }
   finally {
     const durationMs = Math.max(0, performance.now() - started);
+    if (AGGREGATE_AWAITS.has(stage)) aggregate(state, stage, {}, durationMs, outcome, false);
     if (durationMs >= reportAtMs) recordTaskOperationTiming(stage, { durationMs, outcome });
   }
 }

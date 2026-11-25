@@ -73,6 +73,7 @@ export class DesktopReadModelService {
       turnId,
       revision,
       completedAt,
+      ...(lastMessage?.interstreamOnly ? { interstreamOnly: true } : {}),
       ...(terminalRevision > 0 ? {} : { migrationGuard: "legacy-terminal-revision" }),
     };
   }

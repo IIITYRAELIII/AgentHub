@@ -5,6 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {promisify} from 'node:util';
 import test from 'node:test';
+import {DatabaseSync} from 'node:sqlite';
+import {releaseIdentitySha256} from '../../src/domain/legacy-task-publication-proof.mjs';
+import {runtimeDatabasePath} from '../../src/infrastructure/persistence/runtime-state-store.mjs';
 import {openTaskAwaitCutoverRuntime} from '../../task-await-cutover.mjs';
 import {WorkspaceCatalogStore} from '../../src/infrastructure/persistence/workspace-catalog-store.mjs';
 import {TaskBoardStore} from '../../src/infrastructure/persistence/task-board-store.mjs';
@@ -70,6 +73,51 @@ test('Tasks keep CRUD, checklist, managed claim, native Test and Await without a
  const candidate=await service.releasePreflight.releaseGitWorkspaces.frozenCandidate(primary);
  assert.equal(candidate.manifest.tasks[0].resultCommit,result);
  assert.equal(await readFile(path.join(candidate.releaseRoot,'task.txt'),'utf8'),'own task result\n');
+ const serviceCard=await call('hub_task_create',{request_id:'create-service',title:'Stopped release'});
+ const checklist=await call('hub_task_checklist_update',{request_id:'add-service-item',task_id:serviceCard.id,
+  expected_task_revision:serviceCard.revision,operation:'add',text:'Retained original selection'});
+ await call('hub_task_checklist_update',{request_id:'link-service-item',task_id:serviceCard.id,
+  expected_task_revision:checklist.task.revision,operation:'link',item_id:checklist.itemId,
+  linked_task_id:accepted.id,release_reference:{taskRevision:accepted.revision,gitReferences:accepted.gitReferences}});
+ const originalTask=taskBoard.task(serviceCard.id);
+ const args={task_id:serviceCard.id,completion_mode:'abandoned_release_service',
+  abandoned_release:{operationId:'original-failed',expectedRevision:4,expectedGeneration:1}};
+ await assert.rejects(call('hub_task_complete',{...args,request_id:'absent-history'}),/history is absent/u);
+ const facts=new DatabaseSync(runtimeDatabasePath(dataDir));
+ t.after(()=>{if(facts.isOpen)facts.close();});
+ facts.exec(`CREATE TABLE release_operations (operation_id TEXT PRIMARY KEY, workspace_id TEXT, state TEXT, operation_json TEXT);
+  CREATE TABLE release_candidate_generations (operation_id TEXT, generation INTEGER, generation_json TEXT, identity_sha256 TEXT)`);
+ const selectedResults=[{taskId:accepted.id,resultCommit:result}];
+ const authorization={taskIds:[accepted.id]};
+ const failed={operationId:'original-failed',workspaceId:workspace.id,streamId:stream.id,
+  revision:4,currentGeneration:1,state:'failed',owner:null,completedAt:'2026-10-01T00:00:00Z',
+  lastError:'original failure',selectedResults,authorization:{...authorization,fingerprint:releaseIdentitySha256(authorization)}};
+ const generation={operationId:failed.operationId,generation:1,selectedResults,candidates:[{repositoryRoot:primary}]};
+ const identity=releaseIdentitySha256(generation);
+ const operationJson=JSON.stringify(failed), generationJson=JSON.stringify({...generation,identitySha256:identity});
+ facts.prepare('INSERT INTO release_operations VALUES (?,?,?,?)').run(failed.operationId,workspace.id,failed.state,operationJson);
+ facts.prepare('INSERT INTO release_candidate_generations VALUES (?,?,?,?)').run(failed.operationId,1,generationJson,identity);
+ await assert.rejects(call('hub_task_complete',{...args,request_id:'stale-archive',
+  abandoned_release:{...args.abandoned_release,expectedRevision:3}}),/exact idle FAILED/u);
+ facts.prepare('UPDATE release_candidate_generations SET identity_sha256=?').run('f'.repeat(64));
+ await assert.rejects(call('hub_task_complete',{...args,request_id:'changed-generation'}),/immutable generation changed/u);
+ facts.prepare('UPDATE release_candidate_generations SET identity_sha256=?').run(identity);
+ const archivePreview=await call('hub_task_complete',{...args,request_id:'archive-preview'});
+ assert.equal(archivePreview.confirmationRequired,true);
+ assert.equal(archivePreview.preview.releaseService.actor.streamId,stream.id);
+ assert.equal(archivePreview.preview.releaseService.source.streamId,null);
+ assert.equal(archivePreview.preview.releaseService.original.effectsDisposition,'retained_without_settlement');
+ assert.deepEqual(archivePreview.preview.deleting,[]);
+ assert.equal(taskBoard.task(serviceCard.id).status,originalTask.status);
+ const archived=await call('hub_task_complete',{...args,request_id:'archive-confirm',confirm_cleanup:true,
+  expected_cleanup_token:archivePreview.cleanupToken});
+ assert.equal(archived.status,'done');
+ assert.equal(archived.workflowStatus,originalTask.workflowStatus);
+ assert.deepEqual(taskBoard.task(serviceCard.id).checklist,originalTask.checklist);
+ assert.deepEqual(taskBoard.task(accepted.id),accepted);
+ assert.equal(facts.prepare('SELECT operation_json FROM release_operations').get().operation_json,operationJson);
+ assert.equal(facts.prepare('SELECT generation_json FROM release_candidate_generations').get().generation_json,generationJson);
+ facts.close();
  assert.equal(await git(primary,'rev-parse','HEAD'),base);
  assert.equal(await git(primary,'status','--porcelain=v1','--untracked-files=all'),'');
 });

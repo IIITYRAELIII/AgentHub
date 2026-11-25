@@ -884,6 +884,23 @@ export class WorkLogUsageStore {
     return this.#usageSyncStore.usageSyncState();
   }
 
+  async readTestContourJournalPage(options) {
+    if (typeof this.#usageSyncStore?.readTestContourJournalPage !== "function") {
+      throw new Error("Test Contour import requires the existing usage worker");
+    }
+    // Release the repository barrier before requesting its worker.
+    await this.#repository.enqueue(() => {}, { load: false, pointRead: true });
+    return this.#usageSyncStore.readTestContourJournalPage(options);
+  }
+
+  acknowledgeTestContourJournalPage(options) {
+    return this.#usageSyncStore.acknowledgeTestContourJournalPage(options, {
+      mutationLock: (mutate) => this.#repository.enqueue(
+        () => this.#repository.applyExternalMutation(mutate), { load: false, pointRead: true },
+      ),
+    });
+  }
+
   async ensureAccountUsageProjectionCurrent({
     required = false,
     reason = "shipped-version-check",

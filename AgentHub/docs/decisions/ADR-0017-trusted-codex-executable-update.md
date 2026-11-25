@@ -79,6 +79,16 @@ The Hub can adopt a newer already installed official Codex without becoming a
 package manager. Operators retain deterministic disable and pin controls and a
 readable reason whenever adoption is deferred or rejected.
 
+On Windows, the autonomous installer checks recorded identity with the same
+official selection owner before stopping the working runtime. ADR-HUB-496
+supersedes the original member-signature policy.
+Existing policy and exact recorded identity remain authoritative. A definitive
+failure may stop the upgrade before retirement; discovery can independently
+verify a complete fallback. Neither the availability observation nor the
+installer receipt grants activation authority. Real startup retains custody,
+canary, Ready and rollback. Bounded rejection details remain available even
+when a later trusted selection or previous runtime succeeds.
+
 The removal condition for the legacy mtime resolver is successful migration of
 all call sites to the update service. No permanent fallback may continue to
 select by mtime afterward.

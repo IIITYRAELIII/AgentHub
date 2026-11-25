@@ -7,7 +7,7 @@ const commandTrace = window.AgentHubCommandTrace;
 const traceIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u;
 // This marker identifies the executing client code path, not a file hash or
 // the release currently served by the Hub.
-const clientAssetRevision = "hub283.client.4";
+const clientAssetRevision = "hub489.client.1";
 const documentInstanceId = commandTrace.newId();
 let previousDocumentInstanceId = "";
 try {
@@ -187,6 +187,7 @@ const liveUserMessagesByTask = new Map();
 const liveCardsByTask = new Map();
 const completionOverlaysByTask = new Map();
 const queueActionsInFlight = new Set();
+const acknowledgedQueueCancels = new Set();
 const optimisticQueueSteerIds = new Set();
 const optimisticDeferredClientUserMessageIds = new Set();
 const requestedContextCompactions = new Set();
@@ -758,6 +759,16 @@ function nonEmptyAttachmentPatch(values) {
   return attachments.length ? { attachments } : {};
 }
 
+function retireAcceptedOutgoingQueue(message) {
+  if (message?.providerAccepted !== true || !String(message.turnId ?? "").trim()) return;
+  const clientId = String(message.clientUserMessageId ?? "").trim();
+  const optimistic = optimisticDeferredClientUserMessageIds.delete(clientId);
+  const deferred = deferredClientUserMessageIds.delete(clientId);
+  if (optimistic || deferred) commandTrace.record("ui-snapshot", "accepted-queue-retired", 0, clientId, {
+    provider: message.provider, threadId: message.threadId, streamId: message.streamId, turnId: message.turnId,
+  });
+}
+
 function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   const resolvedTaskId = outgoingTaskId(outgoingByTask, clientUserMessageId, taskIdValue);
   if (!resolvedTaskId) return "";
@@ -768,6 +779,7 @@ function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   Object.assign(message, patch.projectionState && absorbingProjection
     ? window.AgentHubMessageProjection.reduceProjectionEntity(message, { ...message, ...patch })
     : patch);
+  retireAcceptedOutgoingQueue(message);
   if (patch.projectionAuthority === "canonical" || ["accepted", "rejected"].includes(patch.deliveryState)) {
     queueMicrotask(() => window.AgentHubPruneComposerFiles?.());
   }
@@ -889,6 +901,7 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
   return [...outgoingMessages(taskIdValue).values()]
     .filter((message) => (
       !acceptedHistoryIds.has(String(message?.clientUserMessageId ?? "").trim())
+      && !acknowledgedQueueCancels.has(String(message.itemId ?? "").trim())
       && (
         optimisticDeferredClientUserMessageIds.has(message.clientUserMessageId)
         || serverClientIds.has(message.clientUserMessageId)
@@ -1048,20 +1061,42 @@ function canonicalAcceptedEvidence(snapshot) {
   return true;
 }
 
-function applyMessageReceipts(snapshot) {
+function applyMessageReceipts(snapshot, onAcceptedQueue = null) {
   for (const receipt of snapshot?.messageReceipts ?? []) {
     const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
     const provider = String(receipt?.provider ?? "").trim();
     const threadId = String(receipt?.threadId ?? "").trim();
-    const stableTaskId = exactSnapshotTaskId(receipt, snapshot?.tasks);
+    let stableTaskId = exactSnapshotTaskId(receipt, snapshot?.tasks);
+    const receiptStreamId = String(receipt?.streamId ?? "").trim();
+    if (!stableTaskId && receiptStreamId) {
+      // A rotated source Thread may leave the bounded snapshot. Its receipt
+      // can reconcile an already-owned occurrence, not restore a guessed one.
+      const local = outgoingByTask.get(receiptStreamId)?.get(clientUserMessageId);
+      const streamExists = (snapshot?.tasks ?? []).some((task) => (
+        String(task.streamId ?? "").trim() === receiptStreamId
+      ));
+      if (streamExists && local?.provider === provider && local?.threadId === threadId
+        && (!local.streamId || local.streamId === receiptStreamId)) stableTaskId = receiptStreamId;
+    }
     if (!clientUserMessageId || !stableTaskId) continue;
     const matchedTask = snapshot.tasks.find((task) => (
       conversationTaskId(task, snapshot.tasks) === stableTaskId
       && task.provider === provider && task.threadId === threadId
     ));
-    const streamId = String(matchedTask?.streamId ?? "").trim();
+    const streamId = String(matchedTask?.streamId ?? receiptStreamId).trim();
+    const localTaskId = outgoingTaskId(outgoingByTask, clientUserMessageId, stableTaskId);
+    const local = outgoingByTask.get(localTaskId)?.get(clientUserMessageId);
+    if (local && (localTaskId !== stableTaskId || local.provider !== provider
+      || (local.streamId && local.streamId !== streamId))) continue;
     const projection = queueHistoryReceiptProjection(receipt);
     if (!projection.ownsDeferredQueue) {
+      if (projection.providerAccepted && String(receipt.turnId ?? "").trim()
+        && (optimisticDeferredClientUserMessageIds.has(clientUserMessageId)
+          || deferredClientUserMessageIds.has(clientUserMessageId))) {
+        onAcceptedQueue?.(stableTaskId, clientUserMessageId, receipt.id);
+      }
+      retireAcceptedOutgoingQueue({ clientUserMessageId, provider, threadId, streamId,
+        providerAccepted: projection.providerAccepted, turnId: receipt.turnId });
       optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
       deferredClientUserMessageIds.delete(clientUserMessageId);
     }
@@ -1891,7 +1926,15 @@ async function waitTaskOperationResult(admission, params) {
   if (operation.status !== "succeeded") throw Object.assign(new Error(
     operation.cancellation?.phase === "stopped" ? "Операция прервана. Незавершённая работа сохранена."
       : operation.error || `Операция ${original.requestId} требует восстановления исходного результата`), { taskOperation: operation });
-  return { ...await control("snapshot"), lifecycleResult: receipt.result };
+  let lifecycleResult = receipt.result;
+  if (lifecycleResult?.confirmationRequired && lifecycleResult.archivePreview && lifecycleResult.previewOmitted) {
+    lifecycleResult = await window.AgentHubTaskCleanupConfirmation.readArchivePreview(lifecycleResult, async (archivePreviewPage) => {
+      const value = await control("board-task-read", { id: operation.taskId,
+        operationRequestId: operation.requestId, argumentsHash: operation.argumentsHash, archivePreviewPage });
+      return value.archivePreviewPage;
+    });
+  }
+  return { ...await control("snapshot"), lifecycleResult };
 }
 
 async function control(action, params = {}) {
@@ -2040,7 +2083,10 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
       : task.lastAnswerAt,
     lastAnswer: task.lastAnswer ?? null,
     startedAt: running ? activeRunSubmissionTiming(task.run).startedAt : null,
-    unread: !running && unread,
+    unread,
+    interstreamRun: task.run?.interstreamOnly === true,
+    openQuestion: window.AgentHubApprovalForm.approvalsForTask(snapshot.pendingApprovals, task, { serverSelected })
+      .some(approval => approval.questions?.length && approval.state !== "dispatching"),
     running,
     selected: id === effectiveSelectedId,
     maintenance: task.maintenance ?? null,
@@ -2601,6 +2647,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
   if (requestTraceId) commandTrace.associate(snapshot, requestTraceId);
   if (observeServerIdentity(snapshot)) return;
   const priorSnapshotForTrace = lastSnapshot;
+  const acceptedQueuePaints = [];
   let effectiveSelectedId = "";
   let tasks = [];
   runBatchedMessageRenders(() => {
@@ -2614,6 +2661,18 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
       appliedSnapshotGeneration += 1;
     }
     lastSnapshot = snapshot;
+    if (acknowledgedQueueCancels.size && Array.isArray(snapshot.deferredInputs)) {
+      const currentQueueIds = new Set(snapshot.deferredInputs.map((item) => String(item.id ?? "").trim()));
+      for (const receipt of snapshot.messageReceipts ?? []) {
+        const id = String(receipt?.id ?? "").trim();
+        if (acknowledgedQueueCancels.has(id) && queueHistoryReceiptProjection(receipt).ownsDeferredQueue) {
+          currentQueueIds.add(id);
+        }
+      }
+      for (const id of acknowledgedQueueCancels) {
+        if (!currentQueueIds.has(id)) acknowledgedQueueCancels.delete(id);
+      }
+    }
     const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
     const maintenanceTasks = reconcileContextCompactions(snapshot.tasks);
     // Pending/retry identities belong to the current canonical final. Capacity
@@ -2662,7 +2721,13 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
       ...observeStreamRotations(previousTasks, snapshot.tasks),
       ...syncActiveMaintenanceMessages(representativeSnapshotTasks(maintenanceTasks)),
     ]);
-    if (snapshot.messageReceipts !== previousSnapshot?.messageReceipts) applyMessageReceipts(snapshot);
+    if (snapshot.messageReceipts !== previousSnapshot?.messageReceipts
+      || snapshot.tasks !== previousSnapshot?.tasks
+      || optimisticDeferredClientUserMessageIds.size) {
+      applyMessageReceipts(snapshot, (taskId, clientId, intakeId) => {
+        acceptedQueuePaints.push({ taskId, clientId, intakeId, started: commandTrace.now() });
+      });
+    }
     const serverDeferredClientUserMessageIds = new Set(queuedCommandClientUserMessageIds(
       snapshot.deferredInputs,
       snapshot.messageReceipts,
@@ -2673,6 +2738,10 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     );
     activeRunClientUserMessageIds = nextActiveRunClientUserMessageIds;
     for (const clientUserMessageId of optimisticDeferredClientUserMessageIds) {
+      for (const messages of outgoingByTask.values()) {
+        const message = messages.get(clientUserMessageId);
+        if (message) retireAcceptedOutgoingQueue(message);
+      }
       if (
         serverDeferredClientUserMessageIds.has(clientUserMessageId)
         || activeRunClientUserMessageIds.has(clientUserMessageId)
@@ -2797,6 +2866,16 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
       ));
     }
   });
+  for (const { taskId, clientId, intakeId, started } of acceptedQueuePaints) {
+    const showingQueue = () => selectedTaskId === taskId && document.documentElement.dataset.view === "chat";
+    if (!showingQueue()) continue;
+    commandTrace.afterPaint("ui-render", "message-receipt-queue-paint", started, clientId,
+      { clientAssetRevision, documentInstanceId }, () => {
+        const retained = [...document.querySelectorAll(".queue-item[data-queue-id]")]
+          .some(row => row.dataset.queueId === `local:${clientId}` || row.dataset.queueId === intakeId);
+        return { outcome: retained ? "failed" : "succeeded", metadata: { retained } };
+      }, showingQueue);
+  }
   traceSnapshotGate(snapshot, {
     decision: "applied", id: effectiveSelectedId, before: priorSnapshotForTrace,
   });
@@ -3246,6 +3325,40 @@ function projectReadReceipt(id, entry) {
     });
 }
 
+async function acknowledgeTaskFinal(id, entry) {
+  const final = entry.final;
+  const result = await control("mark-task-read", { final, streamId: id, clientTraceId: entry.commandId });
+  const confirmed = result?.marked === true
+    && readMarker.finalIdentity(result.final) === entry.identity
+    && readMarker.cursorCovers(entry.final, result);
+  commandTrace.record("ui-render", "read-marker-receipt", commandTrace.now() - entry.viewedAt,
+    entry.commandId, { ...readMarkerMetadata(id, final), render: confirmed ? "confirmed" : "unconfirmed" });
+  entry.phase = confirmed ? "confirmed" : "retry";
+  if (confirmed) {
+    const key = readMarker.threadIdentity(final);
+    if ((lastSnapshot?.tasks ?? []).some((task) => task.provider === final.provider && task.threadId === final.threadId)) {
+      retainReadMarker(confirmedReadCursorByThread, key,
+        readMarker.newerReceipt(confirmedReadCursorByThread.get(key), { final: result.final, cursor: result.cursor }));
+    }
+    projectReadReceipt(id, entry);
+  } else if (result?.reason === "stale-final") void refresh();
+  return result;
+}
+
+agentHub.on("activity:clear-ready", ({ interstreamOnly }) => runAction(async () => {
+  const targets = (lastSnapshot?.tasks ?? []).filter(task => task.unread && task.latestFinal
+    && (!interstreamOnly || task.latestFinal.interstreamOnly)
+    && !readMarker.cursorCovers(task.latestFinal, confirmedReadCursorByThread.get(readMarker.threadIdentity(task.latestFinal))));
+  const results = await Promise.allSettled(targets.map(task => {
+    const final = task.latestFinal;
+    return acknowledgeTaskFinal(taskId(task.provider, task.threadId, task.streamId), {
+      final, identity: readMarker.finalIdentity(final), commandId: commandTrace.newId(), viewedAt: commandTrace.now(),
+    });
+  }));
+  const failed = results.find(result => result.status === "rejected");
+  if (failed) throw failed.reason;
+}));
+
 function considerDisplayedFinal(id) {
   const task = snapshotTask(lastSnapshot, id);
   const final = task?.latestFinal;
@@ -3274,22 +3387,7 @@ function considerDisplayedFinal(id) {
       entry.phase = "pending";
       entry.viewedAt = commandTrace.now();
       const rect = card.getBoundingClientRect();
-      void control("mark-task-read", { final: entry.final, streamId: id, clientTraceId: entry.commandId }).then((result) => {
-        const confirmed = result?.marked === true
-          && readMarker.finalIdentity(result.final) === entry.identity
-          && readMarker.cursorCovers(entry.final, result);
-        commandTrace.record("ui-render", "read-marker-receipt", commandTrace.now() - entry.viewedAt,
-          entry.commandId, { ...readMarkerMetadata(id, final), render: confirmed ? "confirmed" : "unconfirmed" });
-        entry.phase = confirmed ? "confirmed" : "retry";
-        if (confirmed) {
-          const key = readMarker.threadIdentity(final);
-          if ((lastSnapshot?.tasks ?? []).some((task) => task.provider === final.provider && task.threadId === final.threadId)) {
-            retainReadMarker(confirmedReadCursorByThread, key,
-              readMarker.newerReceipt(confirmedReadCursorByThread.get(key), { final: result.final, cursor: result.cursor }));
-          }
-          projectReadReceipt(id, entry);
-        } else if (result?.reason === "stale-final") void refresh();
-      }).catch(() => { entry.phase = "retry"; });
+      void acknowledgeTaskFinal(id, entry).catch(() => { entry.phase = "retry"; });
       commandTrace.record("ui-render", "read-marker-view", commandTrace.now() - entry.paintStarted,
         entry.commandId, { ...readMarkerMetadata(id, final), render: "viewed",
           viewport: rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth });
@@ -4350,8 +4448,9 @@ document.addEventListener("agenthub:board-action", (event) => {
     if (!action) return;
     const { type: _type, ...params } = detail;
     if (lastSnapshot && ["move", "status"].includes(detail.type)) params.responseView = "task-board";
+    if (detail.type === "complete") params.completionMode = "archive";
     let result = await control(action, params);
-    if (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
+    while (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
       const decision = await window.AgentHubTaskCleanupConfirmation.confirm({
         confirmation: result.lifecycleResult,
         action,
@@ -4723,23 +4822,60 @@ agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(async (
   await control("resolve-approval", { key: id, decision, ...(answers ? { answers } : {}) });
   applySnapshot(await control("snapshot"));
 }));
-agentHub.on("queue:remove", ({ id }) => runAction(async () => {
-  const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id)
-    ?? [...outgoingByTask.values()].flatMap(messages => [...messages.values()])
-      .find(item => item.itemId === id || item.id === id);
-  const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
-  // Keep this intent's diagnostic UUID through transport/ACK, independently
-  // of the addressed message's opaque business idempotency identity.
-  const result = await control("deferred-input", { id: deferred?.itemId ?? deferred?.id ?? id, action: "cancel",
-    clientTraceId: commandTrace.currentId(),
-    ...(clientUserMessageId ? { clientUserMessageId } : {}) });
-  if (clientUserMessageId) {
-    const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
-    outgoingMessages(deferredTaskId).delete(clientUserMessageId);
-    renderTaskMessages(deferredTaskId);
+agentHub.on("queue:remove", ({ id, taskId: taskIdValue }) => runAction(async () => {
+  const displayId = String(id ?? "");
+  const localAlias = displayId.startsWith("local:");
+  const localMessages = outgoingByTask.get(taskIdValue);
+  const matchesItem = (item) => item.itemId === id || item.id === id;
+  const deferred = localAlias
+    ? localMessages?.get(displayId.slice("local:".length))
+    : (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id)
+      ?? [...(localMessages?.values() ?? [])].find(matchesItem)
+      ?? [...outgoingByTask.values()].flatMap(messages => [...messages.values()]).find(matchesItem);
+  const cancellationTaskId = deferred
+    ? taskId(deferred.provider, deferred.threadId, deferred.streamId) : taskIdValue;
+  const cancellationClientId = String(deferred?.clientUserMessageId ?? "");
+  const messages = outgoingByTask.get(cancellationTaskId);
+  if (messages?.has(cancellationClientId)) {
+    // An old queue projection may outlive its canonical transfer/cancellation.
+    // Let the existing receipt owner settle it before another server command.
+    applyMessageReceipts(lastSnapshot);
+    if (!messages.has(cancellationClientId)) {
+      renderTaskQueue(cancellationTaskId);
+      renderTaskMessages(cancellationTaskId);
+      agentHub.toast("Сообщение уже отменено");
+      return;
+    }
   }
-  applySnapshot(await control("snapshot"));
-  agentHub.toast(result?.message ?? "Отложенное сообщение удалено");
+  // A receipt-only card displays a local alias, which is never an RPC address.
+  const addressedId = localAlias ? deferred?.itemId : deferred?.itemId ?? deferred?.id ?? id;
+  const key = String(addressedId ?? "").trim();
+  if (!key || key.startsWith("local:") || queueActionsInFlight.has(key) || acknowledgedQueueCancels.has(key)) return;
+  queueActionsInFlight.add(key);
+  try {
+    const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
+    // Keep this intent's diagnostic UUID through transport/ACK, independently
+    // of the addressed message's opaque business idempotency identity.
+    const result = await control("deferred-input", { id: addressedId, action: "cancel",
+      clientTraceId: commandTrace.currentId(),
+      ...(clientUserMessageId ? { clientUserMessageId } : {}) });
+    const cancelled = result?.accepted === true && result?.cancelled === true && result.id === addressedId
+      && (!clientUserMessageId || result.clientUserMessageId === clientUserMessageId);
+    if (cancelled) {
+      // A failed readback does not undo an exact positive acknowledgement.
+      acknowledgedQueueCancels.add(key);
+    }
+    if (clientUserMessageId) {
+      const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
+      outgoingMessages(deferredTaskId).delete(clientUserMessageId);
+      renderTaskMessages(deferredTaskId);
+    }
+    if (cancelled && localAlias) renderTaskQueue(cancellationTaskId);
+    applySnapshot(await control("snapshot"));
+    agentHub.toast(result?.message ?? "Отложенное сообщение удалено");
+  } finally {
+    queueActionsInFlight.delete(key);
+  }
 }));
 async function runQueueAction(id, taskIdValue, operation) {
   const key = String(id ?? "").trim();
@@ -5401,6 +5537,88 @@ agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async ()
   const result = await control("cancel-provider-login", { provider });
   applyProviderLoginReply(result);
   agentHub.toast(result?.message ?? "Вход отменён");
+}));
+// Local control only, no durable command receipt or draft persistence for PATs.
+// Reuse the existing protected-local-session owner before collecting/submitting
+// a credential; remote command relays must never receive a token-bearing body.
+let githubLocalAccess = false;
+void localSessionReady.then(() => hasLocalWorkspaceFileAccess()).then(
+  allowed => { githubLocalAccess = allowed; agentHub.setGitHubLocalAccess(allowed); },
+  () => agentHub.setGitHubLocalAccess(false),
+);
+let githubLoginEpoch = 0;
+let githubLogin = null;
+let githubLoginTimer = null;
+function clearGitHubLogin() {
+  ++githubLoginEpoch;
+  clearTimeout(githubLoginTimer);
+  githubLogin = null;
+  agentHub.setGitHubLogin(null);
+}
+function pollGitHubLogin(epoch, waitMs) {
+  githubLoginTimer = setTimeout(async () => {
+    if (epoch !== githubLoginEpoch || !githubLogin) return;
+    try {
+      if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+      const result = await control("poll-github-account-login", { attemptId: githubLogin.attemptId });
+      if (epoch !== githubLoginEpoch) return;
+      if (result.login?.status === "pending") return pollGitHubLogin(epoch, result.login.waitMs);
+      clearGitHubLogin();
+      agentHub.setGitHubAccount(result.githubAccount, result.login?.message ?? "");
+    } catch (error) {
+      if (epoch !== githubLoginEpoch) return;
+      clearGitHubLogin();
+      agentHub.setGitHubAccount(null, error.message);
+    }
+  }, waitMs);
+}
+agentHub.on("server:github-connect", () => runAction(async () => {
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
+  // Reserve a tab during the local click so delayed start cannot trip popup blocking.
+  const tab = githubLocalAccess && !vscode ? window.open("about:blank", "_blank") : null;
+  if (tab) tab.opener = null;
+  let opened = false;
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("connect-github-account", {});
+    if (epoch !== githubLoginEpoch) return;
+    const url = new URL(result.login.authorizationUrl);
+    if (url.origin !== "https://github.com" || url.pathname !== "/login/oauth/authorize" || url.username || url.password) {
+      throw new Error("Сервис вернул неверный адрес входа GitHub");
+    }
+    agentHub.setGitHubAccount(result?.githubAccount);
+    githubLogin = result.login;
+    agentHub.setGitHubLogin(githubLogin);
+    pollGitHubLogin(epoch, result.login.waitMs);
+    if (tab && !tab.closed) { tab.location.replace(url.href); opened = true; }
+    if (vscode) await openProviderLoginPage(url.href).catch(() => {
+      if (epoch === githubLoginEpoch) agentHub.toast("Открой GitHub по ссылке рядом с кнопкой отмены");
+    });
+  } catch (error) {
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message);
+  } finally { if (tab && !opened) tab.close(); }
+}));
+agentHub.on("server:github-cancel", () => runAction(async () => {
+  const previous = githubLogin;
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("cancel-github-account-login", { attemptId: previous?.attemptId });
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(result?.githubAccount);
+  } catch (error) { if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message); }
+}));
+agentHub.on("server:github-disconnect", () => runAction(async () => {
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("disconnect-github-account", {});
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(result?.githubAccount);
+  } catch (error) {
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message);
+  }
 }));
 agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {
   /* Страница сохраняет всю карточку разом, поэтому принимаем и набор правок,

@@ -47,6 +47,7 @@ import {
   quarantineTaskChecklistEvent,
   taskChecklistProjectionMap,
   taskChecklistRequestOutcome,
+  manualDeliveryReleaseReferenceEvidence,
 } from "./task-checklist-repository.mjs";
 
 const NOTES_COLUMN_ID = "notes";
@@ -1689,6 +1690,10 @@ export class TaskBoardStore {
     });
   }
 
+  manualDeliveryReleaseReference({ taskId, reference }) {
+    return this.#withDatabase(database => manualDeliveryReleaseReferenceEvidence(database, { taskId, reference }));
+  }
+
   updateChecklist({
     id, operation, itemId = null, text = null, completed = null,
     beforeItemId = null, linkedTaskId = null, releaseReference = null, validateReleaseReference = null,
@@ -2494,7 +2499,7 @@ export class TaskBoardStore {
       `).get(String(operationId))) throw new Error("Task claim was durably refused before admission");
       if (readClaimCustodyFence(database, "original", operationId)) throw new TaskClaimContinuationWithdrawnError();
       const reservation = readClaimCustodyFence(database, "task", taskId);
-      if (reservation && (reservation.requestId !== forwardCustodyRequestId
+      if (forwardCustodyRequestId && reservation && (reservation.requestId !== forwardCustodyRequestId
           || reservation.successorClaimRequestId !== operationId)) throw new TaskClaimCustodyRejectedError("Task is reserved by a forward custody fence");
       if (forwardCustodyRequestId) {
         const raw = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(forwardCustodyRequestId);
@@ -2547,15 +2552,18 @@ export class TaskBoardStore {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `).run(taskId, ...identity, kind, baselineJson, timestamp);
       assertTaskChecklistWorkspaceTransitionAllowed(database, taskId, String(workspaceId));
-      // A new fenced binding advances CAS even for the same assigned Stream.
-      // The ordinary revision trigger skips an explicitly advanced revision.
+      // An ordinary binding may take over before the declared successor. Advance
+      // its existing CAS once so that the old successor cannot assign later,
+      // even if the active Stream and other Task fields are unchanged.
+      const advanceRevision = forwardCustodyRequestId
+        || (reservation && Number(current.row_revision) === reservation.taskRevision);
       database.prepare(`
         UPDATE hub_board_tasks SET bucket = 'workspace', status = 'started', workflow_status = CASE WHEN workflow_status IN ('testing', 'awaiting_implementation', 'blocked') THEN workflow_status ELSE 'in_progress' END,
           workspace_id = ?, stream_id = ?, placement_source = 'manual',
           started_at_ms = COALESCE(started_at_ms, ?), completed_at_ms = NULL, updated_at_ms = ?,
           row_revision = row_revision + ?
         WHERE id = ?
-      `).run(String(workspaceId), String(streamId), timestamp, timestamp, forwardCustodyRequestId ? 1 : 0, taskId);
+      `).run(String(workspaceId), String(streamId), timestamp, timestamp, advanceRevision ? 1 : 0, taskId);
       const result = this.#taskWithRelease(
         database,
         database.prepare("SELECT * FROM hub_board_tasks WHERE id = ?").get(taskId),
@@ -3655,7 +3663,19 @@ export class TaskBoardStore {
     });
   }
 
-  finalizeCleanupTransition(operationId, { deleteTask = false, receiptEvidence = null, preserveCompletedTask = false } = {}) {
+  recordArchivePreview(taskId, operationId, result, evidence) {
+    return this.#withDatabase(database => {
+      const recorded = database.prepare(`
+        INSERT INTO hub_task_lifecycle_outcomes (operation_id, task_id, kind, result_json, completed_at_ms)
+        SELECT ?, id, 'complete', ?, ? FROM hub_board_tasks WHERE id = ? AND row_revision = ?
+      `).run(operationId, JSON.stringify({ result, evidence }), this.now(), taskId, result.task.revision);
+      if (!Number(recorded.changes)) throw new Error("Task changed while archiving preview");
+    });
+  }
+
+  finalizeCleanupTransition(operationId, {
+    deleteTask = false, receiptEvidence = null, preserveCompletedTask = false, archiveConfirmation = null,
+  } = {}) {
     const operation = String(operationId ?? "").trim();
     return this.#withDatabase((database) => {
       database.exec("BEGIN IMMEDIATE");
@@ -3680,12 +3700,18 @@ export class TaskBoardStore {
           database.prepare("DELETE FROM hub_board_tasks WHERE id = ? AND row_revision = ?")
             .run(transition.task_id, transition.expected_task_revision);
         } else {
-          const changed = preserveCompletedTask && current.status === "done" ? { changes: 1 } : database.prepare(`
+          const evidence = JSON.parse(transition.evidence_json ?? "{}");
+          if (archiveConfirmation && (transition.kind !== "complete" || evidence.archive !== true
+              || archiveConfirmation.task?.id !== transition.task_id
+              || archiveConfirmation.task?.revision !== Number(transition.expected_task_revision))) {
+            throw new Error("Task archive confirmation does not match the admitted cleanup");
+          }
+          const changed = archiveConfirmation || (preserveCompletedTask && current.status === "done") ? { changes: 1 } : database.prepare(`
             UPDATE hub_board_tasks SET status = 'done', completed_at_ms = ?, updated_at_ms = ?
             WHERE id = ? AND row_revision = ?
           `).run(this.now(), this.now(), transition.task_id, transition.expected_task_revision);
           if (!Number(changed.changes)) throw new Error("Task complete CAS failed");
-          result = this.#taskWithRelease(database, this.#taskRow(database, transition.task_id));
+          result = archiveConfirmation ?? this.#taskWithRelease(database, this.#taskRow(database, transition.task_id));
           database.prepare(`
             INSERT OR REPLACE INTO hub_task_lifecycle_outcomes (
               operation_id, task_id, kind, result_json, completed_at_ms

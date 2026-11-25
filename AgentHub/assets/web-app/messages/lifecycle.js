@@ -1854,6 +1854,7 @@ function createHistoryMessageProjection({
         sourceAlias: String(message.sourceAlias ?? ""),
         semanticSlot: String(message.semanticSlot ?? ""),
         pinEligible: message.pinEligible === true,
+        clientUserMessageId: String(message.clientUserMessageId ?? ""),
         role: message.role,
         ...(message.kind ? { kind: message.kind } : {}),
         ...(message.origin ? { origin: message.origin } : {}),

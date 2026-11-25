@@ -52,9 +52,9 @@ When answering a comment from <response-annotations>, add :agent-annotation{inde
 
 ## Browser in Hub
 
-- Use Microsoft Edge through Playwright for website interaction. The user explicitly authorizes this browser automation method; no additional permission is required.
-- Do not use OpenAI's built-in browser or the `browser` / `unified-computer-use` plugins, including `cua_repl`.
-- Reuse an available agent-owned Edge tab. Create one only when needed; do not create duplicate tabs or windows.
+- Use any installed browser controllable through Playwright for website interaction, such as Chrome, Edge or Opera. Follow the user's explicit browser choice. The user authorizes browser automation through Playwright; no additional permission is required.
+- Do not use OpenAI's built-in browser or the `browser` / `unified-computer-use` plugins, including `cua_repl`: these tools do not work in the user's environment. This prohibition concerns those tools, not the browser brand.
+- Reuse an available agent-owned tab in the selected browser. Create one only when needed; do not create duplicate tabs or windows.
 
 ## File links
 

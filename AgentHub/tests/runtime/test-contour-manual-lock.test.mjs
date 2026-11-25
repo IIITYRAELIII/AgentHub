@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { ManagedRunLifecycleService } from "../../src/application/managed-run-lifecycle-service.mjs";
 import { persistedLocalExecutionIdentity } from "../../src/domain/task-runs.mjs";
+import { createOwnerRuntimeLifecycle } from "../helpers/owner-runtime-lifecycle.fixture.mjs";
 import { ProviderRunTerminalStore } from "../../src/infrastructure/persistence/provider-run-terminal-store.mjs";
 import {
   ClaudeCompletionService,
@@ -38,51 +38,33 @@ const OWNER_TURN = Object.freeze({
   turnId: "turn-manual-test",
 });
 
-async function createOwnerLifecycle(dataDir, identity = OWNER_TURN) {
-  await mkdir(dataDir, { recursive: true });
-  const database = new DatabaseSync(path.join(dataDir, "runtime.sqlite"));
-  try {
-    database.exec(`
-      CREATE TABLE runtime_state (
-        key TEXT PRIMARY KEY,
-        value_json TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      ) WITHOUT ROWID;
-      CREATE TABLE provider_turn_terminals (
-        provider TEXT NOT NULL,
-        thread_id TEXT NOT NULL,
-        turn_id TEXT NOT NULL,
-        status TEXT NOT NULL,
-        committed_at TEXT NOT NULL,
-        PRIMARY KEY (provider, thread_id, turn_id)
-      ) WITHOUT ROWID;
-    `);
-    database.prepare("INSERT INTO runtime_state VALUES ('main', ?, ?)").run(JSON.stringify({
-      activeRuns: [{ ...identity, status: "running" }],
-    }), new Date().toISOString());
-  } finally {
-    database.close();
-  }
+const createOwnerLifecycle = (dataDir, identity = OWNER_TURN) => createOwnerRuntimeLifecycle(dataDir, identity);
+
+const helperDiagnostics = new WeakMap();
+
+function observeHelper(child) {
+  const diagnostic = { pid: child.pid ?? null, lastStage: "spawned", stderr: "", closed: false };
+  diagnostic.close = new Promise(resolve => child.once("close", (code, signal) => {
+    Object.assign(diagnostic, { closed: true, code, signal });
+    resolve();
+  }));
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", text => { diagnostic.stderr = (diagnostic.stderr + text).slice(-8192); });
+  child.on("message", message => {
+    if (["acquired", "released", "failed"].includes(message?.type)) diagnostic.lastStage = message.type;
+  });
+  child.once("error", error => { diagnostic.spawnError = error.message; });
+  helperDiagnostics.set(child, diagnostic);
+  return child;
 }
 
-function removeActiveOwnerLifecycle(dataDir) {
-  const database = new DatabaseSync(path.join(dataDir, "runtime.sqlite"));
-  try {
-    database.prepare("UPDATE runtime_state SET value_json = ?, updated_at = ? WHERE key = 'main'")
-      .run(JSON.stringify({ activeRuns: [] }), new Date().toISOString());
-  } finally {
-    database.close();
-  }
-}
-
-function recordTerminalOwnerLifecycle(dataDir, identity = OWNER_TURN, status = "aborted") {
-  const database = new DatabaseSync(path.join(dataDir, "runtime.sqlite"));
-  try {
-    database.prepare("INSERT INTO provider_turn_terminals VALUES (?, ?, ?, ?, ?)")
-      .run(identity.provider, identity.threadId, identity.turnId, status, new Date().toISOString());
-  } finally {
-    database.close();
-  }
+function helperFailure(child, type, code, signal) {
+  const diagnostic = helperDiagnostics.get(child);
+  return new Error(`Manual lock fixture closed before ${type}: ${code}; ` + JSON.stringify({
+    pid: diagnostic?.pid ?? child.pid ?? null, waitingFor: type,
+    lastStage: diagnostic?.lastStage ?? "unknown", signal,
+    spawnError: diagnostic?.spawnError ?? null, stderr: diagnostic?.stderr ?? "",
+  }));
 }
 
 function ownerArguments(dataDir, identity = OWNER_TURN) {
@@ -95,6 +77,8 @@ function ownerArguments(dataDir, identity = OWNER_TURN) {
 }
 
 function waitForMessage(child, type, timeoutMs = 10_000) {
+  const diagnostic = helperDiagnostics.get(child);
+  if (diagnostic?.closed) return Promise.reject(helperFailure(child, type, diagnostic.code, diagnostic.signal));
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup();
@@ -106,22 +90,22 @@ function waitForMessage(child, type, timeoutMs = 10_000) {
       cleanup();
       resolve(message);
     };
-    const exit = (code) => {
+    const close = (code, signal) => {
       cleanup();
-      reject(new Error(`Manual lock fixture exited before ${type}: ${code}`));
+      reject(helperFailure(child, type, code, signal));
     };
     const cleanup = () => {
       clearTimeout(timer);
       child.off("message", receive);
-      child.off("exit", exit);
+      child.off("close", close);
     };
     child.on("message", receive);
-    child.on("exit", exit);
+    child.on("close", close);
   });
 }
 
 function spawnHolder(root, owner, requestId, ownerRuntimeDataDir, expected = EXPECTED, identity = OWNER_TURN) {
-  return spawn(process.execPath, [
+  return observeHelper(spawn(process.execPath, [
     fixture,
     root,
     owner,
@@ -136,20 +120,34 @@ function spawnHolder(root, owner, requestId, ownerRuntimeDataDir, expected = EXP
   ], {
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     windowsHide: true,
-  });
+  }));
 }
 
-async function disposeRoot(root) {
+async function disposeRoot(root, ownerLifecycle) {
+  await ownerLifecycle?.close();
   await rm(root, { recursive: true, force: true });
   await rm(`${root}-operation.lock`, { recursive: true, force: true });
 }
 
 async function stopChild(child) {
-  if (child.exitCode != null) return;
-  const exit = once(child, "exit");
-  child.kill();
-  await exit;
+  if (child.exitCode == null && child.signalCode == null) child.kill();
+  await helperDiagnostics.get(child)?.close;
 }
+
+test("failed manual helper reports its drained stderr and last observed stage", async (t) => {
+  const child = observeHelper(spawn(process.execPath, ["-e",
+    'process.stderr.write("synthetic helper startup failure", () => process.exit(17))',
+  ], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }));
+  t.after(() => stopChild(child));
+  await assert.rejects(waitForMessage(child, "acquired"), error => {
+    assert.match(error.message, /closed before acquired: 17/u);
+    assert.match(error.message, /synthetic helper startup failure/u);
+    assert.match(error.message, /"lastStage":"spawned"/u);
+    assert.match(error.message, new RegExp(`"pid":${child.pid}`, "u"));
+    return true;
+  });
+  assert.equal(helperDiagnostics.get(child).closed, true, "all helper output has closed before failure is reported");
+});
 
 function terminalLifecycle(run, store) {
   let active = true;
@@ -299,13 +297,13 @@ test("manual hold blocks refresh stop and existing verify until exact release", 
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-manual-contour-operations-"));
   const sourceRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-manual-contour-source-"));
   const ownerRuntimeDataDir = path.join(root, "owner-runtime-data");
-  await createOwnerLifecycle(ownerRuntimeDataDir);
+  const ownerLifecycle = await createOwnerLifecycle(ownerRuntimeDataDir);
   const child = spawnHolder(root, "S2", "manual-operations-1", ownerRuntimeDataDir);
   let operationResults = Promise.resolve([]);
   t.after(async () => {
     await stopChild(child);
     await operationResults;
-    await Promise.all([disposeRoot(root), rm(sourceRoot, { recursive: true, force: true })]);
+    await Promise.all([disposeRoot(root, ownerLifecycle), rm(sourceRoot, { recursive: true, force: true })]);
   });
   const acquired = (await waitForMessage(child, "acquired")).acquired;
   assert.equal((await readManualTestContourLockStatus({ root })).status, "held");
@@ -359,12 +357,12 @@ test("manual hold blocks refresh stop and existing verify until exact release", 
 test("manual acquisition is idempotent and rejects competing or stale unlock identity", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-manual-contour-identity-"));
   const ownerRuntimeDataDir = path.join(root, "owner-runtime-data");
-  await createOwnerLifecycle(ownerRuntimeDataDir);
+  const ownerLifecycle = await createOwnerLifecycle(ownerRuntimeDataDir);
   const first = spawnHolder(root, "S2", "manual-identity-1", ownerRuntimeDataDir);
   const children = [first];
   t.after(async () => {
     await Promise.all(children.map((child) => stopChild(child)));
-    await disposeRoot(root);
+    await disposeRoot(root, ownerLifecycle);
   });
   const acquired = (await waitForMessage(first, "acquired")).acquired;
   const repeated = await holdManualTestContourLock({
@@ -447,9 +445,12 @@ test("manual acquisition is idempotent and rejects competing or stale unlock ide
 test("confirmed owner death and cancellation release the canonical contour lock", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-manual-contour-death-"));
   const ownerRuntimeDataDir = path.join(root, "owner-runtime-data");
-  await createOwnerLifecycle(ownerRuntimeDataDir);
+  const ownerLifecycle = await createOwnerLifecycle(ownerRuntimeDataDir);
   const dead = spawnHolder(root, "S2", "manual-death-1", ownerRuntimeDataDir);
-  t.after(() => disposeRoot(root));
+  t.after(async () => {
+    await stopChild(dead);
+    await disposeRoot(root, ownerLifecycle);
+  });
   const acquired = (await waitForMessage(dead, "acquired")).acquired;
   const deadExit = once(dead, "exit");
   dead.kill();
@@ -490,7 +491,7 @@ test("manual locks for different contour roots do not block each other", async (
   const secondRoot = await mkdtemp(path.join(os.tmpdir(), "agent-hub-manual-contour-root-b-"));
   const firstOwnerRuntimeDataDir = path.join(firstRoot, "owner-runtime-data");
   const secondOwnerRuntimeDataDir = path.join(secondRoot, "owner-runtime-data");
-  await Promise.all([
+  const [firstLifecycle, secondLifecycle] = await Promise.all([
     createOwnerLifecycle(firstOwnerRuntimeDataDir),
     createOwnerLifecycle(secondOwnerRuntimeDataDir),
   ]);
@@ -498,7 +499,7 @@ test("manual locks for different contour roots do not block each other", async (
   const second = spawnHolder(secondRoot, "S3", "manual-root-b", secondOwnerRuntimeDataDir);
   t.after(async () => {
     await Promise.all([stopChild(first), stopChild(second)]);
-    await Promise.all([disposeRoot(firstRoot), disposeRoot(secondRoot)]);
+    await Promise.all([disposeRoot(firstRoot, firstLifecycle), disposeRoot(secondRoot, secondLifecycle)]);
   });
   const [firstAcquired, secondAcquired] = await Promise.all([
     waitForMessage(first, "acquired").then((message) => message.acquired),
@@ -531,8 +532,8 @@ test("manual locks for different contour roots do not block each other", async (
 test("manual acquisition rejects a version that changed before the lock was acquired", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-manual-contour-version-race-"));
   const ownerRuntimeDataDir = path.join(root, "owner-runtime-data");
-  await createOwnerLifecycle(ownerRuntimeDataDir);
-  t.after(() => disposeRoot(root));
+  const ownerLifecycle = await createOwnerLifecycle(ownerRuntimeDataDir);
+  t.after(() => disposeRoot(root, ownerLifecycle));
   await assert.rejects(holdManualTestContourLock({
     root,
     owner: "S2",
@@ -559,9 +560,9 @@ test("manual acquisition rejects a version that changed before the lock was acqu
 test("manual acquisition requires the exact owner turn to be active", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-manual-contour-owner-inactive-"));
   const ownerRuntimeDataDir = path.join(root, "owner-runtime-data");
-  await createOwnerLifecycle(ownerRuntimeDataDir);
-  removeActiveOwnerLifecycle(ownerRuntimeDataDir);
-  t.after(() => disposeRoot(root));
+  const ownerLifecycle = await createOwnerLifecycle(ownerRuntimeDataDir);
+  await ownerLifecycle.removeActive();
+  t.after(() => disposeRoot(root, ownerLifecycle));
   await assert.rejects(holdManualTestContourLock({
     root,
     owner: "S2",
@@ -578,20 +579,20 @@ test("manual acquisition requires the exact owner turn to be active", async (t) 
 test("terminal owner turn releases a surviving foreground helper without timeout stealing", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-manual-contour-owner-terminal-"));
   const ownerRuntimeDataDir = path.join(root, "owner-runtime-data");
-  await createOwnerLifecycle(ownerRuntimeDataDir);
+  const ownerLifecycle = await createOwnerLifecycle(ownerRuntimeDataDir);
   const child = spawnHolder(root, "S2", "manual-owner-terminal", ownerRuntimeDataDir);
   t.after(async () => {
     await stopChild(child);
-    await disposeRoot(root);
+    await disposeRoot(root, ownerLifecycle);
   });
   await waitForMessage(child, "acquired");
   const released = waitForMessage(child, "released");
   const childExit = once(child, "exit");
-  removeActiveOwnerLifecycle(ownerRuntimeDataDir);
+  await ownerLifecycle.removeActive();
   await new Promise((resolve) => setTimeout(resolve, 650));
   assert.equal(child.exitCode, null);
   assert.equal((await readManualTestContourLockStatus({ root })).status, "held");
-  recordTerminalOwnerLifecycle(ownerRuntimeDataDir, OWNER_TURN, "aborted");
+  await ownerLifecycle.recordTerminal("aborted");
   const terminal = (await released).result;
   await childExit;
   assert.equal(terminal.status, "released");
@@ -602,9 +603,9 @@ test("terminal owner turn releases a surviving foreground helper without timeout
 test("real Codex and Claude terminal paths release a surviving manual holder", async (t) => {
   const resources = [];
   t.after(async () => {
-    for (const { child, root } of resources) {
+    for (const { child, root, ownerLifecycle } of resources) {
       await stopChild(child);
-      await disposeRoot(root);
+      await disposeRoot(root, ownerLifecycle);
     }
   });
   for (const provider of ["codex", "claude"]) {
@@ -616,7 +617,7 @@ test("real Codex and Claude terminal paths release a surviving manual holder", a
         threadId: `${provider}-${expectedStatus}-thread`,
         turnId: `${provider}-${expectedStatus}-turn`,
       };
-      await createOwnerLifecycle(ownerRuntimeDataDir, identity);
+      const ownerLifecycle = await createOwnerLifecycle(ownerRuntimeDataDir, identity);
       const store = new ProviderRunTerminalStore({ dataDir: ownerRuntimeDataDir });
       const child = spawnHolder(
         root,
@@ -626,7 +627,7 @@ test("real Codex and Claude terminal paths release a surviving manual holder", a
         EXPECTED,
         identity,
       );
-      resources.push({ child, root });
+      resources.push({ child, root, ownerLifecycle });
       await waitForMessage(child, "acquired");
       const released = waitForMessage(child, "released");
       const childExit = once(child, "exit");
@@ -649,9 +650,9 @@ test("real Codex and Claude terminal paths release a surviving manual holder", a
 test("recovery read failure stays unknown until exact Codex or Claude terminal evidence", async (t) => {
   const resources = [];
   t.after(async () => {
-    for (const { child, root } of resources) {
+    for (const { child, root, ownerLifecycle } of resources) {
       await stopChild(child);
-      await disposeRoot(root);
+      await disposeRoot(root, ownerLifecycle);
     }
   });
   for (const provider of ["codex", "claude"]) {
@@ -663,7 +664,7 @@ test("recovery read failure stays unknown until exact Codex or Claude terminal e
         threadId: `${provider}-${expectedStatus}-recovery-thread`,
         turnId: `${provider}-${expectedStatus}-recovery-turn`,
       };
-      await createOwnerLifecycle(ownerRuntimeDataDir, identity);
+      const ownerLifecycle = await createOwnerLifecycle(ownerRuntimeDataDir, identity);
       const store = new ProviderRunTerminalStore({ dataDir: ownerRuntimeDataDir });
       const child = spawnHolder(
         root,
@@ -673,7 +674,7 @@ test("recovery read failure stays unknown until exact Codex or Claude terminal e
         EXPECTED,
         identity,
       );
-      resources.push({ child, root });
+      resources.push({ child, root, ownerLifecycle });
       await waitForMessage(child, "acquired");
       const run = {
         ...identity,

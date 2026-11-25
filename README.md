@@ -5,8 +5,6 @@ history, usage and optional browser, VS Code, Telegram and Android clients.
 
 **99.99% vibe-coded (Codex)**
 
-That is the author's joke, not a measurement of correctness or reliability.
-
 Agent Hub is under active development. Recovery, migration and release checks
 have explicit limits; a passing unit test does not prove production latency,
 provider parity or physical-device behavior. Read the
