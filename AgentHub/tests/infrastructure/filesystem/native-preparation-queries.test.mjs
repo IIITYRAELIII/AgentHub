@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { assertNativeTaskHistories } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
+import { interstreamAuditContentHash } from "../../../src/domain/interstream-message.mjs";
 import { readNativeUpstreamAdoptions } from "../../../src/infrastructure/filesystem/native-upstream-adoption.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
@@ -101,6 +102,49 @@ test("history uses one metadata diff and retains equal-base object validation an
   const missing = "a".repeat(40);
   await assert.rejects(assertNativeTaskHistories({ git: f.git, baseCommit: missing,
     tasks: [{ taskId: "missing", baseCommit: missing, resultCommit: missing }] }), /main-based result/u);
+});
+
+test("native absorption accepts only the exact published parent of the returned source Test", async t => {
+  const f = await fixture(t);
+  const tree = await f.git(["rev-parse", `${f.result}^{tree}`]);
+  const commit = (name, ...parents) => f.git(["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "commit-tree", tree, ...parents.flatMap(parent => ["-p", parent]), "-m", name]);
+  const published = await commit("published base", f.base);
+  const devOnly = await commit("dev only", published);
+  const foreign = await commit("unselected side", f.base);
+  const survivor = await commit("survivor", published);
+  const forward = await commit("returned source with published parent", f.result, published);
+  const devMerge = await commit("returned source with dev parent", f.result, devOnly);
+  const foreignMerge = await commit("returned source with foreign parent", f.result, foreign);
+  const octopus = await commit("returned source with extra parent", f.result, published, foreign);
+  const historyAuthority = { bases: [devOnly, foreign], metadataBases: [published], publishedHistoryBase: published };
+  const requestId = "returned-source-handoff";
+  const origin = { workspaceId: "workspace", streamId: "stream", provider: "codex", sourceThreadId: "thread", requestId };
+  const check = async (resultCommit, priorCommit = resultCommit, authority = historyAuthority, baseCommit = published) => {
+    const sourceCommit = await commit("saved source", resultCommit);
+    const absorptionCommit = await commit("survivor absorbs source", survivor, sourceCommit);
+    const text = JSON.stringify({ version: 1, kind: "task-absorption-handoff-v1", workspaceId: origin.workspaceId,
+      sourceTaskId: "source", sourceTaskRevision: 3, survivorTaskId: "survivor", baseCommit: f.base,
+      sourceCommit, sourceTree: tree, survivorParentCommit: survivor, absorptionCommit, saved: true, stopped: true });
+    const priorResults = priorCommit ? [{ taskId: "source", projectRoot: f.root, resultCommit: priorCommit,
+      testOperationId: "test", returnOperationId: "return", testRevision: 2, returnRevision: 3,
+      testOutcomeHash: "b".repeat(64), returnOutcomeHash: "c".repeat(64) }] : undefined;
+    const nativeAbsorptionInput = { requestId, text, origin, contentHash: interstreamAuditContentHash(text, { origin }),
+      createdAtMs: 1, sourceTaskNumber: "HUB-source", sourceDescriptionSha256: "a".repeat(64), priorResults };
+    return assertNativeTaskHistories({ git: f.git, baseCommit, historyAuthority: authority, tasks: [{
+      taskId: "survivor", baseCommit: f.base, resultCommit: absorptionCommit, nativeAbsorptionInput,
+    }] });
+  };
+  await check(forward);
+  await check(forward, forward, historyAuthority, f.base);
+  await assert.rejects(check(forward, null), /explicit historical migration/u);
+  await assert.rejects(check(forward, f.result), /explicit historical migration/u);
+  await assert.rejects(check(forward, foreign), /prior result is not retained/u);
+  await assert.rejects(check(forward, forward, { bases: [published, devOnly], metadataBases: [published] }),
+    /explicit historical migration/u);
+  for (const refused of [devMerge, foreignMerge, octopus]) {
+    await assert.rejects(check(refused), /explicit historical migration/u);
+  }
 });
 
 test("three selected results share only immutable metadata reads inside each fresh proof", async t => {

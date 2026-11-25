@@ -742,7 +742,12 @@ the exact JSON body of a successful authenticated source-executor
 `version=1`, `kind=task-absorption-handoff-v1`, `workspaceId`,
 `sourceTaskId`, `sourceTaskRevision`, `survivorTaskId`, `baseCommit`,
 `sourceCommit`, `sourceTree`, `survivorParentCommit`, `absorptionCommit`,
-`saved=true`, `stopped=true`. Unknown fields are refused. The receipt's
+`saved=true`, `stopped=true`. An optional `preservedSourceHead` pins a
+different current source branch HEAD when `sourceCommit` is the saved
+first-parent cut to absorb. It requires an exact retained Test and normal
+return for the source. Test and combined closure recheck that same clean
+branch and use only the selected commit in their composition. Unknown fields
+are refused. The receipt's
 original ID includes any actual `mcp:` prefix; no inferred/stripped identity
 is accepted. Its durable author/origin/content hash is verified against the
 exact body, current Task/transfer/source state and bounded ordered Git histories.

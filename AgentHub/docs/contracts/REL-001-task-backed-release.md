@@ -246,6 +246,13 @@ multiple-base/publication policy from canceled work is included.
 
 Task composition includes only the exact selected results and their supported
 dependency/absorption authority. Foreign/unselected merge sides remain refused.
+Native absorption may retain a two-parent source merge when it is the exact
+returned source Test and its second parent is the exact published commit
+verified by the owning operation. When the exact handoff binds a preserved
+source HEAD, the same Git owner verifies the selected source on that HEAD's
+first-parent history at Test and combined closure. Late commits remain in
+the source branch and worktree. See ADR-HUB-448 on the published parent of a
+returned Test.
 Every actual ordered merge parent, automatic tree, resolution binding and
 selected result is checked. Normal issued resolution continuation stays within
 the original native owner namespace and finite lock ownership; unresolved

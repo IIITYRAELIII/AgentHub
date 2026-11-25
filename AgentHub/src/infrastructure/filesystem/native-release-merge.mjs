@@ -266,9 +266,15 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
           || String(await git(["rev-parse", `${d.sourceCommit}^{tree}`])) !== d.sourceTree) {
         throw failure(`Task ${task.taskId} absorbed history differs from its accepted durable proof`);
       }
+      const published = historyAuthority?.publishedHistoryBase;
+      const returnedSource = binding.priorResults?.find(prior => prior.taskId === d.sourceTaskId);
+      const publishedBoundary = published && returnedSource && published !== baseCommit ? [`^${published}`] : [];
       const sourceRows = String(await git(["rev-list", "--first-parent", "--parents",
-        d.sourceCommit, `^${baseCommit}`])).split(/\r?\n/u).filter(Boolean).map(row => row.split(" "));
-      if (sourceRows.some(row => row.length !== 2)
+        d.sourceCommit, `^${baseCommit}`, ...publishedBoundary])).split(/\r?\n/u).filter(Boolean).map(row => row.split(" "));
+      // rev-list still reports parents on the boundary row. Only the source's
+      // authenticated returned Test may introduce the exact published parent.
+      if (sourceRows.some(row => row.length !== 2
+          && !(row.length === 3 && row[0] === returnedSource?.resultCommit && row[2] === published))
           || await maybe(git, ["merge-base", "--is-ancestor", d.baseCommit, d.sourceCommit]) === null) {
         throw failure(`Task ${task.taskId} absorbed source requires explicit historical migration`);
       }
