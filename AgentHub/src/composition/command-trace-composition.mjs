@@ -10,7 +10,7 @@ import { createRuntimePerformanceSampler } from "../application/runtime-performa
 // A failure before the worker exists still belongs to the ordinary startup log.
 export async function measureStartupBeforeTrace(stage, operation, {
   clock = Date.now, monotonicClock = () => performance.now(), logger = console,
-  providePhaseRecorder = false,
+  providePhaseRecorder = false, startupTraceId = null,
 } = {}) {
   const operationSpanId = randomUUID();
   const startedAtMs = clock();
@@ -19,7 +19,7 @@ export async function measureStartupBeforeTrace(stage, operation, {
     try {
       const logged = logger.info("[startup]", JSON.stringify({
         pid: process.pid, releaseId: process.env.AGENT_HUB_RELEASE_ID ?? "",
-        operationSpanId, stage, outcome,
+        operationSpanId, stage, outcome, ...(startupTraceId ? { startupTraceId } : {}),
         durationMs: Math.max(0, monotonicClock() - startedMonotonicMs),
         ...(error ? { error: String(error.message ?? error) } : {}),
       }));
@@ -47,7 +47,7 @@ export async function measureStartupBeforeTrace(stage, operation, {
       phaseMarkers.push(marker);
       const logged = logger.info("[startup]", JSON.stringify({
         pid: process.pid, releaseId: process.env.AGENT_HUB_RELEASE_ID ?? "",
-        operationSpanId, stage, ...marker,
+        operationSpanId, stage, ...(startupTraceId ? { startupTraceId } : {}), ...marker,
       }));
       logged?.catch?.(() => {});
     } catch {}
@@ -63,8 +63,9 @@ export async function measureStartupBeforeTrace(stage, operation, {
   checkpoint("succeeded");
   const observedAtMs = clock();
   const monotonicDurationMs = Math.max(0, monotonicClock() - startedMonotonicMs);
-  const common = { commandId: `startup:${operationSpanId}`, stage: `startup-${stage}`, transport: "server-runtime",
+  const common = { commandId: `startup:${startupTraceId ?? operationSpanId}`, stage: `startup-${stage}`, transport: "server-runtime",
     metadata: { operationSpanId, startedAtMs, operationId: stage, bufferedUntilTraceReady: true,
+      ...(startupTraceId ? { startupTraceId } : {}),
       ...(phaseMarkers.length ? { phaseMarkers } : {}) } };
   let recorded = false;
   return { value, record(trace) {

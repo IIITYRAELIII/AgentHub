@@ -8,7 +8,7 @@ const LOCAL_ASSET_PATH = /\.(?:avif|css|gif|ico|jpe?g|js|mjs|png|svg|ttf|webp|wo
 function localAssetReferences(html) {
   return [...new Set([...String(html).matchAll(LOCAL_ASSET_REFERENCE)]
     .map((match) => match[1])
-    .filter((reference) => LOCAL_ASSET_PATH.test(reference)))];
+    .filter((reference) => LOCAL_ASSET_PATH.test(reference) || reference === "/visualization-frame.html"))];
 }
 
 function localAssetPathname(reference) {

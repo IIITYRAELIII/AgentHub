@@ -185,7 +185,7 @@ export class RunCoordinator {
       state: external.state,
       waitReason: external.state === "active"
         ? "provider-thread-active"
-        : external.state === "unknown" ? "provider-temporarily-unavailable" : null,
+        : external.state === "unknown" ? external.waitReason ?? "provider-temporarily-unavailable" : null,
       run: null,
       executionOwner: external.executionOwner ?? null,
     };
