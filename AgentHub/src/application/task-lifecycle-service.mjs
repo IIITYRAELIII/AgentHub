@@ -1093,6 +1093,21 @@ export class TaskLifecycleService {
                   lease: repositoryLease,
                   operationId,
                   nativeAwaitRecovery,
+                  admitAwaitPromotion: nativeAwaitRecovery?.preparedPromotion ? async () => {
+                    await this.#assertOwned(repositoryLease);
+                    const { manifestHash, head, tree } = nativeAwaitRecovery.preparedPromotion;
+                    return this.#mutation(() => this.taskBoard.admitInterruptedAwaitPromotion({
+                      operationId, taskId: task.id, taskRevision: task.revision, workspaceId: task.workspaceId,
+                      argumentsHash: nativeAwaitRecovery.argumentsHash, manifestHash, head, tree,
+                    }), operationId);
+                  } : null,
+                  validateAwaitOriginal: nativeAwaitRecovery?.preparedPromotion ? async () => {
+                    const { receipt } = this.#readPendingNativeAwait(task.id, operationId);
+                    if (receipt.argumentsHash !== nativeAwaitRecovery.argumentsHash
+                        || receipt.taskExecution?.cancellation) throw new Error("Original Await receipt or cancellation changed");
+                    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(task.id, { lease: repositoryLease });
+                    await this.#assertOwned(repositoryLease);
+                  } : null,
 
                   commitPrepared: async (prepared) => {
                     if (prepared.task.resultCommit !== acceptedReference.resultCommit) {
@@ -1326,8 +1341,7 @@ export class TaskLifecycleService {
     return Boolean(await this.taskGitWorkspaces.pendingNativeIntegrationOwned({ taskId, operationId, projectRoot, lease }));
   }
 
-  async #pendingNativeAwaitRecovery({ taskId, operationId, projectRoot, lease }) {
-    await this.#assertOwned(lease);
+  #readPendingNativeAwait(taskId, operationId) {
     const task = this.#task(taskId), transition = this.taskBoard.lifecycleTransition(operationId);
     const receipt = this.workspaceCatalog.mcpOperation(operationId);
     if (transition?.taskId !== task.id || transition.operationId !== operationId
@@ -1339,6 +1353,27 @@ export class TaskLifecycleService {
         || receipt.toolName !== "hub_task_status_update" || receipt.workspaceId !== task.workspaceId) {
       throw new Error("Original native Await identity or Task state changed");
     }
+    return { task, receipt };
+  }
+
+  async finalizeInterruptedAwait({ taskId, operationId, projectRoot, lease }) {
+    await this.#assertOwned(lease);
+    const task = this.#task(taskId);
+    const outcome = this.taskBoard.lifecycleOutcome(operationId);
+    const original = outcome?.result?.evidence?.nativeAwaitRecovery;
+    const planRevision = outcome?.result?.evidence?.response?.releaseCandidate?.planRevision;
+    if (!original?.preparedPromotion || original.operationId !== operationId || original.taskId !== taskId
+        || original.workspaceId !== task.workspaceId || outcome.taskId !== taskId
+        || task.workflowStatus !== "awaiting_implementation" || task.revision !== outcome.result.task.revision
+        || !planRevision) throw new Error("Interrupted Await committed original changed");
+    await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(taskId, { lease });
+    await this.#assertOwned(lease);
+    return this.releasePreflight.finalizeInterruptedAwait({ projectRoot, original, planRevision });
+  }
+
+  async #pendingNativeAwaitRecovery({ taskId, operationId, projectRoot, lease }) {
+    await this.#assertOwned(lease);
+    const { task, receipt } = this.#readPendingNativeAwait(taskId, operationId);
     await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(task.id, { lease });
     const references = task.gitReferences.filter(reference => samePath(reference.projectRoot, projectRoot));
     if (references.length !== 1) throw new Error("Original native Await requires its unique result");
@@ -1346,7 +1381,9 @@ export class TaskLifecycleService {
       argumentsHash: receipt.argumentsHash, taskRevision: task.revision, resultCommit: references[0].resultCommit };
     const proof = await this.releasePreflight.pendingNativeAwaitRecovery({ workspaceId: task.workspaceId,
       acceptingTask: { id: task.id, revision: task.revision }, projectRoot, lease, original });
-    return { ...original, originMainCommit: proof.original.originMainCommit };
+    return { ...original, originMainCommit: proof.original.originMainCommit,
+      ...(proof.preparedPromotion ? { preparedPromotion: proof.preparedPromotion,
+        interruptedError: String(receipt.error ?? "").slice(0, 4000) } : {}) };
   }
 
   #assertFailedAwaitPredecessor(task, original, projectRoot) {
@@ -1516,7 +1553,7 @@ export class TaskLifecycleService {
         throw new Error("Selected composition original Task lifecycle identity changed");
       }
       const recovery = guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
-        repositoryRoot: projectRoot, guardId, proof, lease,
+        repositoryRoot: projectRoot, guardId, proof, operationId, lease,
       }) : null;
       if (!guardId) await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
       const validateAbsorption = selectedComposition.absorptionInput ? () => {
@@ -1579,7 +1616,7 @@ export class TaskLifecycleService {
         throw new Error("Unknown squash transfer identity or two-Task CAS does not match");
       }
       const recovery = guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
-        repositoryRoot: projectRoot, guardId, proof, lease,
+        repositoryRoot: projectRoot, guardId, proof, operationId, lease,
       }) : null;
       if (!guardId) {
         await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
@@ -1630,7 +1667,7 @@ export class TaskLifecycleService {
       }
       const pending = await this.taskGitWorkspaces.pendingWithdrawal({ projectRoot, taskId, operationId });
       const recovery = pending && guardId ? await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, {
-        repositoryRoot: projectRoot, guardId, proof, lease,
+        repositoryRoot: projectRoot, guardId, proof, operationId, lease,
       }) : null;
       if (pending) {
         await this.taskGitWorkspaces.withdrawResultOwned({
@@ -1650,7 +1687,7 @@ export class TaskLifecycleService {
       }
       const native = await this.taskGitWorkspaces.pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease });
       if (!native) throw new Error("Native Test recovery has no original Git intent");
-      if (guardId) await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, { repositoryRoot: projectRoot, guardId, proof, lease });
+      if (guardId) await this.taskGitWorkspaces.recoverProcessTreeGuard(current.id, { repositoryRoot: projectRoot, guardId, proof, operationId, lease });
       else await this.taskGitWorkspaces.assertNoProcessTreeGuardOwned(current.id, { lease });
       return { result: await this.#updateWorkflowStatusWithLease({ taskId, status: "testing", operationId, projectRoot,
         operationEvidence: transition.evidence, initialNativeTestSource: verifyInitialNativeTest,
@@ -1677,6 +1714,7 @@ export class TaskLifecycleService {
       repositoryRoot: projectRoot,
       guardId,
       proof,
+      operationId,
       lease,
     }) : null;
     const result = await this.#updateWorkflowStatusWithLease({

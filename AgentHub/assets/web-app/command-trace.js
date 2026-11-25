@@ -39,6 +39,9 @@
     : global.AgentHubAndroid ? "android" : "browser";
   const view = () => views.has(global.document?.documentElement?.dataset?.view)
     ? global.document.documentElement.dataset.view : "chat";
+  const retainDiagnostic = (event) => event?.stage === "attachment-upload"
+    || ["ui-control", "ui-render"].includes(event?.stage)
+      && ["startup-health-authenticated", "startup-health-headers", "startup-health-body", "startup-health-read", "startup-health-paint", "startup-first-working-paint"].includes(event?.metadata?.action);
 
   function persistUploadEvents() {
     try {
@@ -72,7 +75,7 @@
     const cutoff = Date.now() - UPLOAD_TRACE_TTL_MS;
     const saved = JSON.parse(global.localStorage?.getItem(UPLOAD_TRACE_KEY) || "[]");
     if (Array.isArray(saved)) for (const event of saved.slice(-MAX_PENDING)) {
-      if (event?.stage === "attachment-upload" && typeof event.traceEventId === "string"
+      if (retainDiagnostic(event) && typeof event.traceEventId === "string"
         && Number.isSafeInteger(event.observedAtMs) && event.observedAtMs >= cutoff
         && event.observedAtMs <= Date.now() + 60_000) {
         retainedUploadEvents.set(event.traceEventId, event);
@@ -101,7 +104,7 @@
     } catch {
       failedBatches += 1;
       retryDelayMs = Math.min(60_000, retryDelayMs * 2);
-      const uploadEvents = events.filter((event) => event.stage === "attachment-upload");
+      const uploadEvents = events.filter(retainDiagnostic);
       droppedCount += events.length - uploadEvents.length;
       pending.unshift(...uploadEvents);
       pruneExpiredPending();
@@ -118,12 +121,12 @@
   function enqueue(event) {
     pruneExpiredPending();
     if (pending.length >= MAX_PENDING) {
-      if (event.stage !== "attachment-upload") { droppedCount += 1; return; }
+      if (!retainDiagnostic(event)) { droppedCount += 1; return; }
       const evicted = pending.shift();
       retainedUploadEvents.delete(evicted.traceEventId);
       droppedCount += 1;
     }
-    if (event.stage === "attachment-upload") {
+    if (retainDiagnostic(event)) {
       event.traceEventId = newId();
       retainedUploadEvents.set(event.traceEventId, event);
       if (retainedUploadEvents.size > MAX_PENDING) retainedUploadEvents.delete(retainedUploadEvents.keys().next().value);
@@ -229,11 +232,15 @@
     } catch (error) { return failed(error); }
   }
 
-  function afterPaint(stage, action, started, commandId, metadata = {}, observe = null, isCurrent = null) {
+  function afterPaint(stage, action, started, commandId, metadata = {}, observe = null, isCurrent = null, onSettled = null) {
     // A hidden WebView cannot paint. Never leave per-event frame callbacks
     // accumulating while it is suspended; the immediate stage remains recorded.
     if (pendingPaints.size >= BATCH_SIZE) { droppedCount += 1; return false; }
-    const finish = begin(stage, action, commandId, started, metadata);
+    const finishSpan = begin(stage, action, commandId, started, metadata);
+    const finish = (outcome, details) => {
+      finishSpan(outcome, details);
+      try { onSettled?.(outcome); } catch { /* One observer cannot interrupt other paint records. */ }
+    };
     if (global.document?.hidden) { finish("cancelled", { failureKind: "hidden" }); return false; }
     const entry = { frame: null, finish };
     pendingPaints.add(entry);
