@@ -12,6 +12,23 @@ The private PKCE verifier and token never enter the page. Cancellation/replaceme
 are never persisted as a client draft, command receipt or shared snapshot. A failed
 request is displayed without reflecting response secrets. See ADR-HUB-254.
 
+## Inline Codex visualizations
+
+A standalone visualization reference in a completed Codex answer occupies its
+position in both current and retained chat. Markdown code keeps the literal
+reference. Ordinary Markdown and HTML file links continue using the existing
+safe message and file renderers. Missing, invalid or unauthorized artifacts
+have a local unavailable state without displaying the machine path.
+
+The addressed history read joins the Stream, Codex Thread, turn, final item and
+exact marker digest. The provider transcript and the configured artifact
+directory authorize the read. Neither the browser nor an arbitrary path in
+message text can select a file. The sandboxed frame accepts artifact script
+execution on an opaque origin, with no Hub API credentials or parent DOM access.
+Its only host integration is a source-checked layout measurement. The
+browser may reload the artifact when its message is reopened.
+See [ADR-HUB-520](../decisions/ADR-HUB-520-inline-codex-visualization.md).
+
 ## Addressed queue receipts and deferred Task presentation
 
 An addressed lookup projects the same result as the recent window. The command
@@ -317,6 +334,13 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   decode share its remaining budget and never restart it. Every unresolved or
   failed image therefore leaves the loading state within that deadline with a
   visible error, and late work cannot replace or dispose a newer generation.
+- In chat, an ordinary click on a recognized local or direct web image link
+  opens the same image viewer. Use the file target or matching projected
+  attachment metadata, never the link caption. File actions remain available
+  from the explicit control or context menu. The browser loads web images
+  as images from their origin. Native decoding limitations, missing files,
+  authorization failures and invalid image responses leave a visible error
+  in the viewer. See [ADR-HUB-519](../decisions/ADR-HUB-519-image-links.md).
 - Current Codex limits expose every available provider window separately. A
   healthy short window cannot hide an exhausted longer window for the same model.
 - Agent response-annotation locators cross either provider boundary as unique
@@ -762,7 +786,17 @@ rendered and cannot stop history refresh or remove a completion overlay.
 Canonical ordering follows durable provider sequence without rewriting user
 chronology. Durable intake owns immutable `submittedAt`, which remains the
 displayed `time` through queued, active and completed projections. Provider
-dispatch owns the separate `startedAt`. Legacy rows without `submittedAt` fall
+dispatch owns the separate `startedAt`. While live and paged projections are
+mixed, ordering across turns uses the exact root's provider start as a lower
+bound. A prior terminal answer precedes the new turn at an equal boundary on
+the same provider Thread. If both turns start and end in one clock tick,
+retain the observed same-Thread terminal sequence as history replaces either
+overlay. Both full snapshots and compact snapshots with exact final identity
+can establish this sequence. The answer body is required to create a new
+snapshot overlay. Two confirmed history positions take precedence. Intake
+times never establish provider execution order.
+Intra-turn placement and displayed timestamps keep
+their original evidence. Legacy rows without `submittedAt` fall
 back to the existing user-message time. Only the root user message may then
 fall back to provider start. A steer never inherits the parent turn's start or
 submission time: its exact receipt supplies intake time, or its own timestamp
@@ -1025,6 +1059,13 @@ the connection owner retains its own diagnostic. An authoritative `ready=false`
 response still opens startup, including a replacement runtime with no stage
 metadata yet. A queued restart request alone does not prove replacement began.
 
+A delayed or failed health read during one startup retains its last confirmed
+stage list, counts and elapsed observation, explicitly labelled stale. It never
+presents the cached stage as fresh progress. One single-flight polling owner
+coalesces timer/event refreshes; restart/page disposal invalidate old requests
+and late responses cannot replace a newer confirmed startup generation. A real
+replacement wait does not inherit the old process's stages. See ADR-0138.
+
 ## Task operation result projection
 
 A durable Task admission is pending, not a successful status/update/cleanup.
@@ -1065,8 +1106,13 @@ command. Other callers receive the ordinary selection snapshot.
 
 Canonical history supplies the complete last request and final response. Existing
 history pages, older-page cursors, retained windows and exact navigation provide
-the rest of the conversation. The same rendered-final and durable read-cursor
-owner clears Ready on both tabs and activity cards. See ADR-HUB-427.
+the rest of the conversation. The cold tab starts with the latest two turns
+from that owner, with the ordinary wider read under the same navigation identity
+if this tail misses the known complete exchange. Selection, identity, exact
+final revision and freshness guards still apply. After the first paint, the
+existing refresh path widens the page while retaining its scroll and cursor.
+The same rendered-final and durable read-cursor owner clears Ready on both
+tabs and activity cards. See ADR-HUB-427 and ADR-HUB-517.
 ## Task attachment and retired Spark actions (ADR-HUB-434)
 
 Attaching a Dashboard Task keeps the visible composer reference, draft,
