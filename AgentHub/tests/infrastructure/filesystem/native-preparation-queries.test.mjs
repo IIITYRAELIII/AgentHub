@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 import { assertNativeTaskHistories, nativeIntegrationRecordFile } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { interstreamAuditContentHash } from "../../../src/domain/interstream-message.mjs";
@@ -14,6 +15,7 @@ import { assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/
 import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash } from "../../../src/domain/release-base-provenance.mjs";
 import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { createContourExternalEffectsPort } from "../../../src/ports/contour-external-effects.mjs";
+import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
 
 const exec = promisify(execFile);
 async function fixture(t, directory = null) {
@@ -118,6 +120,19 @@ test("native absorption accepts only the exact published parent of the returned 
   const foreignMerge = await commit("returned source with foreign parent", f.result, foreign);
   const octopus = await commit("returned source with extra parent", f.result, published, foreign);
   const testDevCommit = await commit("retained source Test", devOnly, forward);
+  const databaseFile = path.join(f.root, "journal.sqlite");
+  new TaskBoardStore({ databaseFile }).close();
+  const journal = new DatabaseSync(databaseFile);
+  const tested = JSON.stringify({ task: { workflowStatus: "testing" },
+    evidence: { resultCommit: forward, devHeadCommit: testDevCommit } });
+  const returned = JSON.stringify({ evidence: { outcome: "returned_for_correction",
+    acceptedResult: { resultCommit: forward } } });
+  const put = journal.prepare(`INSERT INTO hub_task_lifecycle_outcomes
+    (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, 'source', 'workflow', ?, ?)`);
+  put.run("test", tested, 1);
+  put.run("return", returned, 2);
+  journal.close();
+  const hash = value => createHash("sha256").update(value).digest("hex");
   const retained = nativeIntegrationRecordFile(f.root, "source", f.root, "test");
   await mkdir(path.dirname(retained), { recursive: true });
   const record = { version: 1, kind: "native-task-integration-v1", phase: "prepared", operationId: "test",
@@ -130,15 +145,17 @@ test("native absorption accepts only the exact published parent of the returned 
     publishedHistoryBase: published, dataDir: f.root };
   const requestId = "returned-source-handoff";
   const origin = { workspaceId: "workspace", streamId: "stream", provider: "codex", sourceThreadId: "thread", requestId };
-  const check = async (resultCommit, priorCommit = resultCommit, authority = historyAuthority, baseCommit = published) => {
+  const check = async (resultCommit, priorCommit = resultCommit, authority = historyAuthority, baseCommit = published,
+    { preserve = false, testOutcomeHash = hash(tested) } = {}) => {
     const sourceCommit = await commit("saved source", resultCommit);
     const absorptionCommit = await commit("survivor absorbs source", survivor, sourceCommit);
     const text = JSON.stringify({ version: 1, kind: "task-absorption-handoff-v1", workspaceId: origin.workspaceId,
       sourceTaskId: "source", sourceTaskRevision: 3, survivorTaskId: "survivor", baseCommit: f.base,
+      ...(preserve ? { preservedSourceHead: await commit("later source", sourceCommit) } : {}),
       sourceCommit, sourceTree: tree, survivorParentCommit: survivor, absorptionCommit, saved: true, stopped: true });
-    const priorResults = priorCommit ? [{ taskId: "source", projectRoot: f.root, resultCommit: priorCommit, testDevCommit,
+    const priorResults = priorCommit ? [{ taskId: "source", projectRoot: f.root, resultCommit: priorCommit,
       testOperationId: "test", returnOperationId: "return", testRevision: 2, returnRevision: 3,
-      testOutcomeHash: "b".repeat(64), returnOutcomeHash: "c".repeat(64) }] : undefined;
+      testOutcomeHash, returnOutcomeHash: hash(returned) }] : undefined;
     const nativeAbsorptionInput = { requestId, text, origin, contentHash: interstreamAuditContentHash(text, { origin }),
       createdAtMs: 1, sourceTaskNumber: "HUB-source", sourceDescriptionSha256: "a".repeat(64), priorResults };
     return assertNativeTaskHistories({ git: f.git, baseCommit, historyAuthority: authority, tasks: [{
@@ -150,6 +167,10 @@ test("native absorption accepts only the exact published parent of the returned 
   const advanced = await commit("new publication", devOnly);
   const advancedAuthority = { ...historyAuthority, bases: [advanced], metadataBases: [advanced], publishedHistoryBase: advanced };
   await check(forward, forward, advancedAuthority, f.base);
+  await check(forward, forward, historyAuthority, f.base, { preserve: true });
+  await check(forward, forward, advancedAuthority, f.base, { preserve: true });
+  await assert.rejects(check(forward, forward, advancedAuthority, f.base, { testOutcomeHash: "0".repeat(64) }),
+    /immutable prior outcome changed/u);
   await assert.rejects(check(devMerge, devMerge, advancedAuthority, f.base), /explicit historical migration/u);
   await writeFile(retained, JSON.stringify({ ...record, target: devOnly }));
   await assert.rejects(check(forward, forward, advancedAuthority, f.base), /explicit historical migration/u);

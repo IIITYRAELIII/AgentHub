@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { sourceBlobs } from "./local-source-baseline.mjs";
 import { normalizedTaskId, taskGitIdentityHash, taskRepositoryKey } from "../../domain/task-git-reference.mjs";
 import { canonicalPath } from "./config.mjs";
+import { TaskBoardStore } from "../persistence/task-board-store.mjs";
 import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
   from "../../domain/task-selected-composition.mjs";
 import { nativeReuseContext, nativeReuseCandidates, verifiedNativePrefix, retainedNativeConflict } from "./native-merge-reuse.mjs";
@@ -166,11 +167,16 @@ async function returnedTestPublishedParent({ git, dataDir, prior, side, publishe
       || record.operationId !== prior.testOperationId || record.snapshot?.taskId !== prior.taskId
       || record.snapshot?.headCommit !== prior.resultCommit
       || canonicalPath(record.snapshot?.repositoryRoot ?? "") !== canonicalPath(prior.projectRoot)
-      || !/^[a-f0-9]{40}$/u.test(prior.testDevCommit ?? "") || record.target !== prior.testDevCommit
       || metadata?.commit !== side || !metadata.generation || !/^[a-f0-9]{64}$/u.test(metadata.recordHash ?? "")
       || canonicalPath(metadata.repositoryRoot ?? "") !== canonicalPath(prior.projectRoot)
       || await git(["rev-parse", `${side}^{tree}`]) !== metadata.tree) return false;
-  return await maybe(git, ["merge-base", "--is-ancestor", side, published]) !== null;
+  if (await maybe(git, ["merge-base", "--is-ancestor", side, published]) === null) return false;
+  const store = new TaskBoardStore({ databaseFile: path.join(dataDir, "journal.sqlite"), readOnly: true });
+  try {
+    return record.target === store.absorptionPriorTestDevCommit(prior);
+  } finally {
+    store.close();
+  }
 }
 
 export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null }) {

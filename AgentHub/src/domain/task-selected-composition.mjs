@@ -55,12 +55,11 @@ export function normalizedSelectedAbsorption(value) {
     if (!Array.isArray(value.priorResults) || !value.priorResults.length || value.priorResults.length > 2
         || new Set(value.priorResults.map(prior => prior?.taskId)).size !== value.priorResults.length
         || value.priorResults.some(prior => !prior
-        || Object.keys(prior).some(key => !["taskId", "projectRoot", "resultCommit", "testDevCommit", "testOperationId",
+          || Object.keys(prior).some(key => !["taskId", "projectRoot", "resultCommit", "testOperationId",
             "returnOperationId", "testRevision", "returnRevision", "testOutcomeHash", "returnOutcomeHash"].includes(key))
           || ![handoff.declaration.sourceTaskId, handoff.declaration.survivorTaskId].includes(prior.taskId)
           || ["projectRoot", "testOperationId", "returnOperationId"].some(key => typeof prior[key] !== "string" || !prior[key])
           || !/^[0-9a-f]{40}$/u.test(prior.resultCommit ?? "")
-        || Object.hasOwn(prior, "testDevCommit") && !/^[0-9a-f]{40}$/u.test(prior.testDevCommit ?? "")
           || ["testOutcomeHash", "returnOutcomeHash"].some(key => !/^[0-9a-f]{64}$/u.test(prior[key] ?? ""))
           || !Number.isSafeInteger(prior.testRevision) || prior.testRevision < 1
           || !Number.isSafeInteger(prior.returnRevision) || prior.returnRevision <= prior.testRevision)) {
