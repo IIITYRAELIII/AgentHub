@@ -695,7 +695,7 @@ export class HubMcpService {
       tool("hub_task_get", "Read one Dashboard task by id, including a Task attached from Backlog or another Workspace.", {
         task_id: { type: "string" },
       }, ["task_id"]),
-      tool("hub_task_create", "Create a Dashboard task in any existing Workspace with workflow status New and without automatic triage. If the target Workspace has the release workflow enabled, ask yourself before calling: Have I reviewed all its Tasks, including Done and archived Tasks, checked their requirements and actual results, and confirmed that no existing unfinished Task covers this work? If one does, continue it.", {
+      tool("hub_task_create", "Create a Dashboard task in any existing Workspace with workflow status New and without automatic triage. If the target Workspace has the release workflow enabled, ask yourself before calling: Have I reviewed all its Tasks, including Done and archived Tasks, checked their requirements and actual results, and accounted for prior work and known regressions? What can I reuse, what behavior should I preserve and verify, and is there an unfinished Task I should continue? If a new Task is needed, link the related completed Tasks and explain what remains to be done.", {
         workspace_id: { type: "string", description: "Defaults to the caller Workspace." },
         title: { type: "string", maxLength: TASK_TITLE_MAX_LENGTH },
         description: {
