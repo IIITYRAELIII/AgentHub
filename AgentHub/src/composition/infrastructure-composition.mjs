@@ -200,7 +200,7 @@ export async function createHubInfrastructure({
   config,
   agentHubRoot,
   runtimeCommandRoot, localWebSecret,
-  serverInstanceId, serverReleaseId,
+  serverInstanceId, serverReleaseId, startupTraceId,
   journalDatabaseFile,
   legacyWorkLogLedgerFile,
   legacyWorkLogFile,
@@ -231,7 +231,7 @@ export async function createHubInfrastructure({
   });
   const startupRecords = [];
   const startupStep = async (stage, operation, options) => {
-    const measured = await measureStartupBeforeTrace(stage, operation, options);
+    const measured = await measureStartupBeforeTrace(stage, operation, { ...options, startupTraceId });
     startupRecords.push(measured.record);
     return measured.value;
   };
@@ -608,7 +608,7 @@ export async function createHubInfrastructure({
   });
   const runtimeCommandServer = new RuntimeCommandServer({
     runtimeRoot: runtimeCommandRoot,
-    temporaryRoot: path.join(config.projectRoot, ".agent-hub", "runtime"),
+    legacyTemporaryRoot: path.join(config.projectRoot, ".agent-hub", "runtime"),
     authorize: authorizeRuntimeCommand,
     reconcile: reconcileRuntimeCommand,
     handler: handleRuntimeCommand,

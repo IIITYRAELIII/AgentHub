@@ -1,10 +1,13 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, stat, unlink } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
-import os from "node:os";
 import path from "node:path";
 
-import { defaultRuntimeRoot } from "../filesystem/runtime-layout.mjs";
+import {
+  runtimeCommandId,
+  runtimeCommandRoot,
+  runtimeCommandSpoolDirectory,
+} from "../../../codex-stop-hook-launcher.mjs";
 import { writeTextAtomic } from "../persistence/state-store.mjs";
 import {
   DurableCommandReceipts,
@@ -64,22 +67,34 @@ async function removeStaleUnixSocket(endpoint) {
   return true;
 }
 
-function runtimeCommandId(runtimeRoot) {
-  return createHash("sha256").update(path.resolve(runtimeRoot).toLowerCase()).digest("hex").slice(0, 24);
-}
-
-export function runtimeCommandEndpoint(runtimeRoot = defaultRuntimeRoot()) {
+export function runtimeCommandEndpoint(runtimeRoot = runtimeCommandRoot()) {
   const id = runtimeCommandId(runtimeRoot);
   return process.platform === "win32"
     ? `\\\\.\\pipe\\agent-hub-command-${id}`
     : path.join(runtimeRoot, `command-${id}.sock`);
 }
 
-export function runtimeCommandSpoolDirectory(
-  runtimeRoot = defaultRuntimeRoot(),
-  temporaryRoot = os.tmpdir(),
-) {
-  return path.join(temporaryRoot, `agent-hub-command-${runtimeCommandId(runtimeRoot)}`);
+export { runtimeCommandSpoolDirectory };
+
+export const RUNTIME_COMMAND_RECEIPT_LAYOUT = "runtime-data-v1";
+
+export function runtimeCommandReceiptFile(runtimeRoot) {
+  return path.join(path.dirname(runtimeCommandSpoolDirectory(runtimeRoot)), "runtime-command-receipts.json");
+}
+
+async function readSpoolDirectory(directory) {
+  return readdir(directory).catch((error) => {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  });
+}
+
+async function removeSpoolFile(file) {
+  try {
+    await unlink(file);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
 }
 
 export function runtimeCommandEnvironment(environment = process.env) {
@@ -112,32 +127,41 @@ export class RuntimeCommandServer {
   #authorize;
   #server = null;
   #spoolDirectory;
+  #legacySpoolDirectory;
   #spoolTimer = null;
   #spoolDrain = null;
   #sockets = new Set();
   #spoolReceipts;
+  #legacyReceipts;
   #reconcile;
   #captureException;
   #captureUnexpectedException;
 
   constructor({
-    runtimeRoot = defaultRuntimeRoot(),
+    runtimeRoot = runtimeCommandRoot(),
     handler,
     authorize = async (request) => request,
     reconcile = null,
-    temporaryRoot = os.tmpdir(),
+    temporaryRoot,
+    legacyTemporaryRoot,
     captureException = () => false,
     captureUnexpectedException = () => false,
   }) {
     this.#endpoint = runtimeCommandEndpoint(runtimeRoot);
     this.#spoolDirectory = runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot);
+    const legacy = legacyTemporaryRoot && runtimeCommandSpoolDirectory(runtimeRoot, legacyTemporaryRoot);
+    this.#legacySpoolDirectory = legacy && legacy !== this.#spoolDirectory ? legacy : null;
     this.#handler = handler;
     this.#authorize = authorize;
     this.#reconcile = typeof reconcile === "function" ? reconcile : null;
     this.#captureException = captureException;
     this.#captureUnexpectedException = captureUnexpectedException;
-    this.#spoolReceipts = new DurableCommandReceipts({
-      file: path.join(this.#spoolDirectory, "receipts.json"),
+    const receiptFile = temporaryRoot
+      ? path.join(this.#spoolDirectory, "receipts.json")
+      : runtimeCommandReceiptFile(runtimeRoot);
+    this.#spoolReceipts = new DurableCommandReceipts({ file: receiptFile });
+    this.#legacyReceipts = this.#legacySpoolDirectory && new DurableCommandReceipts({
+      file: path.join(this.#legacySpoolDirectory, "receipts.json"),
     });
   }
 
@@ -162,16 +186,22 @@ export class RuntimeCommandServer {
     }
   }
 
-  async #handleSpool(request) {
+  async #handleSpool(request, receipts, canonicalIds) {
     const authorized = await this.#authorize(request);
-    return this.#spoolReceipts.execute({
+    const fingerprint = commandFingerprint({
+      command: request.command,
+      args: request.args,
+      cwd: request.cwd,
+      environment: request.environment,
+    });
+    if (receipts === this.#legacyReceipts && canonicalIds.has(request.id)) {
+      // The previous runtime may read this request after automatic rollback.
+      // Bind the existing effect in its journal before publishing a reply.
+      await receipts.retainFrom(this.#spoolReceipts, { id: request.id, fingerprint });
+    }
+    return receipts.execute({
       id: request.id,
-      fingerprint: commandFingerprint({
-        command: request.command,
-        args: request.args,
-        cwd: request.cwd,
-        environment: request.environment,
-      }),
+      fingerprint,
       action: request.command,
       effect: () => this.#handler(authorized ?? request),
       reconcile: this.#reconcile ? (receipt) => this.#reconcile(request, receipt) : null,
@@ -223,12 +253,12 @@ export class RuntimeCommandServer {
       });
     });
     this.#server = server;
-    await mkdir(this.#spoolDirectory, { recursive: true });
-    await this.#retireAcknowledgedSpool(await readdir(this.#spoolDirectory))
-      .catch((error) => {
-        this.#capture(this.#captureException, error, "spool-retire");
-        console.error("Cannot retire acknowledged runtime commands:", error.message);
-      });
+    try {
+      await mkdir(this.#spoolDirectory, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
     this.#scheduleSpoolDrain();
   }
 
@@ -249,32 +279,73 @@ export class RuntimeCommandServer {
     this.#spoolTimer.unref?.();
   }
 
-  async #retireAcknowledgedSpool(allNames) {
-    const acknowledgedIds = new Set(allNames
+  #receiptOwner(id, legacyIds) {
+    return legacyIds.has(id) ? this.#legacyReceipts : this.#spoolReceipts;
+  }
+
+  async #retireAcknowledgedSpool(snapshots, legacyIds) {
+    const acknowledgedIds = new Set(snapshots.flatMap(({ allNames }) => allNames)
       .filter((item) => item.endsWith(".ack"))
       .map((name) => name.slice(0, -".ack".length))
       .filter(Boolean));
     for (const id of acknowledgedIds) {
-      await this.#spoolReceipts.forget(id).catch(() => {});
-      await Promise.all([
-        unlink(path.join(this.#spoolDirectory, `${id}.ack`)).catch(() => {}),
-        unlink(path.join(this.#spoolDirectory, `${id}.request.json`)).catch(() => {}),
-        unlink(path.join(this.#spoolDirectory, `${id}.response.json`)).catch(() => {}),
-      ]);
+      await this.#retireAcknowledgedId(id, snapshots, this.#receiptOwner(id, legacyIds));
     }
     return acknowledgedIds;
   }
 
+  async #retireAcknowledgedId(id, snapshots, receipts) {
+    // Keep the ACK until all known copies of the request are gone.
+    for (const { directory } of snapshots) {
+      await removeSpoolFile(path.join(directory, `${id}.request.json`));
+      await removeSpoolFile(path.join(directory, `${id}.response.json`));
+    }
+    await receipts.forget(id);
+    if (receipts === this.#legacyReceipts) await this.#spoolReceipts.forget(id);
+    for (const { directory } of snapshots) {
+      await removeSpoolFile(path.join(directory, `${id}.ack`));
+    }
+  }
+
   async #drainSpool() {
-    await mkdir(this.#spoolDirectory, { recursive: true });
-    const allNames = await readdir(this.#spoolDirectory);
-    const acknowledgedIds = await this.#retireAcknowledgedSpool(allNames);
+    await mkdir(this.#spoolDirectory, { recursive: true, mode: 0o700 });
+    // Serve the original location first so simultaneous copies use the
+    // original request and the receipt owner understood by the old runtime.
+    const directories = [this.#legacySpoolDirectory, this.#spoolDirectory].filter(Boolean);
+    const snapshots = await Promise.all(directories.map(async (directory) => ({
+      directory, allNames: await readSpoolDirectory(directory),
+    })));
+    const legacyIds = new Set();
+    if (this.#legacyReceipts) {
+      const legacy = snapshots[0];
+      for (const name of legacy.allNames) {
+        const match = /^(.+)\.(?:request\.json|response\.json|ack)$/u.exec(name);
+        if (match) legacyIds.add(match[1]);
+      }
+      if (snapshots[1].allNames.length) {
+        for (const id of await this.#legacyReceipts.ids()) legacyIds.add(id);
+      }
+    }
+    const hasSharedRequests = snapshots.some(({ allNames }) => allNames
+      .some((name) => name.endsWith(".request.json")
+        && legacyIds.has(name.slice(0, -".request.json".length))));
+    const canonicalIds = new Set(hasSharedRequests ? await this.#spoolReceipts.ids() : []);
+    const acknowledgedIds = await this.#retireAcknowledgedSpool(snapshots, legacyIds);
+    for (const snapshot of snapshots) {
+      await this.#drainDirectory(snapshot, snapshots, acknowledgedIds, legacyIds, canonicalIds);
+    }
+  }
+
+  async #drainDirectory({ directory, allNames }, snapshots, acknowledgedIds, legacyIds, canonicalIds) {
     for (const name of allNames.filter((item) => item.endsWith(".response.json"))) {
-      const filePath = path.join(this.#spoolDirectory, name);
+      const filePath = path.join(directory, name);
       const info = await stat(filePath).catch(() => null);
       if (info && Date.now() - info.mtimeMs >= SPOOL_RETENTION_MS) {
         await unlink(filePath).catch(() => {});
-        await this.#spoolReceipts.forget(name.slice(0, -".response.json".length)).catch(() => {});
+        const id = name.slice(0, -".response.json".length);
+        if (snapshots.every(({ allNames: names }) => !names.includes(`${id}.request.json`))) {
+          await this.#receiptOwner(id, legacyIds).forget(id).catch(() => {});
+        }
       }
     }
     const names = allNames
@@ -282,27 +353,30 @@ export class RuntimeCommandServer {
         && !acknowledgedIds.has(name.slice(0, -".request.json".length)))
       .sort();
     for (const name of names) {
-      const requestPath = path.join(this.#spoolDirectory, name);
+      const requestPath = path.join(directory, name);
       const responsePath = requestPath.replace(/\.request\.json$/, ".response.json");
       const id = name.slice(0, -".request.json".length);
+      const receipts = this.#receiptOwner(id, legacyIds);
       // Acknowledge may arrive after readdir() but before this request reaches
       // the handler. Recheck it at the point of side effect so a client never
       // receives an acknowledged command a second time after a restart.
-      const acknowledgementPath = path.join(this.#spoolDirectory, `${id}.ack`);
-      if (await stat(acknowledgementPath).then(() => true, () => false)) {
-        await this.#spoolReceipts.forget(id).catch(() => {});
-        await Promise.all([
-          unlink(acknowledgementPath).catch(() => {}),
-          unlink(requestPath).catch(() => {}),
-          unlink(responsePath).catch(() => {}),
-        ]);
+      const acknowledgements = await Promise.all(snapshots.map(({ directory: candidate }) =>
+        stat(path.join(candidate, `${id}.ack`)).then(() => true, (error) => {
+          if (error?.code === "ENOENT") return false;
+          throw error;
+        })));
+      if (acknowledgements.includes(true)) {
+        await this.#retireAcknowledgedId(id, snapshots, receipts);
+        acknowledgedIds.add(id);
         continue;
       }
       let response;
       try {
-        if ((await stat(requestPath)).size > MAX_REQUEST_BYTES) throw new Error("Runtime command is too large");
-        const request = validateRuntimeCommand(JSON.parse(await readFile(requestPath, "utf8")));
-        const result = await this.#handleSpool(request);
+        const text = await this.#readSpoolRequest(requestPath);
+        if (text === null) continue;
+        const request = validateRuntimeCommand(JSON.parse(text));
+        if (request.id !== id) throw new Error("Runtime command file identity mismatch");
+        const result = await this.#handleSpool(request, receipts, canonicalIds);
         response = { ok: true, result: String(result ?? "") };
       } catch (error) {
         if (error instanceof DurableCommandRetryableError) continue;
@@ -311,6 +385,16 @@ export class RuntimeCommandServer {
       }
       await writeTextAtomic(responsePath, `${JSON.stringify(response)}\n`);
       await unlink(requestPath).catch(() => {});
+    }
+  }
+
+  async #readSpoolRequest(file) {
+    try {
+      if ((await stat(file)).size > MAX_REQUEST_BYTES) throw new Error("Runtime command is too large");
+      return await readFile(file, "utf8");
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
     }
   }
 
@@ -329,8 +413,8 @@ export class RuntimeCommandServer {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function forwardRuntimeCommandThroughSpool(command, args, {
-  runtimeRoot = defaultRuntimeRoot(),
-  temporaryRoot = os.tmpdir(),
+  runtimeRoot = runtimeCommandRoot(),
+  temporaryRoot,
   cwd = process.cwd(),
   environment = process.env,
   timeoutMs = 120_000,
@@ -370,8 +454,8 @@ export async function forwardRuntimeCommandThroughSpool(command, args, {
 }
 
 export async function enqueueRuntimeCommandThroughSpool(command, args, {
-  runtimeRoot = defaultRuntimeRoot(),
-  temporaryRoot = os.tmpdir(),
+  runtimeRoot = runtimeCommandRoot(),
+  temporaryRoot,
   cwd = process.cwd(),
   environment = process.env,
 } = {}) {
@@ -390,7 +474,7 @@ export async function enqueueRuntimeCommandThroughSpool(command, args, {
 }
 
 export async function forwardRuntimeCommand(command, args, {
-  runtimeRoot = defaultRuntimeRoot(),
+  runtimeRoot = runtimeCommandRoot(),
   cwd = process.cwd(),
   environment = process.env,
   timeoutMs = 120_000,

@@ -97,6 +97,18 @@ messages are never repeated. Explicit `mode=queue`, immutable request/origin/bod
 binding and direct exact-target service guards retain their contracts. See
 MSG-001 and ADR-0136. This changes routing policy, not MCP mutation ownership.
 
+## Requested Git cancellation after service exit (HUB-524)
+
+The existing cancellation owner can continue the original requested cancellation
+after service exit using matching Windows Git Job retirement evidence or an exact launch permit
+taken before execution. Release
+Manager reconciliation accepts this original even while its workflow receipt is
+pending. The exact Task, arguments hash and current Task revision remain
+required. Without proof, the stop remains requested. With proof, it retains the
+original cancellation and observed Git effects and stops the original execution
+without repeating it. Historical guards without Job evidence require the
+existing exact positive recovery path. See ADR-HUB-524.
+
 ## Explicit Task operation interruption
 
 `hub_task_operation_cancel` is an explicit audited mutation of future execution,
@@ -820,10 +832,17 @@ becomes a synthetic live run merely to make blocked admission observable.
 Original native Await recovery (ADR-0116) uses the existing RM reconciliation
 operation/CLI and the exact original arguments hash and workflow CAS. It adds no
 public approval flag, second receipt or replay identity. An owning proof of the
-bounded already-published-notes archive can substitute for a nonexistent process
-guard; every real guard still refuses. Drift remains UNKNOWN. The same durable
-workflow outcome settles the same receipt; repeated terminal reconciliation
-performs a read without re-composing or re-archiving.
+bounded already-published-notes archive or an exact interrupted native
+promotion can substitute for a nonexistent process guard; every real guard
+still refuses. Drift remains UNKNOWN. The same durable workflow outcome
+settles the same receipt; repeated terminal reconciliation performs a read.
+The exact promotion permit and durable cancellation serialize in the
+existing Task/receipt database. Cancellation before the permit prevents
+promotion. After admission, the original journal retains any written
+effects and the terminal Task CAS still observes cancellation.
+An interrupted promotion records the first failure with its phase separately
+from rollback/readback failure. Successful reconciliation retains the original
+error text as diagnostic evidence. See [ADR-HUB-530](../decisions/ADR-HUB-530-interrupted-await.md).
 
 
 ## Explicit forward custody of an unsealed claim

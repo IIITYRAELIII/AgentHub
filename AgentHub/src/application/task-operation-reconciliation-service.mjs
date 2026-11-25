@@ -705,6 +705,9 @@ export class TaskOperationReconciliationService {
         proof: recovery?.proof ?? null,
         resultCommit: identity.outcome.result.evidence.resultCommit,
         taskRevision: identity.task.revision,
+        ...(identity.outcome.result.evidence.nativeAwaitRecovery?.interruptedError ? {
+          originalPreparationError: identity.outcome.result.evidence.nativeAwaitRecovery.interruptedError,
+        } : {}),
       };
       const receipt = identity.receiptSettled ? identity.receipt : await this.workspaceCatalog.completeUnknownMcpOperation(identity.operationId, {
         workspaceId: identity.workspace.id,
@@ -852,13 +855,23 @@ export class TaskOperationReconciliationService {
             allowMetadataRecovery: identity.metadataRecovery });
         if (!native) throw new Error("Pending workflow reconciliation requires the exact process-tree guard id or original native Git intent");
       }
-      const proof = needsRecovery && identity.guardId ? {
+      const proof = needsRecovery && identity.guardId && supplied(options.proofKind) ? {
         kind: requiredText(options.proofKind, "proof kind", 100),
         confirmed: options.confirmed === true,
         summary: requiredText(options.proofSummary, "proof summary", 1_000),
       } : null;
       const settle = async (terminal, recovery = null) => {
         effectsStarted = true;
+        const interruptedAwait = terminal.outcome?.result?.evidence?.nativeAwaitRecovery;
+        if (terminal.state === "succeeded" && !terminal.receiptSettled && interruptedAwait?.preparedPromotion) {
+          try {
+            requiredMethod(this.taskLifecycle, "finalizeInterruptedAwait");
+            await this.taskLifecycle.finalizeInterruptedAwait({ taskId: terminal.task.id,
+              operationId: terminal.operationId, projectRoot: terminal.projectRoot, lease });
+          } catch (error) {
+            return { resolved: false, outcome: "unknown", error: String(error?.message ?? error) };
+          }
+        }
         if (terminal.state === "succeeded" && terminal.withdrawal) {
           try {
             const finalized = await this.taskLifecycle.reconcileUnknownWorkflowStatusOwned({

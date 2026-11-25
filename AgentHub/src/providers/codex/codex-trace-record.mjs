@@ -20,7 +20,18 @@ export class IgnoredTraceRecord {
   }
 
   push(chunk) {
-    for (const byte of chunk) {
+    let text;
+    const stringSyntax = /["\\\x00-\x1f]/g;
+    for (let offset = 0; offset < chunk.length; offset += 1) {
+      if (this.#stringStart !== null && this.#elided && !this.#escape && !this.#unicode) {
+        // Only ordinary bytes of an already elided value can be skipped.
+        text ??= chunk.toString("latin1");
+        stringSyntax.lastIndex = offset;
+        const syntax = stringSyntax.exec(text);
+        if (!syntax) break;
+        offset = syntax.index;
+      }
+      const byte = chunk[offset];
       if (this.#stringStart !== null) {
         let closes = false;
         if (this.#unicode) {

@@ -95,6 +95,27 @@ test("upload receipt traces retain logical and transport identities and only exp
   assert.doesNotMatch(JSON.stringify(spans), /PRIVATE/u);
 });
 
+test("failed startup health diagnostics reuse the bounded upload ring across outage and reload", async () => {
+  const storage = new Map(), first = fixture(storage);
+  first.trace.bindReporter(async () => { throw new Error("private reporter failure"); });
+  first.trace.record("ui-control", "startup-health-read", 1700, "health-original", {
+    httpRequestId: "health-original", clientAssetRevision: "startup-stale.v1", failureKind: "error",
+  }, first.wallNow(), "failed");
+  await first.trace.flush();
+  const restored = fixture(storage), events = [];
+  restored.trace.bindReporter(async batch => events.push(...batch.events));
+  await restored.trace.flush();
+  const spans = clientPerformanceTraceSpans({ events });
+  assert.equal(spans.length, 1);
+  assert.equal(spans[0].commandId, "health-original");
+  assert.equal(spans[0].metadata.httpRequestId, "health-original");
+  assert.equal(spans[0].outcome, "failed");
+  assert.equal(spans[0].monotonicDurationMs, 1700);
+  assert.equal(restored.trace.diagnostics().pending, 0);
+  assert.deepEqual(JSON.parse(storage.get("agent-hub-upload-trace-v1")), []);
+  assert.doesNotMatch([...storage.values()].join(""), /private/u);
+});
+
 test("upload HTTP correlation and failed receipt status survive the existing bounded trace ingest", async () => {
   const { trace } = fixture(), events = [];
   trace.bindReporter(async batch => events.push(...batch.events));

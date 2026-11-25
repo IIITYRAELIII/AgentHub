@@ -7,6 +7,56 @@ import test from "node:test";
 import { DurableCommandReceipts, commandFingerprint } from "../../../src/infrastructure/persistence/durable-command-receipts.mjs";
 import { SqliteDurableCommandReceipts } from "../../../src/infrastructure/persistence/sqlite-durable-command-receipts.mjs";
 
+test("rollback retains exact original claims and outcomes without overwriting a conflicting journal", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollback-receipts-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const currentFile = path.join(root, "current.json");
+  const previousFile = path.join(root, "previous.json");
+  const current = new DurableCommandReceipts({ file: currentFile });
+  const previous = new DurableCommandReceipts({ file: previousFile });
+  const fingerprint = commandFingerprint({ action: "send-message" });
+  const started = {
+    id: "started", fingerprint, action: "send-message", phase: "effect-started", effectStartedAtMs: 1,
+    effectOwner: { pid: process.pid, token: "original-owner" }, createdAtMs: 1, updatedAtMs: 1,
+  };
+  const terminal = {
+    id: "done", fingerprint, action: "send-message", phase: "completed", result: { accepted: true },
+    createdAtMs: 2, updatedAtMs: 3,
+  };
+  const journal = (records) => JSON.stringify({ version: 1, records });
+  await writeFile(currentFile, journal([started, terminal]));
+  const conflicting = journal([{ ...terminal, result: { accepted: false } }]);
+  await writeFile(previousFile, conflicting);
+  await assert.rejects(previous.retainForRollback(current), /receipts disagree/u);
+  assert.equal(await readFile(previousFile, "utf8"), conflicting);
+  assert.equal(await readFile(currentFile, "utf8"), journal([started, terminal]));
+  await writeFile(previousFile, journal([]));
+  assert.equal(await previous.retainForRollback(current), 2);
+  const imported = await readFile(previousFile, "utf8");
+  assert.deepEqual(JSON.parse(imported).records, [started, terminal]);
+  assert.equal(await new DurableCommandReceipts({ file: previousFile }).retainForRollback(current), 2);
+  assert.equal(await readFile(previousFile, "utf8"), imported);
+});
+
+test("a failed rollback journal write leaves the prior publication intact for a repeat", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-rollback-retry-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const from = path.join(root, "canonical.json");
+  const to = path.join(root, "previous.json");
+  const snapshot = (id) => ({
+    id, fingerprint: commandFingerprint({ id }), action: "send-message", phase: "prepared",
+    createdAtMs: 1, updatedAtMs: 1,
+  });
+  const original = JSON.stringify({ version: 1, records: Array.from({ length: 10 }, (_, index) => snapshot(`old-${index}`)) });
+  await writeFile(to, original);
+  await writeFile(from, JSON.stringify({ version: 1, records: [snapshot("new")] }));
+  const current = new DurableCommandReceipts({ file: from });
+  await assert.rejects(new DurableCommandReceipts({ file: to, maxPending: 10 }).retainForRollback(current), /capacity/u);
+  assert.equal(await readFile(to, "utf8"), original);
+  assert.equal(await new DurableCommandReceipts({ file: to }).retainForRollback(current), 1);
+  assert.equal(JSON.parse(await readFile(to, "utf8")).records.length, 11);
+});
+
 test("durable receipt reconciles a crash after the effect without repeating it", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-durable-receipt-"));
   const file = path.join(root, "receipts.json");

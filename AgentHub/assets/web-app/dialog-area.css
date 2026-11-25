@@ -500,9 +500,9 @@ html[data-view="chat"][data-surface][data-theme] {
   --shell-stream-tab-min-width: 0;
   overflow: hidden;
 
-  /* The running stroke straddles the padding edge. Clip at the rounded
+  /* The visible rim straddles the padding edge. Clip at the rounded
      border box so the full stroke remains visible on both sides. */
-  &[data-running] {
+  &:is([data-running], [data-current]) {
     overflow: clip;
     overflow-clip-margin: border-box;
   }
@@ -930,6 +930,22 @@ html[data-view="chat"][data-surface][data-theme] {
   overflow-wrap: anywhere;
   text-wrap: pretty;
   white-space: normal;
+}
+
+.message-visualization {
+  display: block;
+  margin-block: 0.75em;
+  max-width: 736px;
+}
+
+.message-visualization.is-wide {
+  max-width: 1024px;
+}
+
+.message-visualization iframe {
+  border: 0;
+  display: block;
+  width: 100%;
 }
 
 .msg-user-bubble {

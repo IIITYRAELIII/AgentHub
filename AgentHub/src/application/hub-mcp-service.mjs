@@ -813,7 +813,7 @@ export class HubMcpService {
         original_arguments: { type: "object", description: "Exact original argument family for a legacy receipt without execution binding; never context_token." },
         runtime_witness: { type: "object", description: "Existing trusted retained native runtime witness for a historical worker." },
       }, ["task_id", "operation_request_id", "request_id", "expected_arguments_hash", "expected_task_revision", "confirm_cancel"]),
-      tool("hub_task_operation_reconcile", "Release Manager-only reconciliation of one exact unknown Task workflow operation. A real unresolved process guard requires trusted proof; exact pending withdrawal or squash state can reconcile without inventing one. An already terminal lifecycle settles its original receipt without Git replay.", {
+      tool("hub_task_operation_reconcile", "Release Manager-only reconciliation of one exact unknown Task workflow or continuation of an already requested cancellation. A real unresolved process guard requires trusted proof. An already terminal lifecycle settles its original receipt without Git replay.", {
         task_id: { type: "string" },
         manual_preview_arguments: { type: "object", description: "Exact original business arguments for a read-only manual Complete preview; hash-bound classification, never a confirmed closure." },
         operation_request_id: { type: "string" },
@@ -830,8 +830,8 @@ export class HubMcpService {
           required: ["action"], additionalProperties: false },
         project_root: { type: "string", description: "Required for Git reconciliation or an owner refusal with a recorded root. May be omitted only for an exact durable pre-admission refusal whose recorded root is null; a supplied locator grants no Git authority in that case." },
         guard_id: { type: "string", description: "Required for an actually guarded pending operation. Exact persisted Task withdrawal or squash state without a process guard can reconcile without it." },
-        proof_kind: { type: "string", enum: ["system-restart-after-guard"], description: "Required when recovering a process-tree guard." },
-        proof_summary: { type: "string", description: "Required when recovering a process-tree guard." },
+        proof_kind: { type: "string", enum: ["system-restart-after-guard"], description: "For a historical process-tree guard without Windows Job proof." },
+        proof_summary: { type: "string", description: "For a historical process-tree guard without Windows Job proof." },
         expected_task_revision: { type: "integer", minimum: 1, description: "Supply exactly when the original workflow request used this CAS field; required for cutover receipts." },
         expected_workflow_status: { type: "string", enum: ["new", "in_progress", "blocked", "testing", "awaiting_implementation", "done"], description: "Supply exactly when the original workflow request used this CAS field; required for cutover receipts." },
         cutover_source_commit: { type: "string", description: "Required only to reproduce an original local cutover receipt." },
@@ -1425,7 +1425,27 @@ export class HubMcpService {
         if (this.#pendingMutations.has(args.operation_request_id)) {
           throw new TaskOperationReconciliationRefusedError(new Error("Original workflow worker is still active"));
         }
-        if (this.workspaceCatalog.mcpOperation(args.operation_request_id)?.toolName === "hub_task_claim") {
+        const original = this.workspaceCatalog.mcpOperation(args.operation_request_id);
+        const requestedCancellation = original?.taskExecution?.cancellation;
+        if (requestedCancellation?.phase === "requested" && this.taskOperationInterruption) {
+          if (original.workspaceId !== context.workspaceId) {
+            throw new TaskOperationReconciliationRefusedError(new Error("Original cancellation belongs to a different Workspace"));
+          }
+          if (args.guard_id && !args.project_root) {
+            throw new TaskOperationReconciliationRefusedError(new Error("The exact guarded repository root is required"));
+          }
+          const cancellation = await this.taskOperationInterruption.cancel({
+            actor: { workspaceId: context.workspaceId, streamId: context.streamId, provider: context.provider,
+              threadId: context.auditThreadId, releaseManager: true },
+            taskId: args.task_id, operationRequestId: args.operation_request_id,
+            expectedArgumentsHash: args.expected_arguments_hash, expectedTaskRevision: args.expected_task_revision,
+            cancellationRequestId: requestedCancellation.cancellationRequestId, runtimeWitness: args.runtime_witness,
+            guardRecovery: args.guard_id ? { repositoryRoot: args.project_root, guardId: args.guard_id,
+              proof: args.proof_kind ? { kind: args.proof_kind, summary: args.proof_summary, confirmed: true } : null } : null,
+          });
+          return { resolved: cancellation.phase === "stopped", outcome: cancellation.phase, cancellation };
+        }
+        if (original?.toolName === "hub_task_claim") {
           return this.#reconcileSealedClaimRefusal(context, args);
         }
         if (this.workspaceCatalog.mcpOperation(args.operation_request_id)?.toolName === "hub_task_complete") {

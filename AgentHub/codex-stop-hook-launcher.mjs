@@ -5,24 +5,39 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const FORWARDED_ENVIRONMENT = ["CODEX_HOME"];
+const RUNTIME_ROOT_ARGUMENT = "--runtime-root=";
 
-function defaultRuntimeRoot(environment = process.env) {
+export function runtimeCommandRoot(environment = process.env) {
+  if (environment.AGENT_HUB_RUNTIME_ROOT) return path.resolve(environment.AGENT_HUB_RUNTIME_ROOT);
+  if (environment.AGENT_HUB_CONFIG) return path.dirname(path.resolve(environment.AGENT_HUB_CONFIG));
   if (process.platform === "win32") {
     return path.resolve(environment.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "AgentHub");
   }
   return path.resolve(environment.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"), "agent-hub");
 }
 
-function runtimeCommandId(runtimeRoot) {
+export function runtimeCommandId(runtimeRoot) {
   return createHash("sha256").update(path.resolve(runtimeRoot).toLowerCase()).digest("hex").slice(0, 24);
 }
 
-function runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot = os.tmpdir()) {
-  return path.join(temporaryRoot, `agent-hub-command-${runtimeCommandId(runtimeRoot)}`);
+export function runtimeCommandSpoolDirectory(runtimeRoot = runtimeCommandRoot(), temporaryRoot) {
+  return temporaryRoot
+    ? path.join(temporaryRoot, `agent-hub-command-${runtimeCommandId(runtimeRoot)}`)
+    : path.join(runtimeRoot, "data", "runtime-command");
 }
 
-function workspaceTemporaryRoot(projectRoot) {
-  return path.join(projectRoot, ".agent-hub", "runtime");
+export function encodeRuntimeRootArgument(runtimeRoot) {
+  return RUNTIME_ROOT_ARGUMENT + Buffer.from(path.resolve(runtimeRoot), "utf8").toString("base64url");
+}
+
+function boundRuntimeRoot(argument, environment) {
+  if (argument === undefined) return runtimeCommandRoot(environment);
+  const encoded = argument.startsWith(RUNTIME_ROOT_ARGUMENT) ? argument.slice(RUNTIME_ROOT_ARGUMENT.length) : "";
+  const decoded = Buffer.from(encoded, "base64url").toString("utf8");
+  if (!path.isAbsolute(decoded) || encodeRuntimeRootArgument(decoded) !== argument) {
+    throw new Error("Invalid installed Hub runtime root");
+  }
+  return decoded;
 }
 
 function forwardedEnvironment(environment, threadId) {
@@ -53,7 +68,7 @@ function runtimeRequest(command, payload, input, environment = process.env) {
   };
 }
 
-async function enqueueThroughSpool(request, runtimeRoot, temporaryRoot = os.tmpdir()) {
+async function enqueueThroughSpool(request, runtimeRoot, temporaryRoot) {
   const spool = runtimeCommandSpoolDirectory(runtimeRoot, temporaryRoot);
   await mkdir(spool, { recursive: true });
   await writeTextAtomic(path.join(spool, `${request.id}.request.json`), `${JSON.stringify(request)}\n`);
@@ -61,7 +76,7 @@ async function enqueueThroughSpool(request, runtimeRoot, temporaryRoot = os.tmpd
 
 export async function enqueueLifecycleRequest(request, runtimeRoot, {
   enqueueRequest = enqueueThroughSpool,
-  temporaryRoot = os.tmpdir(),
+  temporaryRoot,
 } = {}) {
   await enqueueRequest(request, runtimeRoot, temporaryRoot);
 }
@@ -104,6 +119,7 @@ export function lifecycleRequest(value, environment = process.env) {
 }
 
 export async function main({
+  runtimeRootArgument,
   environment = process.env,
   enqueueRequest = enqueueLifecycleRequest,
   input = process.stdin,
@@ -112,17 +128,15 @@ export async function main({
   const chunks = [];
   input.setEncoding("utf8");
   for await (const chunk of input) chunks.push(chunk);
-  const { input: lifecycleInput, request } = lifecycleRequest(JSON.parse(chunks.join("")), environment);
-  await enqueueRequest(request, defaultRuntimeRoot(environment), {
-    temporaryRoot: workspaceTemporaryRoot(lifecycleInput.projectRoot),
-  });
+  const { request } = lifecycleRequest(JSON.parse(chunks.join("")), environment);
+  await enqueueRequest(request, boundRuntimeRoot(runtimeRootArgument, environment));
   output.write("{}\n");
 }
 
 const isMain = process.argv[1]
   && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
 if (isMain) {
-  main().catch((error) => {
+  main({ runtimeRootArgument: process.argv[2] }).catch((error) => {
     console.error(`Cannot launch Codex lifecycle hook: ${error.message}`);
     process.exitCode = 1;
   });

@@ -586,13 +586,25 @@ export class TaskViewController {
         === String(identity?.threadId ?? "").toLowerCase();
   }
 
-  async readHistory(binding, { completedOnly = false, cachedOnly = false, limit = null, repairSubagentTurnIds = [], tracePage = null } = {}) {
+  async readHistory(binding, { completedOnly = false, cachedOnly = false, limit = null, repairSubagentTurnIds = [], tracePage = null, traceTiming } = {}) {
     const d = this.deps;
     if (tracePage) {
       if (binding.provider !== "codex") throw new Error("Trace detail is only available for Codex");
-      const file = await d.findCodexRolloutPath?.(binding.threadId, "");
-      if (!file) throw new Error("Trace source unavailable");
-      return d.readCodexTracePage(file, tracePage);
+      const started = performance.now();
+      let file;
+      try {
+        file = await d.findCodexRolloutPath?.(binding.threadId, "");
+        if (!file) throw new Error("Trace source unavailable");
+      } catch (error) {
+        traceTiming?.("trace-source-locate", "failed", performance.now() - started);
+        throw error;
+      }
+      traceTiming?.("trace-source-locate", "succeeded", performance.now() - started);
+      return d.readCodexTracePage(file, tracePage, traceTiming && ((timing, outcome) => {
+        if (!timing) return;
+        traceTiming("trace-worker-wait", "succeeded", timing.queueWaitMs);
+        traceTiming("trace-source-read", outcome, timing.readMs);
+      }));
     }
     const task = this.task(binding, binding.chatId);
     const detachedThread = d.workspaceCatalogStore?.thread?.({

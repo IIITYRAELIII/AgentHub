@@ -3172,6 +3172,53 @@ export class TaskBoardStore {
     });
   }
 
+  admitInterruptedAwaitPromotion({ operationId, taskId, taskRevision, workspaceId, argumentsHash,
+    manifestHash, head, tree } = {}) {
+    if (!/^[0-9a-f]{64}$/u.test(manifestHash ?? "") || ![head, tree].every(oid => /^[0-9a-f]{40}$/u.test(oid ?? ""))) {
+      throw new Error("Interrupted Await promotion requires its exact manifest and target");
+    }
+    const permit = { manifestHash, head, tree };
+    return this.#withDatabase(database => {
+      // A cancellation can record requested before taking the Task lease.
+      // Both writes serialize in this one existing journal database.
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        const receipt = database.prepare(`
+          SELECT tool_name, workspace_id, arguments_hash, status, receipt_state,
+            json_extract(task_execution_json, '$.cancellation.phase') AS cancellation
+          FROM hub_mcp_operations WHERE request_id=?
+        `).get(operationId);
+        if (receipt?.tool_name !== "hub_task_status_update" || receipt.workspace_id !== workspaceId
+            || receipt.arguments_hash !== argumentsHash || receipt.status !== "pending"
+            || receipt.receipt_state !== "unknown" || receipt.cancellation) {
+          throw new Error("Original Await receipt or cancellation changed");
+        }
+        const transition = database.prepare(`
+          SELECT evidence_json FROM hub_task_lifecycle_transitions
+          WHERE operation_id=? AND task_id=? AND expected_task_revision=?
+            AND kind='workflow' AND phase='pending_git' AND target_workflow_status='awaiting_implementation'
+        `).get(operationId, taskId, taskRevision);
+        const task = this.#taskRow(database, taskId);
+        if (!transition || task.workspace_id !== workspaceId || task.workflow_status !== "testing"
+            || Number(task.row_revision) !== taskRevision) throw new Error("Interrupted Await promotion Task CAS changed");
+        assertNoPendingTaskInterruption(database, taskId);
+        const evidence = JSON.parse(transition.evidence_json ?? "{}");
+        if (evidence.awaitPromotion && !Object.keys(permit).every(key => evidence.awaitPromotion[key] === permit[key])) {
+          throw new Error("Interrupted Await promotion permit changed");
+        }
+        if (!evidence.awaitPromotion) {
+          database.prepare("UPDATE hub_task_lifecycle_transitions SET evidence_json=? WHERE operation_id=?")
+            .run(JSON.stringify({ ...evidence, awaitPromotion: permit }), operationId);
+        }
+        database.exec("COMMIT");
+        return permit;
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
   recordWorkflowAdmissionRefusal({ taskId, receipt, projectRoot, targetWorkflowStatus,
     expectedRevision = null, expectedWorkflowStatus = null } = {}) {
     if (receipt?.replayed !== false || receipt.status !== "pending"
@@ -3366,7 +3413,13 @@ export class TaskBoardStore {
         if (Number(current.row_revision) !== Number(expectedRevision)) {
           throw new Error("Task changed while Git evidence was prepared");
         }
-        const initialNativeTest = JSON.parse(transition.evidence_json ?? "{}")?.initialNativeTest;
+        const originalEvidence = JSON.parse(transition.evidence_json ?? "{}");
+        const promotion = evidence?.nativeAwaitRecovery?.preparedPromotion;
+        if (promotion && (!originalEvidence.awaitPromotion
+            || !["manifestHash", "head", "tree"].every(key => originalEvidence.awaitPromotion[key] === promotion[key]))) {
+          throw new Error("Interrupted Await terminal promotion permit changed");
+        }
+        const initialNativeTest = originalEvidence?.initialNativeTest;
         if (initialNativeTest) {
           this.#assertInitialNativeTestContext(database, current, initialNativeTest);
           if (JSON.stringify(evidence?.initialNativeTest) !== JSON.stringify(initialNativeTest)
