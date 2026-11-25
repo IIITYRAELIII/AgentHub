@@ -246,3 +246,12 @@ plans stay in the original Task lifecycle outcome and can be read in bounded
 pages from the same receipt, without repeating the preview or cleanup. Early
 Task branches and remaining worktree registrations are inventoried even before
 a Test reference exists. Their names alone do not grant cleanup authority.
+
+The MCP batch archive command wraps existing single-card operations. It
+preserves local artifacts for all items and reports an ordered result with the
+canonical child receipt for each admitted action. With a shared explicit
+manual-delivery proof it uses the existing Done transition before archive.
+The caller supplies one request ID; the aggregate derives stable child IDs
+and can read already completed work after interruption. It owns no Task
+state and acquires no batch-wide Git or Task lease. A failed item leaves
+its own result and does not prevent processing subsequent Tasks.
