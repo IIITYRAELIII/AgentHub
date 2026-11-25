@@ -3,7 +3,9 @@ import { mkdir, readFile } from "node:fs/promises";
 import { createSelectedGitBundle, hasExactGitCommitObjects } from "./selected-git-bundle.mjs";
 import { createHash } from "node:crypto";
 import { sourceBlobs } from "./local-source-baseline.mjs";
-import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
+import { normalizedTaskId, taskGitIdentityHash, taskRepositoryKey } from "../../domain/task-git-reference.mjs";
+import { canonicalPath } from "./config.mjs";
+import { TaskBoardStore } from "../persistence/task-board-store.mjs";
 import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
   from "../../domain/task-selected-composition.mjs";
 import { nativeReuseContext, nativeReuseCandidates, verifiedNativePrefix, retainedNativeConflict } from "./native-merge-reuse.mjs";
@@ -146,6 +148,37 @@ function matchesMetadata(file, names) {
   return names.some(name => file.startsWith(`${name}/`) || path.posix.basename(file) === name);
 }
 
+export function nativeIntegrationRecordFile(dataDir, taskId, repoRoot, operationId) {
+  const operation = String(operationId ?? "").trim();
+  if (!operation) throw new Error("Native Test requires its original lifecycle operation id");
+  return path.join(dataDir, "task-native-integrations", normalizedTaskId(taskId),
+    taskRepositoryKey(repoRoot), `${createHash("sha256").update(operation).digest("hex")}.json`);
+}
+
+async function returnedTestPublishedParent({ git, dataDir, prior, side, published }) {
+  if (!dataDir || !/^[a-f0-9]{40}$/u.test(side)) return false;
+  const file = nativeIntegrationRecordFile(dataDir, prior.taskId, prior.projectRoot, prior.testOperationId);
+  const record = await readFile(file, "utf8").then(JSON.parse, error => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  const metadata = record?.nativeHistoryAuthority?.publishedMetadata;
+  if (record?.version !== 1 || record.kind !== "native-task-integration-v1" || record.phase === "failed"
+      || record.operationId !== prior.testOperationId || record.snapshot?.taskId !== prior.taskId
+      || record.snapshot?.headCommit !== prior.resultCommit
+      || canonicalPath(record.snapshot?.repositoryRoot ?? "") !== canonicalPath(prior.projectRoot)
+      || metadata?.commit !== side || !metadata.generation || !/^[a-f0-9]{64}$/u.test(metadata.recordHash ?? "")
+      || canonicalPath(metadata.repositoryRoot ?? "") !== canonicalPath(prior.projectRoot)
+      || await git(["rev-parse", `${side}^{tree}`]) !== metadata.tree) return false;
+  if (await maybe(git, ["merge-base", "--is-ancestor", side, published]) === null) return false;
+  const store = new TaskBoardStore({ databaseFile: path.join(dataDir, "journal.sqlite"), readOnly: true });
+  try {
+    return record.target === store.absorptionPriorTestDevCommit(prior);
+  } finally {
+    store.close();
+  }
+}
+
 export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null }) {
   // Internal context, verified by the owning caller at every effect boundary.
   // Only Test may include its already managed dev ancestry here.
@@ -171,9 +204,28 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       "rev-list", "--first-parent", "--parents", task.resultCommit, ...bases.map(b => `^${b}`),
     ])).split(/\r?\n/u).filter(Boolean).map(row => row.split(" "));
     for (const [commit] of rows) owned.add(commit);
+    const selected = selectedCompositionFields(task);
+    const absorbed = selected.selectedComposition?.absorptionInput ?? task.nativeAbsorptionInput;
+    let absorption = null;
+    if (absorbed) {
+      const binding = normalizedSelectedAbsorption(absorbed);
+      const d = selectedAbsorptionHandoff({ requestId: binding.requestId, text: binding.text }).declaration;
+      const published = historyAuthority?.publishedHistoryBase;
+      const prior = binding.priorResults?.find(result => result.taskId === d.sourceTaskId);
+      const publishedBoundary = published && prior && published !== baseCommit ? [`^${published}`] : [];
+      const sourceRows = String(await git(["rev-list", "--first-parent", "--parents",
+        d.sourceCommit, `^${baseCommit}`, ...publishedBoundary])).split(/\r?\n/u).filter(Boolean).map(row => row.split(" "));
+      const returnedMerge = sourceRows.find(row => row.length === 3 && row[0] === prior?.resultCommit);
+      const publishedParent = published && returnedMerge
+        && await returnedTestPublishedParent({ git, dataDir: historyAuthority.dataDir, prior,
+          side: returnedMerge[2], published }) ? returnedMerge[2] : null;
+      absorption = { binding, d, prior, sourceRows, publishedParent,
+        historical: publishedParent !== published ? publishedParent : null };
+    }
     const adopted = (historyAuthority?.adoptions ?? []).filter(a => a.taskId === task.taskId
       && a.resultCommit === task.resultCommit);
     const metadataBases = [...new Set([taskBase, ...(historyAuthority?.metadataBases ?? []),
+      ...(absorption?.historical ? [absorption.historical] : []),
       ...adopted.map(a => a.adoptedCommit)])];
     const changedMetadata = String(await git([
       "diff", "--name-only", "--no-renames", "-z", taskBase, task.resultCommit,
@@ -182,7 +234,7 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
     ], { rawOutput: true })).split("\0").filter(Boolean);
     const notes = changedMetadata.filter(file => matchesMetadata(file, ["CHANGELOG.md"]));
     const packages = changedMetadata.filter(file => matchesMetadata(file, ["package.json", "package-lock.json"]));
-    histories.push({ task, rows, metadataBases, notes, packages });
+    histories.push({ task, rows, metadataBases, notes, packages, absorption });
     if (notes.length || packages.length) {
       for (const commit of [task.resultCommit, ...metadataBases]) {
         if (!requests.has(commit)) requests.set(commit, new Set());
@@ -242,15 +294,12 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       }
     }
   }
-  for (const { task, rows } of histories) {
-    const selected = selectedCompositionFields(task);
+  for (const { task, rows, absorption } of histories) {
     // Fresh admission is supplied only by TaskLifecycle under both Task leases.
     // Release preparation uses the sealed descriptor from the committed Test.
-    const absorbed = selected.selectedComposition?.absorptionInput ?? task.nativeAbsorptionInput;
     let authorizedSide = null;
-    if (absorbed) {
-      const binding = normalizedSelectedAbsorption(absorbed);
-      const d = selectedAbsorptionHandoff({ requestId: binding.requestId, text: binding.text }).declaration;
+    if (absorption) {
+      const { binding, d, prior, sourceRows, publishedParent } = absorption;
       for (const prior of binding.priorResults ?? []) {
         const parent = prior.taskId === d.sourceTaskId ? d.sourceCommit : d.survivorParentCommit;
         if (await maybe(git, ["merge-base", "--is-ancestor", d.baseCommit, prior.resultCommit]) === null
@@ -266,9 +315,10 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
           || String(await git(["rev-parse", `${d.sourceCommit}^{tree}`])) !== d.sourceTree) {
         throw failure(`Task ${task.taskId} absorbed history differs from its accepted durable proof`);
       }
-      const sourceRows = String(await git(["rev-list", "--first-parent", "--parents",
-        d.sourceCommit, `^${baseCommit}`])).split(/\r?\n/u).filter(Boolean).map(row => row.split(" "));
-      if (sourceRows.some(row => row.length !== 2)
+      // rev-list still reports parents on the boundary row. Only the source's
+      // authenticated returned Test may introduce the exact published parent.
+      if (sourceRows.some(row => row.length !== 2
+          && !(row.length === 3 && row[0] === prior?.resultCommit && row[2] === publishedParent))
           || await maybe(git, ["merge-base", "--is-ancestor", d.baseCommit, d.sourceCommit]) === null) {
         throw failure(`Task ${task.taskId} absorbed source requires explicit historical migration`);
       }

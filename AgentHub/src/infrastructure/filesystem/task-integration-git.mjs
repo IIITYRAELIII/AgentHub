@@ -975,12 +975,14 @@ export class TaskIntegrationGitService {
 
   async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks, expectedPublishedMetadata = undefined, primary = null }) {
     return measureTaskOperation("native:history-authority", async () => {
+    // Isolated composition keeps original Test and publication receipts at the parent owner.
+    const dataDir = this.#publicationDataDir;
     if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
       const verified = await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
       const publicBases = [...new Set([verified.provenance.compositionBaseCommit ?? verified.provenance.sourceBaseCommit,
         ...(verified.provenance.compositionBaseCommit ? [verified.provenance.publishedBaseCommit] : []),
         ...(verified.provenance.ownGitPublication ? [verified.provenance.ownGitPublication.commit] : [])])];
-      return { bases: publicBases,
+      return { bases: publicBases, publishedHistoryBase: verified.provenance.publishedBaseCommit, dataDir,
         metadataBases: verified.provenance.compositionBaseCommit ? publicBases : verified.metadataBases,
         ...(verified.changelogEntries ? { changelogEntries: verified.changelogEntries } : {}),
         adoptions: verified.adoptions ?? [] };
@@ -1002,7 +1004,8 @@ export class TaskIntegrationGitService {
           && JSON.stringify(publishedMetadata) !== JSON.stringify(expectedPublishedMetadata))) {
       throw new Error("Native candidate published metadata authority changed");
     }
-    return { bases: [publishedMetadata.commit], metadataBases: [publishedMetadata.commit], adoptions: [], publishedMetadata };
+    return { bases: [publishedMetadata.commit], publishedHistoryBase: publishedMetadata.commit, dataDir,
+      metadataBases: [publishedMetadata.commit], adoptions: [], publishedMetadata };
     });
   }
 
