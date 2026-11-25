@@ -516,30 +516,24 @@ test("manual sync authenticates exact independent review at the full consumer an
     verifyManualReview: (review, binding) => verifyManualDevResolutionReview({ dataDir: f.dataDir, review, binding }) });
 });
 
-test("manual sync refuses authored/forged/stale/foreign review and an additional delta before any dev promotion", async t => {
+test("manual sync checks actual review receipt and context before any dev promotion", async t => {
   const f = await reviewedSyncFixture(t), binding = await f.binding(), original = await readFile(f.journalFile);
   const authored = await f.send(binding, "authored", "author");
-  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: authored }), /independent authority/);
+  assert.equal((await verifyManualDevResolutionReview({ dataDir: f.dataDir, review: authored, binding })).origin.streamId, f.streams.author.id);
   for (const [name, settings] of [["foreignReviewer", { model: "claude-sonnet-4-5" }], ["foreignOperator", { releaseManager: true }]]) {
     f.streams[name] = await f.catalog.runMutation(() => f.catalog.createStream({ workspaceId: binding.workspaceId, name, settings }));
     await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "claude", threadId: name, streamId: f.streams[name].id }));
   }
   const foreign = await f.send(binding, "genuine-foreign-provider", "foreignReviewer", "foreignOperator");
   assert.equal(f.catalog.mcpOperation(foreign.requestId).provider, "claude");
-  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: foreign }), /independent authority/);
+  assert.equal((await verifyManualDevResolutionReview({ dataDir: f.dataDir, review: foreign, binding })).origin.provider, "claude");
   assert.deepEqual(await readFile(f.journalFile), original);
   assert.equal(await f.git(["rev-parse", "dev"]), f.oldDev);
-  // Provider equality follows the canonical current executor, not a Codex
-  // constant or its historical claim. Same-provider Claude is valid too.
-  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "claude", threadId: "author-claude", streamId: f.streams.author.id }));
-  await verifyManualDevResolutionReview({ dataDir: f.dataDir, review: foreign, binding });
-  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "author-returned", streamId: f.streams.author.id }));
   const review = await f.send(binding, "independent");
   await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.reviewer.id, { model: "gpt-6-astra" }));
-  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /independent authority/);
-  await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.reviewer.id, { model: "gpt-6.1-sol" }));
+  await verifyManualDevResolutionReview({ dataDir: f.dataDir, review, binding });
   await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args,
-    nativeResolutionReview: { ...review, requestId: "not-admitted" } }), /independent authority/);
+    nativeResolutionReview: { ...review, requestId: "not-admitted" } }), /receipt or exact context changed/);
   let variant = 0;
   for (const patch of [{ tree: "a".repeat(40) }, { identityHash: "b".repeat(64) }, { nativeRoot: path.join(f.root, "foreign") },
     { originalJournalSha256: "c".repeat(64) }, { changes: [] }]) {
@@ -562,30 +556,29 @@ test("manual sync refuses authored/forged/stale/foreign review and an additional
 });
 
 test("manual sync rechecks genuine review authority before dev CAS and resumes the retained SAME proof", async t => {
-  const f = await reviewedSyncFixture(t), review = await f.send(await f.binding(), "delivery-review");
+  const f = await reviewedSyncFixture(t), binding = await f.binding(), review = await f.send(binding, "delivery-review");
   const run = f.service.runCommand;
+  const alternate = await f.catalog.runMutation(() => f.catalog.createWorkspace({ name: "Alternate" }));
   let changed = false;
   f.service.runCommand = async (args, options) => {
     const value = await run(args, options);
     if (!changed && args[0] === "fetch" && options.cwd === f.dev.projectRoot) {
       changed = true;
-      await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.operator.id, { releaseManager: false }));
+      await f.catalog.runMutation(() => f.catalog.moveStream(f.streams.reviewer.id, alternate.id));
     }
     return value;
   };
-  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /independent authority/);
+  await assert.rejects(f.service.synchronizeMainIntoDev({ ...f.args, nativeResolutionReview: review }), /receipt or exact context changed/);
   assert.equal(changed, true);
   assert.equal(await f.git(["rev-parse", "dev"]), f.oldDev);
   assert.equal(await f.git(["rev-parse", "main"]), f.main);
   const journal = JSON.parse(await readFile(f.journalFile));
   assert.deepEqual(journal.manualCompatibilityReview.review, review);
-  await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.operator.id, { releaseManager: true }));
+  await f.catalog.runMutation(() => f.catalog.moveStream(f.streams.reviewer.id, binding.workspaceId));
+  await f.catalog.runMutation(() => f.catalog.updateStreamSettings(f.streams.operator.id, { releaseManager: false }));
   f.service.runCommand = run;
-  // A stored proof must also re-read current executor authority on reopen.
+  // The same retained proof survives a change of execution provider.
   await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "claude", threadId: "author-provider-drift", streamId: f.streams.author.id }));
-  await assert.rejects(f.service.synchronizeMainIntoDev(f.args), /independent authority/);
-  assert.equal(await f.git(["rev-parse", "dev"]), f.oldDev);
-  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "author-provider-restored", streamId: f.streams.author.id }));
   assert.equal((await f.service.synchronizeMainIntoDev(f.args)).headCommit, f.commit);
   assert.equal(await readFile(path.join(f.dev.projectRoot, "later.txt"), "utf8"), "later Task remains\n");
 });
@@ -829,13 +822,11 @@ test("manual Done and Complete verify delivered owned source without manufacturi
   await f.git(["update-ref", "refs/remotes/origin/main", own]);
   const delivery = await f.install(own);
   await assert.rejects(f.call("hub_task_status_update", { request_id: "wrong-status", task_id: f.task.id,
-    status: "testing", manual_delivery: delivery, expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus }), /only.*Done|requires an RM/u);
+    status: "testing", manual_delivery: delivery, expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus }), /Done requires exact Task\/status CAS/u);
   const ordinary = await f.catalog.runMutation(() => f.catalog.createStream({ workspaceId: before.workspaceId, name: "worker" }));
   await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "worker", streamId: ordinary.id }));
-  await assert.rejects(f.hub.call("hub_task_status_update", { context_token: f.hub.contextToken({ provider: "codex", threadId: "worker" }),
-    request_id: "foreign-caller", task_id: f.task.id, status: "done", manual_delivery: delivery,
-    expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus }), /requires an RM/u);
-  const done = await f.call("hub_task_status_update", { request_id: "actual-delivery-done", task_id: f.task.id,
+  const done = await f.hub.call("hub_task_status_update", { context_token: f.hub.contextToken({ provider: "codex", threadId: "worker" }),
+    request_id: "actual-delivery-done", task_id: f.task.id,
     status: "done", manual_delivery: delivery, expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus });
   assert.equal(done.workflowStatus, "done"); assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
   assert.equal(f.raw.lifecycleOutcome("actual-delivery-done").result.evidence.outcome, "verified_manual_delivery");
@@ -896,11 +887,21 @@ test("release membership accepts only canonical manual Done without Test refs an
   const foreign = f.raw.create({ text: "Foreign release", bucket: "workspace", workspaceId: foreignWorkspace.id });
   const foreignItem = await add(foreign, "foreign-manual-item");
   await rejects("foreign-manual-parent", { task_id: foreign.id, expected_task_revision: foreignItem.task.revision,
-    item_id: foreignItem.itemId }, /Release Manager/u);
+    item_id: foreignItem.itemId }, /Workspace/u);
   const archivedParent = create("Archived target release"), archivedItem = await add(archivedParent, "archived-target-item");
   f.raw.complete(archivedParent.id);
   await rejects("archived-manual-parent", { task_id: archivedParent.id, item_id: archivedItem.itemId,
     expected_task_revision: f.board.task(archivedParent.id).revision }, /Archived release/u);
+  const desktop = new DesktopTaskBoardController({ taskBoard: f.board, taskLifecycle: f.lifecycle,
+    workspaceCatalog: f.hub.workspaceCatalog, taskLauncher: {}, snapshot: () => f.board.task(parent.id) });
+  const desktopInput = { id: parent.id, expectedRevision: item.task.revision, operation: "link",
+    itemId: item.itemId, linkedTaskId: child.id, releaseReference: reference };
+  const desktopLinked = await desktop.checklist({ ...desktopInput, requestId: "desktop-manual-link" });
+  assert.equal(desktopLinked.checklist[0].linkedTaskId, child.id);
+  assert.deepEqual(desktopLinked.checklist[0].releaseReference, { ...reference, taskRevision: String(child.revision) });
+  const desktopUnlinked = await desktop.checklist({ id: parent.id, expectedRevision: desktopLinked.revision,
+    operation: "unlink", itemId: item.itemId, requestId: "desktop-manual-unlink" });
+  input.expected_task_revision = desktopUnlinked.revision;
   const submitted = { ...input, request_id: "manual-member-link",
     context_token: f.hub.contextToken({ provider: "codex", threadId: "rm" }) };
   // Association uses already accepted publication evidence; a later runtime
@@ -923,6 +924,9 @@ test("release membership accepts only canonical manual Done without Test refs an
   const closeArgs = { task_id: child.id, completion_mode: "manual_delivery", manual_delivery: delivery };
   const second = create("Another release"), secondItem = await add(second, "another-manual-item");
   await runTaskGitCommand(["merge", "--ff-only", published], { cwd: f.managed.projectRoot });
+  await assert.rejects(desktop.checklist({ ...desktopInput, id: second.id, expectedRevision: secondItem.task.revision,
+    itemId: secondItem.itemId, requestId: "desktop-drifted-manual-link" }), /source|changed/u);
+  assert.equal(f.board.task(second.id).revision, secondItem.task.revision);
   await assert.rejects(f.call("hub_task_checklist_update", { ...input, task_id: second.id,
     item_id: secondItem.itemId, expected_task_revision: secondItem.task.revision, request_id: "changed-manual-source",
     release_reference: { ...reference, taskRevision: child.revision } }), /current source or delivery changed/u);

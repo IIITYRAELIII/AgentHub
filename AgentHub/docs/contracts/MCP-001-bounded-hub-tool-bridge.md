@@ -1,6 +1,6 @@
 # MCP-001 — Bounded Agent Hub tool bridge
 
-RM-only `hub_task_complete` supports explicit `manual_delivery` with exact
+`hub_task_complete` supports explicit `manual_delivery` with exact
 revision/release/manifest hash and the configured installation root. Existing
 authenticated mutation, original receipt, preview token and Task CAS remain
 owners. It removes the previewed clean published Task branches/worktrees before
@@ -12,7 +12,7 @@ binds an old canonical manual Complete's exact source. No old completed operatio
 is replayed. A partial new cleanup uses its admitted original and the existing
 addressed reconciliation; a changed source or remaining artifact set refuses.
 Exact `retained_repositories` pins preserve unrepresented historical worktrees
-without claiming them delivered. RM Done may accept the same `manual_delivery`
+without claiming them delivered. Done may accept the same `manual_delivery`
 proof plus exact Task/status CAS for owned source without a Test reference.
 The original Test history is unchanged. `manual_preview_arguments` on existing
 reconciliation binds the exact old read-only manual Complete preview hash;
@@ -58,7 +58,7 @@ the lifecycle owner. Its private input error terminalizes the existing admitted
 receipt as failed; identical replay returns that failure without dispatch.
 A downstream error with similar text/name remains potentially partial/unknown.
 
-The existing RM reconciliation owner has a finite protocol-v1 compatibility
+The existing reconciliation owner has a finite protocol-v1 compatibility
 boundary for an ordinary malformed status original: exactly request/Task/status
 and both original CAS fields, with an invalid nonempty enum and no special
 cutover, selected, squash or review arguments. The stored execution binding and
@@ -76,7 +76,7 @@ permission. Changed/missing/foreign/undrained evidence stays unknown. Receipt
 persistence failure stays ambiguous. Remove this historical branch only after
 all addressed protocol-v1 malformed originals are terminal and migrated.
 The existing local operation-reconcile CLI accepts --reconcile-arguments for
-the same authenticated RM tool; it grants no separate writer authority.
+the same authenticated tool; it grants no separate writer authority.
 See ADR-HUB-408-malformed-workflow-status.md.
 
 The existing retained native witness may read a primary lock while the instance
@@ -101,8 +101,8 @@ MSG-001 and ADR-0136. This changes routing policy, not MCP mutation ownership.
 
 The existing cancellation owner can continue the original requested cancellation
 after service exit using matching Windows Git Job retirement evidence or an exact launch permit
-taken before execution. Release
-Manager reconciliation accepts this original even while its workflow receipt is
+taken before execution. An authenticated reconciliation can address this original
+even while its workflow receipt is
 pending. The exact Task, arguments hash and current Task revision remain
 required. Without proof, the stop remains requested. With proof, it retains the
 original cancellation and observed Git effects and stops the original execution
@@ -113,8 +113,8 @@ existing exact positive recovery path. See ADR-HUB-524.
 
 `hub_task_operation_cancel` is an explicit audited mutation of future execution,
 not reconciliation of past effects. Exact original ID/hash/Task arguments and
-current Task CAS are required. The original Stream, a genuine RM, or the
-authenticated desktop user uses the same existing receipt owner. Caller scope
+current Task CAS are required. Authenticated MCP and Desktop calls use the same
+existing receipt owner. Caller scope
 and target Task scope remain distinct. Cancellation commands retain their own
 receipt; current original execution disposition is read independently.
 
@@ -140,7 +140,7 @@ PID absence, error text and elapsed time do not suffice. No original claim/Git
 replay, dirty-source removal or NO_EFFECT inference is authorized.
 
 For an exact UNKNOWN/STOPPED workflow with a failed lifecycle transition, the
-existing RM reconciliation owner reports a read-only stopped disposition under
+existing reconciliation owner reports a read-only stopped disposition under
 the existing Task/repository/Await leases and process guard. It rechecks original
 arguments/CAS/root, the whole retained receipt snapshot and bound stopped
 retirement metadata. The original receipt, error, result, timestamps and stop
@@ -193,7 +193,7 @@ Git edit of the original from-to-terminal delta, including its removed and added
 line ranges. Retained context lines must map unchanged to their exact after
 positions. This is read-only; source objects, refs and index remain unchanged.
 
-Partial deletion retains its exact admitted lifecycle intent. Existing RM
+Partial deletion retains its exact admitted lifecycle intent. Existing
 `hub_task_operation_reconcile`, addressed to the original Complete request,
 may finish its remaining pinned cleanup or settle its canonical outcome.
 It cannot retrofit an unsealed historical UNKNOWN, replace the source pin,
@@ -201,7 +201,7 @@ discard ignored/dirty data or infer publication from a generic failure.
 Ordinary completion and the existing preserve-only absorption modes retain
 their previous contracts. See ADR-HUB-369-direct-published-cleanup.
 
-For an explicitly completed non-product operation, RM may select
+For an explicitly completed non-product operation, the caller may select
 `completion_mode=operational` without a delivery envelope. This attests the
 operational outcome, not product publication. The same owner proves no result,
 adoption or squash evidence, HEAD exactly equal to the immutable Task base,
@@ -468,7 +468,7 @@ fatal text, forged typed errors, lost ownership, post-prepare failures and old
 unsealed originals remain insufficient. Existing UNKNOWN/forward-custody rules
 are unchanged. See ADR-HUB-367-source-discovery-refusal.
 
-The existing RM `hub_task_operation_reconcile` can read or settle this sealed
+The existing `hub_task_operation_reconcile` can read or settle this sealed
 claim refusal using the original operation ID and exact recorded repository
 locator, without workflow/Git recovery or new assignment. Active original workers,
 foreign identities and admitted claims refuse. Same-ID retry and startup readback
@@ -829,7 +829,7 @@ reason, state age and a stalled marker after sixty seconds in `dispatching` or
 `reconciling`. A deferred command never
 becomes a synthetic live run merely to make blocked admission observable.
 
-Original native Await recovery (ADR-0116) uses the existing RM reconciliation
+Original native Await recovery (ADR-0116) uses the existing reconciliation
 operation/CLI and the exact original arguments hash and workflow CAS. It adds no
 public approval flag, second receipt or replay identity. An owning proof of the
 bounded already-published-notes archive can substitute for a nonexistent process
@@ -840,7 +840,7 @@ performs a read without re-composing or re-archiving.
 
 ## Explicit forward custody of an unsealed claim
 
-An explicitly authorized RM may use the existing `hub_task_operation_reconcile`
+An authenticated caller may use the existing `hub_task_operation_reconcile`
 with `claim_custody` to prepare and then fence one exact unsealed claim. This is
 withdrawal of future continuation, never historical NO_EFFECT. The old receipt,
 error, argument identity and UNKNOWN remain unchanged. Dedicated immutable stage
@@ -1015,8 +1015,8 @@ Public MCP Task mutations return a `taskOperation` admission/readback envelope
 from the existing MCP ledger once the same worker is registered. Admission is
 not successful business completion. `hub_task_operation_get` reads that exact
 original ID, canonical argument hash, actual live-worker observation, lifecycle
-phase, cancellation, error and terminal result. Same original caller or genuine
-RM authority is required; supplied original arguments/hash must match. Reading
+phase, cancellation, error and terminal result. The call requires an authenticated
+context. Supplied original arguments/hash must match. Reading
 never resumes or settles an operation. Same-ID mutation submissions read the
 existing receipt without starting another worker; changed arguments refuse.
 The sole UNKNOWN-cancel continuation exception above uses the existing canonical

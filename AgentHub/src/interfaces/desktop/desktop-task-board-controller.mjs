@@ -166,7 +166,14 @@ export class DesktopTaskBoardController {
   }
 
   checklist(params) {
-    return this.#mutate(() => this.taskBoard.updateChecklist(params));
+    const mutate = () => this.taskBoard.updateChecklist(params);
+    if (!params.releaseReference?.manualDelivery) return this.#mutate(mutate);
+    if (typeof this.taskLifecycle?.withManualDeliveryReleaseReference !== "function") {
+      throw new Error("Manual release reference owner is unavailable");
+    }
+    return this.#mutate(() => this.taskLifecycle.withManualDeliveryReleaseReference({
+      taskId: params.linkedTaskId, reference: params.releaseReference, operationId: params.requestId,
+    }, mutate));
   }
 
   checklistLinkedTaskAction(params) {

@@ -76,7 +76,7 @@ explicit confirmation.
 
 ## Verified manual delivery (ADR-HUB-466)
 
-RM Task Complete may explicitly verify a real manual installation instead of
+Task Complete can explicitly verify a real manual installation instead of
 consulting an old publication generation. Exact runtime/manifest/source,
 main/origin and Task-result containment are mandatory. Workflow Done precedes
 closing. Ready requires the existing authenticated live desktop control owner,
@@ -121,9 +121,10 @@ altering its refs. The normal isolated journal still owns resolution and dev CAS
 When the issued manual merge needs additional Task compatibility beyond its
 automatic/conflict composition, the same service can receive a separate exact
 `nativeResolutionReview` (`requestId`, original `text`). Its existing
-`native-merge-review-v1` envelope must be a successful authenticated independent
-inter-Stream receipt to the current RM; author text or an imported artifact is
-not authority. No review is required for ordinary conflict-only merges.
+`native-merge-review-v1` envelope must be backed by a successful authenticated
+inter-Stream receipt bound to the Task Workspace and exact review context.
+Agent rules govern reviewer selection. Ordinary conflict-only merges do not
+require a compatibility review receipt.
 The bound operation/delivery/identity, all bases, original journal and issued
 stages, canonical automatic inventory, exact candidate/tree and complete
 before/after changes are recomputed. The full selected-content consumer accepts
@@ -137,7 +138,7 @@ The native sync math binds every best merge base for both retained publication
 and verified manual policies, including criss-cross histories. It rejects a
 changed set rather than selecting one convenient base.
 Delivered managed source may prove manual workflow Done without a Test ref;
-the existing RM status owner requires exact Task/status CAS and records the
+the existing status owner requires exact Task/status CAS and records the
 actual installation/managed-head evidence without manufacturing a Test result.
 An unrepresented historical repository may only be explicitly retained with
 its exact managed path/head pin. Its contents are preserved, not certified
