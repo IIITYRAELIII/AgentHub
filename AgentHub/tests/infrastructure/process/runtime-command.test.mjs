@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -16,9 +16,167 @@ import {
   runtimeCommandSpoolDirectory,
   validateRuntimeCommand,
 } from "../../../src/infrastructure/process/runtime-command.mjs";
-import { DurableCommandRetryableError } from "../../../src/infrastructure/persistence/durable-command-receipts.mjs";
+import {
+  commandFingerprint, DurableCommandReceipts, DurableCommandRetryableError,
+} from "../../../src/infrastructure/persistence/durable-command-receipts.mjs";
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("one runtime routes old IDs through the old receipt journal across startup", { timeout: 30_000 }, async () => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "runtime-command-cutover-"));
+  const legacyTemporaryRoot = path.join(runtimeRoot, "old-project", ".agent-hub", "runtime");
+  const legacy = runtimeCommandSpoolDirectory(runtimeRoot, legacyTemporaryRoot);
+  const current = runtimeCommandSpoolDirectory(runtimeRoot);
+  const legacyReceiptFile = path.join(legacy, "receipts.json");
+  const receiptFile = path.join(runtimeRoot, "data", "runtime-command-receipts.json");
+  const calls = [];
+  const reconciled = [];
+  const server = new RuntimeCommandServer({
+    runtimeRoot, legacyTemporaryRoot,
+    handler: async ({ id }) => { calls.push(id); return id; },
+    reconcile: async ({ id }) => {
+      reconciled.push(id);
+      return { resolved: true, result: "old-effect" };
+    },
+  });
+  const request = (directory, id) => writeFile(path.join(directory, `${id}.request.json`), JSON.stringify({
+    id, command: "turn-start", args: ["{}"], cwd: runtimeRoot, environment: {},
+  }));
+  try {
+    await Promise.all([mkdir(legacy, { recursive: true }), mkdir(current, { recursive: true })]);
+    const oldReceipts = new DurableCommandReceipts({ file: legacyReceiptFile });
+    const fingerprint = commandFingerprint({
+      command: "turn-start", args: ["{}"], cwd: runtimeRoot, environment: {},
+    });
+    await oldReceipts.execute({
+      id: "retained",
+      fingerprint,
+      action: "turn-start",
+      effect: async () => "old-result",
+    });
+    let effectStarted;
+    const started = new Promise((resolve) => { effectStarted = resolve; });
+    const interrupted = oldReceipts.execute({
+      id: "interrupted",
+      fingerprint,
+      action: "turn-start",
+      effect: () => {
+        effectStarted();
+        return new Promise(() => {});
+      },
+    });
+    await Promise.race([started, interrupted]);
+    const oldJournal = JSON.parse(await readFile(legacyReceiptFile, "utf8"));
+    const unsettled = oldJournal.records.find(({ id }) => id === "interrupted");
+    assert.equal(unsettled.phase, "effect-started");
+    // Retain the actual started receipt but model the previous owner exiting.
+    unsettled.effectOwner.pid = 999_999;
+    await writeFile(legacyReceiptFile, JSON.stringify(oldJournal));
+    await Promise.all([
+      request(legacy, "retained"),
+      request(legacy, "interrupted"),
+      request(current, "interrupted"),
+      request(legacy, "shared"),
+      request(current, "shared"),
+      request(current, "new"),
+      request(current, "acknowledged"),
+      request(legacy, "acknowledged"),
+      writeFile(path.join(legacy, "acknowledged.ack"), "\n"),
+    ]);
+    await server.start();
+    const awaitResponse = async (directory, id) => {
+      const file = path.join(directory, `${id}.response.json`);
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        try { return JSON.parse(await readFile(file, "utf8")); }
+        catch (error) { if (error?.code !== "ENOENT") throw error; }
+        await delay(20);
+      }
+      throw new Error(`Response did not arrive for ${id}`);
+    };
+    assert.deepEqual(await awaitResponse(legacy, "retained"), { ok: true, result: "old-result" });
+    assert.deepEqual(await awaitResponse(current, "interrupted"), { ok: true, result: "old-effect" });
+    assert.deepEqual(await awaitResponse(legacy, "interrupted"), { ok: true, result: "old-effect" });
+    assert.deepEqual(await awaitResponse(current, "shared"), { ok: true, result: "shared" });
+    assert.deepEqual(await awaitResponse(legacy, "shared"), { ok: true, result: "shared" });
+    assert.deepEqual(await awaitResponse(current, "new"), { ok: true, result: "new" });
+    assert.deepEqual(calls, ["shared", "new"]);
+    assert.deepEqual(reconciled, ["interrupted"]);
+    assert.deepEqual((JSON.parse(await readFile(receiptFile, "utf8"))).records.map(row => row.id), ["new"]);
+    assert.deepEqual((JSON.parse(await readFile(legacyReceiptFile, "utf8"))).records.map(row => row.id).sort(),
+      ["interrupted", "retained", "shared"]);
+    for (const directory of [legacy, current]) {
+      await assert.rejects(stat(path.join(directory, "acknowledged.request.json")), { code: "ENOENT" });
+    }
+  } finally {
+    await server.close();
+    await rm(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test("a late legacy copy reuses a durable canonical outcome and its ACK retires both journals", {
+  timeout: 30_000,
+}, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "runtime-command-late-legacy-"));
+  const legacyTemporaryRoot = path.join(root, "old-project");
+  const legacy = runtimeCommandSpoolDirectory(root, legacyTemporaryRoot);
+  const canonical = runtimeCommandSpoolDirectory(root);
+  const journals = [
+    path.join(root, "data", "runtime-command-receipts.json"),
+    path.join(legacy, "receipts.json"),
+  ];
+  let effects = 0;
+  let server;
+  t.after(async () => {
+    await server?.close();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+  const start = async () => {
+    server = new RuntimeCommandServer({
+      runtimeRoot: root, legacyTemporaryRoot,
+      handler: async () => `outcome-${++effects}`,
+    });
+    await server.start();
+  };
+  const id = "original";
+  const request = { id, command: "send-message", args: ["one"], cwd: root, environment: {} };
+  const submit = async (directory, message = request) => {
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, `${id}.request.json`), JSON.stringify(message));
+    const deadline = Date.now() + 6_000;
+    while (Date.now() < deadline) {
+      try {
+        return JSON.parse(await readFile(path.join(directory, `${id}.response.json`), "utf8"));
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      await delay(20);
+    }
+    throw new Error("Did not receive a response to the original ID");
+  };
+  const records = async (file) => JSON.parse(await readFile(file, "utf8")).records;
+  await start();
+  const first = await submit(canonical);
+  assert.deepEqual(first, { ok: true, result: "outcome-1" });
+  await server.close();
+  await start();
+  const refusal = await submit(legacy, { ...request, args: ["some other command"] });
+  assert.equal(refusal.ok, false);
+  assert.match(refusal.error, /fingerprint conflict/u);
+  await unlink(path.join(legacy, `${id}.response.json`));
+  assert.deepEqual(await submit(legacy), first);
+  assert.equal(effects, 1);
+  const [beforeCurrent, beforeLegacy] = await Promise.all(journals.map((file) => records(file)));
+  assert.deepEqual(beforeLegacy, beforeCurrent);
+
+  await writeFile(path.join(legacy, `${id}.ack`), "\n");
+  const deadline = Date.now() + 6_000;
+  while ((await readdir(legacy)).includes(`${id}.ack`) && Date.now() < deadline) await delay(20);
+  assert.equal((await readdir(legacy)).includes(`${id}.ack`), false);
+  assert.deepEqual(await Promise.all(journals.map((file) => records(file))), [[], []]);
+  assert.deepEqual(await readdir(canonical), []);
+  assert.equal(effects, 1);
+});
 
 async function leaveStaleUnixSocket(endpoint) {
   const child = spawn(process.execPath, [
@@ -493,9 +651,12 @@ test("spool acknowledgement skips a request still present in the same directory 
     }));
     await writeFile(path.join(spool, `${id}.ack`), "\n");
     await server.start();
-    await delay(250);
+    const deadline = Date.now() + 5_000;
+    while ((await readdir(spool)).includes(`${id}.ack`) && Date.now() < deadline) {
+      await delay(20);
+    }
     assert.equal(effects, 0);
-    assert.equal((await readdir(spool)).some((name) => name.endsWith(".ack")), false);
+    assert.deepEqual(await readdir(spool), []);
   } finally {
     await server.close();
   }

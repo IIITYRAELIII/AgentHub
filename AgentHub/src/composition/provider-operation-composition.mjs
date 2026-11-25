@@ -7,6 +7,7 @@ import {
 } from "../domain/run-activity.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
+import { runtimeCommandSpoolDirectory } from "../infrastructure/process/runtime-command.mjs";
 import { ClaudeEventService } from "../providers/claude/claude-event-service.mjs";
 import { isContextCompactionItem } from "../providers/codex/context-compaction-tracker.mjs";
 import { CodexEventService } from "../providers/codex/codex-event-service.mjs";
@@ -55,6 +56,7 @@ export function createProviderOperationComposition({
   nameCreatedThread,
   activeProjectRoot,
   codexSandboxMode,
+  prepareVisualizationDirectory,
   codexModel,
   invalidateTaskCatalog,
   restoreCodexTaskSettings,
@@ -123,6 +125,7 @@ export function createProviderOperationComposition({
     bindCreatedThread,
     activeProjectRoot,
     sandboxMode: codexSandboxMode,
+    prepareVisualizationDirectory,
     model: codexModel,
     invalidateCatalog: invalidateTaskCatalog,
     restoreSettings: restoreCodexTaskSettings,
@@ -188,6 +191,7 @@ export function createProviderOperationComposition({
     ensureThreadNamed: (reference) => nameCreatedThread({ ...reference, recovering: true }),
     sendRpc,
     sandboxMode: codexSandboxMode,
+    commandSpoolDirectory: runtimeCommandSpoolDirectory(),
     compactionRecycle: () => codexContextMaintenance.recycleInFlight,
     resolvedSkillNames: resolvedExplicitSkillNames,
     reindexRun: (run, previous) => taskRuns.reindex(run, previous),

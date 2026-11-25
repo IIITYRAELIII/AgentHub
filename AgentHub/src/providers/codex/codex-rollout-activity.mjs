@@ -2003,9 +2003,9 @@ function codexActivityReadKey(rolloutPath, {
   ].join("\u0000");
 }
 
-export function readCodexAdmissionActivity(rolloutPath) {
+export function readCodexAdmissionActivity(rolloutPath, threadId = "", deadlineAt) {
   assertCodexRolloutReadAllowed("readCodexAdmissionActivity");
-  return readCodexAdmissionActivityInWorker(rolloutPath, codexActivityReadPathKey(rolloutPath));
+  return readCodexAdmissionActivityInWorker(rolloutPath, `${codexActivityReadPathKey(rolloutPath)}\0${threadId}`, threadId, deadlineAt);
 }
 
 export function readCodexRolloutActivity(rolloutPath, options = {}) {

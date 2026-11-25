@@ -46,6 +46,7 @@ const STATIC_CONTENT_TYPES = new Map([
   [".jpeg", "image/jpeg"],
   [".jpg", "image/jpeg"],
   [".js", "text/javascript; charset=utf-8"],
+  [".html", "text/html; charset=utf-8"],
   [".mjs", "text/javascript; charset=utf-8"],
   [".png", "image/png"],
   [".svg", "image/svg+xml; charset=utf-8"],
@@ -54,6 +55,14 @@ const STATIC_CONTENT_TYPES = new Map([
   [".woff", "font/woff"],
   [".woff2", "font/woff2"],
 ]);
+const WORKSPACE_IMAGE_TYPES = new Map([
+  [".apng", "image/png"],
+  [".cur", "image/x-icon"],
+  [".dib", "image/bmp"],
+  [".jfif", "image/jpeg"],
+  [".jpe", "image/jpeg"],
+]);
+
 function staticAssetManifest(assetsDirectory) {
   const root = path.resolve(assetsDirectory);
   const indexSource = readFileSync(path.join(root, "index.html"), "utf8");
@@ -363,6 +372,7 @@ function responseHeaders(contentType, {
   immutable = false,
   telegramRuntime = true,
   styleNonce = "",
+  externalImages = false,
 } = {}) {
   return {
     "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-store",
@@ -371,8 +381,9 @@ function responseHeaders(contentType, {
       "base-uri 'none'",
       "connect-src 'self'",
       "form-action 'none'",
+      "frame-src 'self'",
       "frame-ancestors 'none'",
-      "img-src 'self' data: blob:",
+      `img-src 'self' data: blob:${externalImages ? " http: https:" : ""}`,
       "object-src 'none'",
       `script-src 'self'${telegramRuntime ? " https://telegram.org" : ""}`,
       `style-src 'self'${styleNonce ? ` 'nonce-${styleNonce}'` : ""}`,
@@ -991,7 +1002,7 @@ export class MiniAppServer {
 
   async #handle(request, response, transportReceivedAtMs = Date.now()) {
     const method = String(request.method ?? "GET").toUpperCase();
-    const url = new URL(request.url ?? "/", `http://${this.#host}`);
+    const url = new URL(request.url ?? "/", "http://localhost");
     if (this.#startupOnly) {
       const read = ["GET", "HEAD"].includes(method);
       const localSession = url.pathname === "/api/local-session";
@@ -1422,17 +1433,33 @@ export class MiniAppServer {
       }
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
-      if (authorization.source !== "local-mini-app") {
+      const preview = url.searchParams.get("preview") === "image";
+      const webviewPreview = preview && authorization.source === "local-vscode-webview";
+      if (authorization.source !== "local-mini-app" && !webviewPreview) {
         json(response, 403, { error: "Локальные файлы Workspace доступны только локальному Agent Hub." }, method);
         return;
       }
       try {
         const file = await resolveWorkspaceFile(url.searchParams.get("path"));
-        await sendBoundedFile(response, file.target, file.bytes, file.type, method, {
-          "Content-Disposition": downloadDisposition(file.name),
-        });
+        const headers = { "Content-Disposition": downloadDisposition(file.name) };
+        if (!preview) {
+          await sendBoundedFile(response, file.target, file.bytes, file.type, method, headers);
+          return;
+        }
+
+        // Image documents can also be navigated to directly. Keep the image
+        // response sandboxed even when the source is an active SVG document.
+        headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'";
+        const extension = path.extname(file.name).toLowerCase();
+        const type = WORKSPACE_IMAGE_TYPES.get(extension) ?? STATIC_CONTENT_TYPES.get(extension) ?? file.type;
+        if (!type.startsWith("image/")) {
+          json(response, 415, { error: "Формат изображения не поддерживается" }, method);
+          return;
+        }
+        await sendBoundedFile(response, file.target, file.bytes, type, method, headers);
       } catch (error) {
-        json(response, 404, { error: String(error?.message ?? error) }, method);
+        if (response.headersSent) { response.destroy(error); return; }
+        json(response, 404, { error: preview ? "Изображение недоступно" : String(error?.message ?? error) }, method);
       }
       return;
     }
@@ -1970,6 +1997,11 @@ export class MiniAppServer {
       const styleNonce = url.pathname === "/" ? randomBytes(18).toString("base64") : "";
       const read = () => this.#staticBody(url.pathname, assetBundle, { nonce: styleNonce });
       const body = timing ? await timing.measure("http-asset-read", read) : await read();
+      const frameHeaders = url.pathname === "/visualization-frame.html" ? {
+        "Content-Security-Policy": loopbackRequest(request)
+          ? "frame-ancestors 'self' vscode-webview: vscode-file:"
+          : "frame-ancestors 'self'",
+      } : undefined;
       send(
         response,
         200,
@@ -1981,6 +2013,8 @@ export class MiniAppServer {
           immutable: descriptor.immutable || url.searchParams.has("v"),
           telegramRuntime,
           styleNonce,
+          externalImages: url.pathname === "/",
+          headers: frameHeaders,
         },
       );
     } catch (error) {

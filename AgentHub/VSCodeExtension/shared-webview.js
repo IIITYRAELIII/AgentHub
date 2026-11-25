@@ -1,6 +1,7 @@
 "use strict";
 
 const { randomBytes } = require("node:crypto");
+const { createServer } = require("node:http");
 const path = require("node:path");
 const vscode = require("vscode");
 
@@ -38,6 +39,45 @@ function resource(webview, uri) {
   return uri ? String(webview.asWebviewUri(uri)) : "";
 }
 
+async function serveVisualizationFrame(runtimeUri, signal) {
+  const uri = vscode.Uri.joinPath(runtimeUri, ...ASSET_ROOT, "visualization-frame.html");
+  const body = await vscode.workspace.fs.readFile(uri);
+  signal.throwIfAborted();
+  const server = createServer((request, response) => {
+    if (request.url !== "/visualization-frame.html" || !["GET", "HEAD"].includes(request.method)) {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, {
+      "Cache-Control": "no-store",
+      "Content-Security-Policy": "frame-ancestors vscode-webview: vscode-file:",
+      "Content-Type": "text/html; charset=utf-8",
+      "Referrer-Policy": "no-referrer",
+      "X-Content-Type-Options": "nosniff",
+    }).end(request.method === "HEAD" ? undefined : body);
+  });
+  let abortListening;
+  try {
+    await new Promise((resolve, reject) => {
+      abortListening = () => reject(signal.reason);
+      signal.addEventListener("abort", abortListening, { once: true });
+      server.once("error", reject);
+      server.listen({ port: 0, host: "127.0.0.1", signal }, resolve);
+    });
+    signal.throwIfAborted();
+  } finally {
+    signal.removeEventListener("abort", abortListening);
+  }
+  server.unref();
+  return {
+    address: `http://127.0.0.1:${server.address().port}`,
+    close() {
+      server.close();
+      server.closeAllConnections();
+    },
+  };
+}
+
 function rewriteThemeCssUrls(css, stylesheetPathname, themeRegistry, webview) {
   const base = path.posix.dirname(stylesheetPathname);
   return String(css).replace(/url\(\s*(["']?)([^"'()]+)\1\s*\)/giu, (match, _quote, rawValue) => {
@@ -66,7 +106,7 @@ async function themeStyleContent(themeRegistry, webview) {
   return new Map(entries);
 }
 
-async function rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets) {
+async function rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets, visualizationFrame) {
   const references = clientAssets.localAssetReferences(html);
   const entries = await Promise.all(references.map(async (reference) => {
     const uri = runtimeAssetUri(runtimeUri, reference, clientAssets);
@@ -74,7 +114,8 @@ async function rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAs
     return [reference, uri];
   }));
   for (const [reference, uri] of entries) {
-    html = clientAssets.replaceLocalAssetReference(html, reference, resource(webview, uri));
+    html = clientAssets.replaceLocalAssetReference(html, reference,
+      reference === "/visualization-frame.html" ? visualizationFrame : resource(webview, uri));
   }
   return { html, uris: entries.map(([, uri]) => uri) };
 }
@@ -100,6 +141,13 @@ async function sharedWebviewHtml(webview, locations) {
   const { clientAssets, index, bootstrap, themeRegistry, renderThemeHtml } = await resolveSharedAssets(locations);
   const nonce = randomBytes(16).toString("base64");
   let html = Buffer.from(await vscode.workspace.fs.readFile(index)).toString("utf8");
+  // VS Code resource URIs load scripts and styles, but nested document navigation uses the local server.
+  const visualizationFrame = locations.localWebAddress
+    ? new URL("/visualization-frame.html", locations.localWebAddress).href
+    : "";
+  if (!visualizationFrame) {
+    html = html.replace(/<link rel="agent-hub-visualization-frame" href="\/visualization-frame\.html">/u, "");
+  }
   if (locations.testContour === true) html = markTestContourDocument(html);
   const themeResourceUrls = new Map([...themeRegistry.resources].map(([pathname, item]) => (
     [pathname, resource(webview, vscode.Uri.file(item.file))]
@@ -119,14 +167,15 @@ async function sharedWebviewHtml(webview, locations) {
     firstRuntimeScript,
     `<script src="${resource(webview, bootstrap)}" defer></script>$&`,
   );
-  const rewritten = await rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets);
+  const rewritten = await rewriteRuntimeAssetReferences(html, webview, runtimeUri, clientAssets, visualizationFrame);
   html = rewritten.html;
   const csp = [
     "default-src 'none'",
-    `img-src ${webview.cspSource} data: blob:`,
+    `img-src ${webview.cspSource} data: blob: https:`,
     `style-src ${webview.cspSource} 'nonce-${nonce}'`,
     `script-src ${webview.cspSource} 'nonce-${nonce}'`,
-    "connect-src http://127.0.0.1:* http://localhost:* http://[::1]:*",
+    "connect-src http://127.0.0.1:* http://localhost:*",
+    "frame-src " + (visualizationFrame || "'none'"),
     "font-src 'none'",
   ].join("; ");
   html = html.replace(
@@ -145,4 +194,4 @@ async function sharedWebviewHtml(webview, locations) {
   };
 }
 
-module.exports = { markTestContourDocument, sharedWebviewHtml };
+module.exports = { markTestContourDocument, serveVisualizationFrame, sharedWebviewHtml };

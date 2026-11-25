@@ -35,6 +35,7 @@ import { CHAT_HISTORY_VISIBILITY } from "../../domain/history-page-visibility.mj
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 import { isLegacyCodexContextProbeTurn } from "../../domain/legacy-codex-context-probe.mjs";
 import { withDurableMessageMetadata } from "../../domain/stream-message-pin.mjs";
+import { codexVisualizationIdentity } from "../../domain/codex-visualization-reference.mjs";
 
 const MAX_CACHED_HISTORIES = 12;
 const HISTORY_VERSION_LENGTH = 22;
@@ -382,6 +383,7 @@ export function createDesktopTaskHistoryFactory({
   interstreamOriginForClientMessage = () => null,
   attachmentImporter = async () => [],
   responseBudget,
+  commandTrace,
   warn = () => {},
 }) {
   const refreshes = new Map();
@@ -514,6 +516,7 @@ export function createDesktopTaskHistoryFactory({
   }
 
   return async function desktopTaskHistory(params, context) {
+    const exactTraceStarted = params.tracePage?.groupId ? performance.now() : null;
     const timing = context?.historyTiming;
     const sync = (stage, operation) => timing ? timing.sync(stage, operation) : operation();
     const measure = (stage, operation) => timing ? timing.measure(stage, operation) : operation();
@@ -531,7 +534,7 @@ export function createDesktopTaskHistoryFactory({
     const entries = typeof catalog.entries === "function"
       ? catalog.entries()
       : await catalog.refresh();
-    scheduleCatalogRefresh();
+    if (!params.visualization) scheduleCatalogRefresh();
     const hasStreamLineage = selectedStreamId && typeof catalog.threadsForStream === "function";
     const selectedStreamThreads = hasStreamLineage
       ? catalog.threadsForStream(selectedStreamId)
@@ -567,14 +570,40 @@ export function createDesktopTaskHistoryFactory({
       taskTitle: binding.taskTitle,
       chatId: binding.chatId,
     })) : [binding];
+    if (params.visualization) {
+      const identity = codexVisualizationIdentity({ ...params.visualization, threadId: selectedThreadId });
+      const source = threadBindings.find((thread) => thread.provider === provider && thread.threadId === selectedThreadId);
+      if (!identity) return { html: null };
+      const response = { ...identity, provider, streamId: binding.streamId };
+      if (provider !== "codex" || !selectedStreamId || !source
+        || typeof historyReader.readVisualization !== "function") return { ...response, html: null };
+      const turn = await historyReader.readTurn?.({ provider, threadId: selectedThreadId, turnId: identity.turnId });
+      const html = await historyReader.readVisualization(identity, turn?.startedAt);
+      const result = { ...response, html };
+      return Buffer.byteLength(JSON.stringify(result)) <= (params.maxResponseBytes ?? 3_500_000)
+        ? result : { ...response, html: null };
+    }
     const historySources = new Map();
     if (params.tracePage) {
       const source = threadBindings.find((thread) => thread.provider === provider
         && thread.threadId === selectedThreadId);
       if (!source) throw new Error("Trace Thread does not belong to the Stream");
-      const tracePage = await historyReader.refresh(source, { tracePage: params.tracePage });
-      return { provider, threadId: selectedThreadId,
-        tracePage: { ...tracePage, groups: tracePage.groups.map(assistantTraceAnnotationPresentation) } };
+      const commandId = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u.test(params.clientTraceId ?? "")
+        ? params.clientTraceId : context?.commandId;
+      const traceTiming = exactTraceStarted !== null && commandId && commandTrace
+        ? (stage, outcome, monotonicDurationMs) => commandTrace.recordBestEffort({
+          commandId, transport: context?.source ?? "desktop-control",
+          stage, outcome, monotonicDurationMs, metadata: { action: "task-history" },
+        })
+        : undefined;
+      traceTiming?.("trace-history-binding", "succeeded", performance.now() - exactTraceStarted);
+      const tracePage = await historyReader.refresh(source, {
+        tracePage: params.tracePage, ...(traceTiming ? { traceTiming } : {}),
+      });
+      const presentationStarted = performance.now();
+      const groups = tracePage.groups.map(assistantTraceAnnotationPresentation);
+      traceTiming?.("trace-history-presentation", "succeeded", performance.now() - presentationStarted);
+      return { provider, threadId: selectedThreadId, tracePage: { ...tracePage, groups } };
     }
     const history = [];
     const deferProviderRefresh = params.coldHistory === true && params.before == null;

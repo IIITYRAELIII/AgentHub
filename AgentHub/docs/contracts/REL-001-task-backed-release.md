@@ -196,6 +196,14 @@ Workspace-required delivery stages, and Task Done/Complete. Cleanup and
 backup retention are separate. Post-publication corrections belong to a later
 release; published source, assets and original outcomes are preserved.
 
+## Git effects of interrupted Test (HUB-524)
+
+The Windows Job proves retirement of the physical Git tree. For the exact
+original Test intent, the cancellation owner separately reads dev and the Task
+result ref under the repository lease. The original lifecycle receipt retains
+its interruption and actual Git evidence without another ref mutation. The
+next Test requires ordinary ownership and admission. See ADR-HUB-524.
+
 ## Managed claim, Test and Await
 
 Claim returns the canonical managed checkout with its claim/custody binding.
@@ -237,6 +245,22 @@ boundaries, and commits the Task transition by its existing final CAS. A late
 change refuses/rolls back through the existing owner; a partial prospective
 composition is not an accepted PreRelease. Primary and unrelated checkouts,
 prepared/checkpoint state and prior accepted results remain protected.
+
+Original-ID reconciliation can continue an ordinary prepared promotion using
+the exact pending Task transition, current publication and ordered selection,
+original prepared journal, and the physical standalone clone. The prepared
+target must already be checked out and match the entire index and worktree.
+The old PreRelease ref and checkpoint must match the journal's saved state.
+The owner verifies the retained native graph and selected content and
+reconstructs the original manifest digest before promoting the ref by CAS.
+No second checkout, merge or original Await is issued. A journal addressed
+to the original also permits readback of the promotion's own later ref and
+checkpoint writes. Foreign or missing evidence leaves the original unknown.
+Unaddressed v1 journals are compatible only at the detached, pre-ref boundary
+with exact manifest reproduction. New ordinary Await preparations record their
+original operation ID. This compatibility read is needed only while a v1
+preparation admitted by an earlier version remains unresolved. See
+[ADR-HUB-530](../decisions/ADR-HUB-530-interrupted-await.md).
 
 The planner baseline/prospective reads, ordered history and selected-content
 proof are preserved. No cross-boundary evidence cache, scan-skipping or broader

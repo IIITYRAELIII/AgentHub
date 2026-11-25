@@ -186,6 +186,7 @@ const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
 const liveCardsByTask = new Map();
 const completionOverlaysByTask = new Map();
+const completionBoundariesByTask = new Map();
 const queueActionsInFlight = new Set();
 const acknowledgedQueueCancels = new Set();
 const optimisticQueueSteerIds = new Set();
@@ -876,7 +877,7 @@ function reconciledMessages(taskIdValue) {
   });
   // Live snapshots, durable history and the optimistic receipt can arrive in
   // either order. Re-run idempotent deduplication after all three were merged.
-  return chronologicalMessages(projectCanonicalMessages(visible));
+  return chronologicalMessages(projectCanonicalMessages(visible), completionBoundariesByTask.get(taskIdValue));
 }
 
 function deferredEntriesForTask(snapshot, taskIdValue) {
@@ -1179,24 +1180,71 @@ function applyMessageReceipts(snapshot, onAcceptedQueue = null) {
   }
 }
 
+function observeCompletionBoundary(taskIdValue, completion, durableMessages) {
+  const { provider, threadId, turnId } = completion;
+  const time = Date.parse(completion.time ?? "");
+  if (!Number.isFinite(time)) return false;
+  let boundaries = completionBoundariesByTask.get(taskIdValue) ?? [];
+  const previous = boundaries.at(-1);
+  if (previous?.provider !== provider || previous.threadId !== threadId) boundaries = [];
+  if (boundaries.length) {
+    if (previous.time > time) return false;
+    if (previous.time === time) {
+      if (previous.turnIds.includes(turnId)) return false;
+      previous.turnIds = [...previous.turnIds, turnId].slice(-20);
+      return true;
+    }
+  }
+  // An exact latest final can follow already confirmed history at the same tick.
+  // Keep just the identities, so page absorption cannot reverse the observed pair.
+  const durableAtBoundary = durableMessages.filter((message) => (
+    message.provider === provider && message.threadId === threadId && message.turnId
+    && message.role === "agent" && message.kind !== "subagent"
+    && Number.isFinite(message.historyOrder) && Date.parse(message.turnCompletedAt ?? "") === time
+  )).sort((left, right) => left.historyOrder - right.historyOrder);
+  const rank = durableAtBoundary.find((message) => message.turnId === turnId)?.historyOrder ?? Infinity;
+  const priorTurnIds = durableAtBoundary.filter((message) => message.historyOrder < rank).map((message) => message.turnId);
+  const turnIds = [...new Set([...priorTurnIds, turnId])].slice(-20);
+  const tiedBoundaries = boundaries.filter((boundary) => boundary.turnIds.length > 1);
+  completionBoundariesByTask.set(taskIdValue, [...tiedBoundaries, { provider, threadId, time, turnIds }].slice(-20));
+  return turnIds.length > 1;
+}
+
+function exactSnapshotFinal(selected, incomingTurnId) {
+  const final = selected?.latestFinal;
+  if (!readMarker.finalIdentity(final)) return null;
+  const provider = String(selected.provider ?? "").trim().toLowerCase();
+  const threadId = String(selected.threadId ?? "").trim();
+  const turnId = String(final.turnId).trim();
+  const answerTurnId = String(selected.lastAnswerTurnId ?? "").trim();
+  if (String(final.provider).trim().toLowerCase() !== provider || String(final.threadId).trim() !== threadId
+    || turnId === String(incomingTurnId ?? "").trim() || (answerTurnId && answerTurnId !== turnId)) return null;
+  return { provider, threadId, turnId, time: final.completedAt };
+}
+
 function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") {
   const completion = snapshotCompletionCandidate(selected, incomingTurnId);
-  if (!completion) return false;
+  // Compact snapshots still carry exact final identity. The body is needed only
+  // when creating or refreshing an overlay, which remains a separate decision.
+  const terminal = selected?.latestFinal == null ? completion : exactSnapshotFinal(selected, incomingTurnId);
+  if (!completion && !terminal) return false;
   const durableMessages = historyByTask.get(taskIdValue) ?? [];
+  const boundaryChanged = terminal ? observeCompletionBoundary(taskIdValue, terminal, durableMessages) : false;
+  if (!completion) return boundaryChanged;
   if (completedConversationTurnVisible(durableMessages, {
     turnId: completion.turnId,
     answer: completion.answer,
     requireAgent: true,
   })) {
     const overlays = completionOverlaysByTask.get(taskIdValue);
-    if (!overlays?.delete(completion.turnId)) return false;
+    if (!overlays?.delete(completion.turnId)) return boundaryChanged;
     if (!overlays.size) completionOverlaysByTask.delete(taskIdValue);
     return true;
   }
   const overlays = completionOverlaysByTask.get(taskIdValue) ?? new Map();
   const existing = overlays.get(completion.turnId);
   const replacement = snapshotCompletionReplacement(existing, completion);
-  if (!replacement) return false;
+  if (!replacement) return boundaryChanged;
   const existingAgent = (Array.isArray(existing?.messages) ? existing.messages : [])
     .findLast((message) => message?.role === "agent" && message?.kind !== "subagent");
   overlays.set(replacement.turnId, {
@@ -1240,6 +1288,7 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
     liveProbeByTask.delete(taskIdValue);
     liveUserMessagesByTask.delete(taskIdValue);
     completionOverlaysByTask.delete(taskIdValue);
+    completionBoundariesByTask.delete(taskIdValue);
     return true;
   }
   const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};
@@ -1629,6 +1678,10 @@ async function hubFetchWithin(input, init, timeoutMs, traceId) {
 }
 
 window.addEventListener("message", (event) => {
+  const nativeHost = vscode && event.origin?.startsWith("vscode-webview://")
+    && event.origin === window.location.origin;
+  if (event.origin === "null"
+    || (event.source && event.source !== window && event.source !== window.parent && !nativeHost)) return;
   const message = event.data;
   if (message?.type === "agenthub:runtime-published") {
     reloadForPublishedRuntime();
@@ -3821,15 +3874,27 @@ agentHub.on("bug-report:submit", ({ text, attachments, reportId }) => void (asyn
   }
 })());
 
-agentHub.on("history:trace-page", ({ identity, tracePage, resolve, reject }) => {
+agentHub.on("history:trace-page", ({ identity, tracePage, commandId, resolve, reject }) => {
   void control("task-history", {
     provider: identity.provider, threadId: identity.threadId,
     ...(identity.streamId ? { streamId: identity.streamId } : {}), tracePage,
+    ...(commandId ? { clientTraceId: commandId } : {}),
   }).then((result) => {
     if (result.provider !== identity.provider || result.threadId !== identity.threadId
       || result.tracePage?.turnId !== tracePage.turnId) throw new Error("Trace identity mismatch");
     resolve(result.tracePage);
   }).catch(reject);
+});
+
+agentHub.on("history:visualization", ({ provider, threadId, streamId, turnId, itemId, markerHash, resolve, reject }) => {
+  void control("task-history", { provider, threadId, streamId, visualization: { turnId, itemId, markerHash } })
+    .then((result) => {
+      if (result?.provider !== provider || result.threadId !== threadId || result.streamId !== streamId
+        || result.turnId !== turnId || result.itemId !== itemId || result.markerHash !== markerHash) {
+        throw new Error("Visualization identity mismatch");
+      }
+      resolve(result.html);
+    }).catch(reject);
 });
 
 agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
@@ -4479,6 +4544,8 @@ document.addEventListener("agenthub:board-action", (event) => {
     return;
   }
   let succeeded = false;
+  let actionError = "";
+  let cancelled = false;
   void runAction(async () => {
     if (!lastSnapshot?.boardLayout && ["move-column", "update-comment"].includes(detail.type)) {
       agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
@@ -4519,7 +4586,7 @@ document.addEventListener("agenthub:board-action", (event) => {
         params,
         request: control,
       });
-      if (!decision.confirmed) return;
+      if (!decision.confirmed) { cancelled = true; return; }
       result = decision.result;
     }
     succeeded = true;
@@ -4528,11 +4595,13 @@ document.addEventListener("agenthub:board-action", (event) => {
     if (detail.type === "update") agentHub.toast("Изменения сохранены");
     if (detail.type === "status") agentHub.toast("Статус задачи изменён");
     if (detail.type === "remove") agentHub.toast("Задача удалена");
-  }).finally(() => {
+  }, error => { actionError = String(error?.message ?? error); }).finally(() => {
     window.AgentHubTaskBoard?.finishAction?.({
       type: detail.type,
       id: detail.id,
       succeeded,
+      error: actionError,
+      cancelled,
       requestId: detail.requestId,
       operation: detail.operation,
       itemId: detail.itemId,
@@ -5228,7 +5297,7 @@ async function loadAttachmentImage(attachment, index, generation) {
           : null;
     if (!ownsAttachmentViewerResource(viewerResource)) return false;
     const resourceUrl = directDataUrl || String(access?.url ?? directResourceUrl).trim();
-    const authenticatedFetch = Boolean(telegramInitData)
+    const authenticatedFetch = Boolean(telegramInitData || (vscode && attachment?.workspaceImagePreview))
       && (!resourceUrl || sameOriginResource(resourceUrl));
     if (!resourceUrl && !String(access?.id ?? "").trim()) {
       throw new Error("Файл изображения недоступен");
@@ -5275,7 +5344,9 @@ async function loadAttachmentImage(attachment, index, generation) {
     if (!ownsAttachmentViewerResource(viewerResource)) return false;
     const message = viewerResource?.timedOut
       ? "Изображение не загрузилось вовремя"
-      : hubErrorMessage(error);
+      : attachment?.workspaceImagePreview
+        ? "Не удалось открыть изображение: файл недоступен или формат не поддерживается"
+        : hubErrorMessage(error);
     agentHub.failAttachmentViewer({
       message,
       index,
@@ -5285,6 +5356,28 @@ async function loadAttachmentImage(attachment, index, generation) {
     throw error;
   }
 }
+
+agentHub.on("resource:image-preview", ({ localPath, name, generation }) => void (async () => {
+  const index = 0;
+  try {
+    await localSessionReady;
+    if (!attachmentViewerAuthority(generation, index)) return;
+    const url = `/api/workspace-file?path=${encodeURIComponent(localPath)}&preview=image`;
+    if (vscode && await window.__agentHubDirectTransport?.available()) {
+      await loadAttachmentImage({ url, name, workspaceImagePreview: true }, index, generation);
+      return;
+    }
+    if (!vscode && localWorkspaceFilesAvailable) {
+      agentHub.showAttachmentViewer({ dataUrl: url, name, generation, index });
+      return;
+    }
+    agentHub.failAttachmentViewer({
+      generation, index, message: "Для предпросмотра файла нужно локальное подключение к Hub",
+    });
+  } catch {
+    agentHub.failAttachmentViewer({ generation, index, message: "Файл изображения недоступен" });
+  }
+})());
 
 agentHub.on("attachment:open", ({ attachment, gallery = [], index = 0 }) => runAction(async () => {
   const image = String(attachment?.type ?? "").toLowerCase().startsWith("image/") || attachment?.isImage;
@@ -5542,7 +5635,7 @@ agentHub.on("hub:restart", () => runAction(async () => {
 }));
 // Same authenticated control/IPC owner as recovery; the public /health probe
 // intentionally strips local provider errors and is only a liveness fallback.
-window.__agentHubStartupRuntimeHealth = () => control("runtime-health");
+window.__agentHubStartupRuntimeHealth = (clientTraceId) => control("runtime-health", { clientTraceId });
 document.addEventListener("agenthub:startup-recovery", (event) => {
   const { action, startedAtMs } = event.detail ?? {};
   if (!["retry-startup", "restart-server"].includes(action)) return;

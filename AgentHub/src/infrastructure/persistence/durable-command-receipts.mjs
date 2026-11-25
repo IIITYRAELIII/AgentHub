@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { writeTextAtomic } from "./state-store.mjs";
@@ -75,30 +76,93 @@ export class DurableCommandReceipts {
     this.#onTrace = typeof onTrace === "function" ? onTrace : null;
   }
 
-  async #load({ fresh = false } = {}) {
-    if (this.#loaded && !fresh) return;
-    const records = new Map();
+  async #readJournal() {
     try {
       const value = JSON.parse(await readFile(this.#file, "utf8"));
       if (value?.version !== 1 || !Array.isArray(value.records)) {
         throw new Error("invalid durable command receipt journal");
       }
-      for (const sourceRecord of value.records) {
-        let record = sourceRecord;
+      for (const record of value.records) {
         if (!record || typeof record.id !== "string" || typeof record.fingerprint !== "string") {
           throw new Error("invalid durable command receipt record");
         }
-        if (this.#projectResult && ["completed", "reconciled"].includes(record.phase)) {
-          const result = this.#projectResult(record.result, record);
-          if (result !== record.result) {
-            record = { ...record, result };
-            this.#migrationPending = true;
-          }
-        }
-        records.set(record.id, record);
       }
+      return value.records;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
+      return [];
+    }
+  }
+
+  // A read-only view of the last atomically published journal, for routing
+  // request IDs which must remain under a previous transport's receipt owner.
+  async ids() {
+    return (await this.#readJournal()).map(({ id }) => id);
+  }
+
+  async retainFrom(source, { id, fingerprint }) {
+    const original = (await source.#readJournal()).find((record) => record.id === id);
+    if (!original) throw new DurableCommandRetryableError("original command receipt is temporarily unavailable");
+    if (original.fingerprint !== fingerprint) throw new Error("durable command receipt fingerprint conflict");
+    await this.#withLock(async () => {
+      const existing = this.#records.get(id);
+      if (existing && existing.fingerprint !== fingerprint) {
+        throw new Error("durable command receipt fingerprint conflict");
+      }
+      // A prepared receipt has not started an effect. Retain any more advanced
+      // source state before the compatibility reader can execute this ID.
+      if (existing && (existing.phase !== "prepared" || original.phase === "prepared")) return;
+      this.#records.set(id, { ...original });
+      await this.#persist();
+    });
+  }
+
+  async retainForRollback(source) {
+    const originals = await source.#readJournal();
+    const ids = new Set();
+    for (const record of originals) {
+      if (!record.id || record.id.trim() !== record.id || ids.has(record.id)
+          || !/^[0-9a-f]{64}$/u.test(record.fingerprint)
+          || !["prepared", "effect-started", "completed", "reconciled", "failed"].includes(record.phase)
+          || (["completed", "reconciled"].includes(record.phase) && !Object.hasOwn(record, "result"))
+          || (record.phase === "failed" && typeof record.error !== "string")
+          || (record.phase === "effect-started"
+            && (!Number.isSafeInteger(record.effectOwner?.pid) || record.effectOwner.pid <= 0
+              || typeof record.effectOwner.token !== "string" || !record.effectOwner.token))) {
+        throw new Error("Runtime command rollback receipt identity is invalid");
+      }
+      ids.add(record.id);
+    }
+    if (!originals.length) return 0;
+    return this.#withLock(async () => {
+      if ((await this.#readJournal()).length !== this.#records.size) {
+        throw new Error("Previous runtime command rollback journal has duplicate identities");
+      }
+      for (const original of originals) {
+        const existing = this.#records.get(original.id);
+        if (existing && !isDeepStrictEqual(existing, original)) {
+          throw new Error("Runtime command rollback receipts disagree");
+        }
+      }
+      const missing = originals.filter(({ id }) => !this.#records.has(id));
+      for (const record of missing) this.#records.set(record.id, record);
+      if (missing.length) await this.#persist();
+      return originals.length;
+    });
+  }
+
+  async #load({ fresh = false } = {}) {
+    if (this.#loaded && !fresh) return;
+    const records = new Map();
+    for (let record of await this.#readJournal()) {
+      if (this.#projectResult && ["completed", "reconciled"].includes(record.phase)) {
+        const result = this.#projectResult(record.result, record);
+        if (result !== record.result) {
+          record = { ...record, result };
+          this.#migrationPending = true;
+        }
+      }
+      records.set(record.id, record);
     }
     this.#records = records;
     this.#loaded = true;

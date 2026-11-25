@@ -35,6 +35,7 @@ export function createAgentHubBootstrapComposition({
   sqliteRecovery,
   acknowledgeSqliteRecovery,
   commandTrace = null,
+  startupTraceId,
   createDesktopControlServer = (options) => new DesktopControlServer(options),
 }) {
   let desktopControlServer = null;
@@ -51,7 +52,7 @@ export function createAgentHubBootstrapComposition({
     runtimeResources,
     // Control endpoints are intentionally available before provider recovery,
     // so clients can show cached state while providers are still reconnecting.
-    startDesktopControl: async () => {
+    startDesktopControl: async (measurePhase) => {
       desktopControlServer = createDesktopControlServer({
         runtimeRoot: runtimeCommandRoot,
         handler: handleDesktopControl,
@@ -61,7 +62,7 @@ export function createAgentHubBootstrapComposition({
           : undefined,
         reportUnexpectedError: (error, context) => sentryDiagnostics.captureUnexpectedException(error, context),
       });
-      await desktopControlServer.start();
+      await desktopControlServer.start(measurePhase);
     },
     startRuntimeCommand: () => runtimeCommandServer.start(),
     startHubMcp: () => hubMcpServer.start(),
@@ -84,6 +85,7 @@ export function createAgentHubBootstrapComposition({
     sqliteRecovery,
     acknowledgeSqliteRecovery,
     commandTrace,
+    startupTraceId,
   });
 
   return {

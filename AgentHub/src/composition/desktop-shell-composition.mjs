@@ -13,6 +13,8 @@ import { retryAgentHubStartup } from "../application/agent-hub-startup-coordinat
 import { StreamMessagePinService } from "../application/stream-message-pin-service.mjs";
 import { DesktopDirectoryPickerService } from "../interfaces/desktop/desktop-directory-picker-service.mjs";
 import { installerCutoverOperation, installerCutoverSnapshot } from "../application/installer-cutover.mjs";
+import { findCodexRolloutPath } from "../providers/codex/codex-turn-usage.mjs";
+import { readCodexVisualizationInWorker } from "../providers/codex/codex-rollout-activity-worker-client.mjs";
 
 export function createDesktopShellComposition({
   config, server = {}, diagnostics, limits, models, state, catalog,
@@ -287,6 +289,11 @@ export function createDesktopShellComposition({
       androidEnabled: () => Boolean(config.components.androidApp),
       readCachedHistory,
       readExactHistoryTurn: (identity) => taskSyncStore.historyTurn(identity),
+      readVisualization: async (identity, startedAt) => {
+        if (config.testContourRecording) return null;
+        const file = await findCodexRolloutPath(identity.threadId, startedAt);
+        return file ? readCodexVisualizationInWorker(file, { ...identity, attachmentDirectory }) : null;
+      },
       readHistoryPage: (...args) => taskSyncStore.readHistoryPage(...args),
       refreshHistory,
       attachmentImporter: importCodexDesktopAttachments,
