@@ -13,6 +13,8 @@ capture, whose identity already includes the owning Test's publication proof.
 For both ordinary and saved-source handoffs, the Git owner matches the capture
 to the dev commit in the hash-bound Test outcome and rechecks the normal return
 in the Task journal. Existing handoff and outcome records keep their format.
+When closure validates a new candidate, its temporary Git storage is separate
+from the parent owner's original capture and read-only Task journal.
 
 The saved/stopped handoff may name a different, preserved managed HEAD.
 The Git owner verifies the clean source worktree still has that exact HEAD

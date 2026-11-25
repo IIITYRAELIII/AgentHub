@@ -120,7 +120,8 @@ test("native absorption accepts only the exact published parent of the returned 
   const foreignMerge = await commit("returned source with foreign parent", f.result, foreign);
   const octopus = await commit("returned source with extra parent", f.result, published, foreign);
   const testDevCommit = await commit("retained source Test", devOnly, forward);
-  const databaseFile = path.join(f.root, "journal.sqlite");
+  const dataDir = path.join(f.root, ".git", "fixture-data");
+  const databaseFile = path.join(dataDir, "journal.sqlite");
   new TaskBoardStore({ databaseFile }).close();
   const journal = new DatabaseSync(databaseFile);
   const tested = JSON.stringify({ task: { workflowStatus: "testing" },
@@ -133,7 +134,7 @@ test("native absorption accepts only the exact published parent of the returned 
   put.run("return", returned, 2);
   journal.close();
   const hash = value => createHash("sha256").update(value).digest("hex");
-  const retained = nativeIntegrationRecordFile(f.root, "source", f.root, "test");
+  const retained = nativeIntegrationRecordFile(dataDir, "source", f.root, "test");
   await mkdir(path.dirname(retained), { recursive: true });
   const record = { version: 1, kind: "native-task-integration-v1", phase: "prepared", operationId: "test",
     target: testDevCommit, snapshot: { taskId: "source", headCommit: forward, repositoryRoot: f.root },
@@ -142,11 +143,10 @@ test("native absorption accepts only the exact published parent of the returned 
     } } };
   await writeFile(retained, JSON.stringify(record));
   const historyAuthority = { bases: [devOnly, foreign], metadataBases: [published],
-    publishedHistoryBase: published, dataDir: f.root };
+    publishedHistoryBase: published, dataDir };
   const requestId = "returned-source-handoff";
   const origin = { workspaceId: "workspace", streamId: "stream", provider: "codex", sourceThreadId: "thread", requestId };
-  const check = async (resultCommit, priorCommit = resultCommit, authority = historyAuthority, baseCommit = published,
-    { preserve = false, testOutcomeHash = hash(tested) } = {}) => {
+  const selection = async (resultCommit, priorCommit, { preserve = false, testOutcomeHash = hash(tested) } = {}) => {
     const sourceCommit = await commit("saved source", resultCommit);
     const absorptionCommit = await commit("survivor absorbs source", survivor, sourceCommit);
     const text = JSON.stringify({ version: 1, kind: "task-absorption-handoff-v1", workspaceId: origin.workspaceId,
@@ -158,10 +158,11 @@ test("native absorption accepts only the exact published parent of the returned 
       testOutcomeHash, returnOutcomeHash: hash(returned) }] : undefined;
     const nativeAbsorptionInput = { requestId, text, origin, contentHash: interstreamAuditContentHash(text, { origin }),
       createdAtMs: 1, sourceTaskNumber: "HUB-source", sourceDescriptionSha256: "a".repeat(64), priorResults };
-    return assertNativeTaskHistories({ git: f.git, baseCommit, historyAuthority: authority, tasks: [{
-      taskId: "survivor", baseCommit: f.base, resultCommit: absorptionCommit, nativeAbsorptionInput,
-    }] });
+    return { taskId: "survivor", baseCommit: f.base, resultCommit: absorptionCommit, nativeAbsorptionInput };
   };
+  const check = async (resultCommit, priorCommit = resultCommit, authority = historyAuthority,
+    baseCommit = published, options) => assertNativeTaskHistories({ git: f.git, baseCommit,
+    historyAuthority: authority, tasks: [await selection(resultCommit, priorCommit, options)] });
   await check(forward);
   await check(forward, forward, historyAuthority, f.base);
   const advanced = await commit("new publication", devOnly);
@@ -183,6 +184,37 @@ test("native absorption accepts only the exact published parent of the returned 
   for (const refused of [devMerge, foreignMerge, octopus]) {
     await assert.rejects(check(refused), /explicit historical migration/u);
   }
+
+  const localAppData = path.join(f.root, ".git", "fixture-local");
+  const remote = path.join(f.root, ".git", "fixture-origin.git");
+  await f.git(["init", "--bare", "--initial-branch=main", remote]);
+  await f.git(["remote", "add", "origin", remote]);
+  await f.git(["checkout", "-B", "main", advanced]);
+  await f.git(["push", "origin", "main"]);
+  await f.save(".git/fixture-local/AgentHub/publication-state.json", JSON.stringify({
+    generation: "advanced-publication", repositories: [{ root: f.root, revision: advanced }],
+  }));
+  const { nativeAbsorptionInput: absorptionInput, ...task } = await selection(forward, forward, { preserve: true });
+  const descriptor = { kind: "native-task-integration-v1", taskId: task.taskId, operationId: "survivor-Test",
+    expectedTaskRevision: 3, repositoryRoot: f.root, taskBaseCommit: f.base, taskCommit: task.resultCommit,
+    devCommit: task.resultCommit, proofCommit: task.resultCommit, proofTree: tree, mainCommit: advanced,
+    absorptionInput };
+  const service = new TaskIntegrationGitService({ dataDir, environment: { ...process.env, LOCALAPPDATA: localAppData } });
+  const request = { planRevision: "fresh-absorption-closure", projectRoot: f.root, workspaceId: "workspace",
+    approvedBaseCommit: advanced, frozenTasks: [{ ...task, taskRevision: 4, selectedCompositionRequired: true,
+      selectedComposition: { ...descriptor, descriptorHash: hash(JSON.stringify(descriptor)) } }] };
+  const journalBefore = await readFile(databaseFile);
+  const captureBefore = await readFile(retained);
+  const refsBefore = await f.git(["show-ref"]);
+  const proof = await service.validateCandidate(request);
+  assert.equal(proof.status, "validated");
+  assert.equal(proof.baseCommit, advanced);
+  assert.deepEqual(proof.mergedTaskIds, [task.taskId]);
+  await assert.rejects(readFile(service.releaseRepositoriesRoot), { code: "ENOENT" });
+  assert.deepEqual(await readFile(databaseFile), journalBefore);
+  assert.deepEqual(await readFile(retained), captureBefore);
+  assert.equal(await f.git(["show-ref"]), refsBefore);
+  assert.equal(await f.git(["status", "--porcelain"]), "");
 });
 
 test("three selected results share only immutable metadata reads inside each fresh proof", async t => {
