@@ -35,6 +35,8 @@ test("Codex turns use a matching App Server sandbox policy", () => {
       networkAccess: false,
     },
   });
+  assert.deepEqual(codexTurnSandboxSettings("workspace-write", "D:/project", "C:/Hub/data/runtime-command")
+    .sandboxPolicy.writableRoots, ["D:/project", "C:/Hub/data/runtime-command"]);
   assert.deepEqual(codexTurnSandboxSettings("danger-full-access", "D:/ignored"), {
     approvalPolicy: "on-request",
     sandboxPolicy: { type: "dangerFullAccess" },

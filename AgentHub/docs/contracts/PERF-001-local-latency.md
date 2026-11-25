@@ -2,8 +2,12 @@
 
 Deferred Codex admission reads the existing rollout activity evidence on a
 bounded path independent of history backfill and trace pages. A missing source
-can be rediscovered through the normal Thread read. Unavailable evidence or a
-read deadline holds the original command. The exact message ledger reserves
+can be rediscovered through the normal Thread read. An absent .jsonl can use
+its exact .jsonl.zst companion after worker-side streaming validation of the
+archive and Thread identity. Fresh provider activity and native ownership of
+both paths govern dispatch. A proven missing or invalid source pauses the
+saved command with a specific reason until explicit resume. Transient unknown
+evidence or a read deadline holds the original command. The exact message ledger reserves
 dispatch before the provider call. Snapshot persistence remains available for
 unowned legacy input. For exact deferred Codex commands the same ledger also
 checkpoints the admitted run and the provider request on the reserved command.
@@ -226,6 +230,14 @@ its revision. Revision and facts are read in one SQLite snapshot; external
 writes invalidate the next read, rollbacks do not, and restart reconstructs it.
 Oversized projections use uncached reads. Pricing, attribution, projection CAS,
 terminal/outbox durability and full scalar aggregation retain their owners.
+
+## Windows guarded Git timing (HUB-524)
+
+Guarded Windows Git timing includes starting the native Job owner and sealing
+retirement. The diagnostic retirement checkpoint records the process identity,
+exit code and reason, with no arguments or repository content. Cancellation
+recovery events use the original operation ID. A Git ref read cannot stand in
+for the Job retirement checkpoint. See ADR-HUB-524.
 
 ## Trace contract
 
@@ -1181,3 +1193,15 @@ script work, heap/long tasks and separately qualified test-process CPU/I/O count
 Fixture delays and renderer counters have their own attribution. Natural loaded
 runtime observations and source/fixture AFTER are distinct acceptance evidence.
 The existing bounded recorder owns these measurements. See ADR-HUB-427.
+
+The direct HTTP history route uses the original navigation trace ID for the
+local page, terminal repair, attachment hydration, projection, response
+budget, versioning, JSON encode, optional compression and response-write
+phases. The browser measures request-to-headers, body transfer and JSON
+parsing separately when its resource timing includes the matching HTTP
+request. Node response finish describes handoff to the OS, and a gzip callback
+interval can include native-worker queue and event-loop scheduling. Neither
+is exclusive network time. A cold two-turn page of up to 128 KiB can use
+identity encoding when accepted, allowing the complete latest exchange to
+paint independently of the shared gzip pool. Wider reads and all trace-page
+requests retain ordinary compression. See ADR-HUB-517.

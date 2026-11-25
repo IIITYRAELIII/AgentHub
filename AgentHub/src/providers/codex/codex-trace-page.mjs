@@ -26,7 +26,8 @@ export async function readCodexTracePage(rolloutPath, request = {}) {
   if (!Number.isSafeInteger(size) || size < 0 || size > before.size
     || (request.generation && request.generation !== generation)) throw new Error("Trace source changed");
   const stream = createReadStream(rolloutPath, { start: 0, end: Math.max(0, size - 1), highWaterMark: 64 * 1024 });
-  let pending = Buffer.alloc(0);
+  let pending = [];
+  let pendingBytes = 0;
   let ignoredRecord = null;
   let currentTurnId = "";
   let sequence = 0;
@@ -44,13 +45,18 @@ export async function readCodexTracePage(rolloutPath, request = {}) {
         const newline = chunk.indexOf(10, cursor);
         const end = newline < 0 ? chunk.length : newline;
         const fragment = chunk.subarray(cursor, end);
-        if (!ignoredRecord && pending.length + fragment.length > MAX_LINE_BYTES) {
+        if (!ignoredRecord && pendingBytes + fragment.length > MAX_LINE_BYTES) {
           ignoredRecord = new IgnoredTraceRecord(MAX_LINE_BYTES);
-          ignoredRecord.push(pending);
-          pending = Buffer.alloc(0);
+          for (const part of pending) ignoredRecord.push(part);
+          pending = [];
+          pendingBytes = 0;
         }
-        if (ignoredRecord) ignoredRecord.push(fragment);
-        else pending = pending.length ? Buffer.concat([pending, fragment]) : Buffer.from(fragment);
+        if (ignoredRecord) {
+          ignoredRecord.push(fragment);
+        } else if (fragment.length) {
+          pending.push(fragment);
+          pendingBytes += fragment.length;
+        }
         cursor = newline < 0 ? chunk.length : newline + 1;
         if (newline < 0) continue;
         if (ignoredRecord) {
@@ -58,11 +64,14 @@ export async function readCodexTracePage(rolloutPath, request = {}) {
           ignoredRecord = null;
           continue;
         }
-        if (!pending.toString("utf8").trim()) { pending = Buffer.alloc(0); continue; }
+        const record = pending.length <= 1 ? pending[0] : Buffer.concat(pending, pendingBytes);
+        pending = [];
+        pendingBytes = 0;
+        const json = record?.toString("utf8");
+        if (!json?.trim()) continue;
         let entry;
-        try { entry = JSON.parse(pending.toString("utf8")); }
+        try { entry = JSON.parse(json); }
         catch { throw new Error("Trace source contains an invalid record"); }
-        pending = Buffer.alloc(0);
         if (entry.type === "event_msg" && entry.payload?.type === "task_started") {
           currentTurnId = String(entry.payload.turn_id ?? "");
         }
