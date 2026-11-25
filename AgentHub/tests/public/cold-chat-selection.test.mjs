@@ -66,7 +66,7 @@ for (const [shape, mobile] of [["ordinary", false], ["heavy", false], ["ordinary
         const reply = (route, result) => route.fulfill({ status: 200, contentType: "application/json",
           body: JSON.stringify({ ok: true, result }) });
         let historyRequests = 0;
-        await page.route("**/api/control", async route => {
+        await page.route(url => url.pathname === "/api/control", async route => {
           const { action, params } = route.request().postDataJSON();
           if (action === "select-task" && params?.streamId === "stream-a") return reply(route, initial);
           if (params?.streamId !== "stream-b") return route.fallback();
