@@ -1,5 +1,47 @@
 # UI-001 — Canonical message projection
 
+## Workspace folder actions
+
+Folder editing uses the existing Workspace editor shell/classes, wrapped name
+and optional comment fields and native dialog focus behavior. Desktop menu and
+Mobile pencil/menu open the same editor; the bespoke text/rename layer is gone.
+One Save submits both fields through the checked folder owner. Cancel/no-change
+submits nothing. Snapshots cannot replace an open draft or steal its focus.
+A known stale rejection safely rereads the same folder identity, retains both
+inputs and binds the latest revision; only a second explicit Save may submit a
+new identity. Deleted identities cannot be replaced by matching names. UNKNOWN
+locks the original fields/command and exposes only its exact receipt readback;
+closing/reload retains the notice, without reopening or resubmitting. Explicit
+recovery of a rejected edit restores that draft. Closed-editor rejection keeps
+a named retained-draft notice without reopening or stealing focus; its explicit
+action safely reads the identity before editing. Opening alone retains the draft
+until a successful next Save or explicit cancellation. Reload first verifies the
+original receipt, and terminal rejection unlocks the entity. Stable folder IDs restore the
+surviving edit opener after rename. See ADR-HUB-121-folder-editor.
+
+Dialogs alone owns folder editing. Workspace native drag on Web/WebView and
+the keyboard/touch menu chooser use the same checked move owner. A different
+existing folder row is the only drop target; foreign payloads and stale,
+renamed, deleted or current-folder targets do nothing. A collapsed target stays
+collapsed; no hover timer or internal reorder is introduced. Mobile uses the
+same menu action without touch drag. Dashboard has no catalog editing; its
+separate Task-card drop action retains the board command owner.
+
+Folder deletion uses the shared native confirmation shell, exact server member
+list, initial Cancel focus, body-only scroll and a visible footer. No mutation
+occurs before confirmation. Pending locks one command; stale content requires
+another explicit confirmation. Stable IDs preserve disclosure/focus across
+catalog refresh and rename, and deletion clears obsolete collapse state.
+
+Lost responses transition the same modal primary slot to normal-accent
+«Проверить результат». Closing retains a labelled persistent catalog notice;
+reload restores the original request pointer without resubmission or autofocus.
+Readback reuses its exact request and arguments/hash, never a fresh mutation.
+Only authoritative terminal success/rejection retires the notice and entity
+lock. Unrelated navigation remains available, and canonical snapshot absence
+does not create a phantom row. Identical polling states do not repeatedly
+announce; terminal outcomes announce once. See ADR-HUB-121.
+
 The Server accounts panel projects the shared GitHub account's public identity and
 connected/disconnected/expired state. Connect, reconnect and disconnect use protected
 local control; remote clients cannot start or poll authorization. Primary sign-in

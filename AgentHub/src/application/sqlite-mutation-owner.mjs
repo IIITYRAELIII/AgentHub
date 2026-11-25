@@ -3,7 +3,8 @@ import { assertTaskOperationExecuting } from "../ports/task-operation-execution-
 
 const WORKSPACE_MUTATIONS = new Set([
   "ensureExperiments", "createWorkspace", "createWorkspaceWithStream", "renameWorkspace", "updateWorkspaceComment",
-  "updateWorkspaceSettings", "moveWorkspaceToFolder", "renameWorkspaceFolder",
+  "updateWorkspaceSettings",
+  "workspaceFolderCommand", "previewWorkspaceFolderDeletion",
   "archiveWorkspace", "restoreWorkspace", "deleteArchivedWorkspace",
   "updateWorkspaceDeveloperRules", "recordWorkspaceEvent", "beginMcpOperation",
   "bindMcpOperationInterstreamContentHash", "bindTaskOperationExecution", "requestTaskOperationInterruption", "finishTaskOperationInterruption",
@@ -18,6 +19,7 @@ const WORKSPACE_MUTATIONS = new Set([
 ]);
 
 const WORKSPACE_READS = new Set([
+  "workspaceFolderCatalog", "workspaceFolderCommandResult",
   "archivedWorkspaces", "releaseWorkflowEnabledForThread", "workspaceDeveloperRules", "workspaceEvents",
   "claimCustodyForOriginal", "claimCustodyForTask", "claimCustodyNamespaceForTask", "claimCustodyTaskSnapshot", "mcpOperation", "pendingMcpOperations", "mcpOperations", "interstreamOriginForClientMessage", "preparationIsolationAuthority",
   "workspace", "workspaceBySystemKey", "stream", "streamDeveloperRules", "developerRulesForThread",

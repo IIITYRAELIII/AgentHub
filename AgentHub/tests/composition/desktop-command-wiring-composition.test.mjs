@@ -96,15 +96,12 @@ test("archiving a Stream is blocked while one of its Threads is running", async 
 test("renaming a Workspace folder uses one Workspace mutation", async () => {
   const { actions, calls } = fixture();
   assert.deepEqual(await actions.renameWorkspaceFolder({
-    fromFolderName: "Клиенты",
-    toFolderName: "Заказчики",
+    requestId: "rename-exact", folderId: "folder-1", expectedRevision: 4, name: "Заказчики",
   }), {
-    fromFolderName: "Клиенты",
-    toFolderName: "Заказчики",
+    requestId: "rename-exact", folderId: "folder-1", expectedRevision: 4, name: "Заказчики",
   });
   assert.deepEqual(calls, [["folder", {
-    fromFolderName: "Клиенты",
-    toFolderName: "Заказчики",
+    requestId: "rename-exact", folderId: "folder-1", expectedRevision: 4, name: "Заказчики",
   }]]);
 });
 
@@ -154,14 +151,11 @@ test("permanent Workspace deletion crosses the mutation boundary once", async ()
 test("moving a Workspace to a folder uses the dedicated Workspace mutation", async () => {
   const { actions, calls } = fixture();
   assert.deepEqual(await actions.moveWorkspaceToFolder({
-    workspaceId: "workspace-1",
-    folderName: "Клиенты",
+    requestId: "move-exact", workspaceId: "workspace-1", sourceFolderId: null, target: { id: "folder-1", revision: 4 },
   }), {
-    workspaceId: "workspace-1",
-    folderName: "Клиенты",
+    requestId: "move-exact", workspaceId: "workspace-1", sourceFolderId: null, target: { id: "folder-1", revision: 4 },
   });
   assert.deepEqual(calls, [["move-folder", {
-    workspaceId: "workspace-1",
-    folderName: "Клиенты",
+    requestId: "move-exact", workspaceId: "workspace-1", sourceFolderId: null, target: { id: "folder-1", revision: 4 },
   }]]);
 });

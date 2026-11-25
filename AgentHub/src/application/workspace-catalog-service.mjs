@@ -25,9 +25,11 @@ export class WorkspaceCatalogService {
     return this.#store.hierarchy();
   }
 
-  createWorkspace({ name, comment = "", streamName = null, settings = {} } = {}) {
+  createWorkspace({ name, comment = "", streamName = null, settings = {}, folderTarget } = {}) {
+    if (settings?.catalogFolder && !folderTarget) throw new Error("Обновите каталог: для выбранной папки требуются точные identity/revision.");
     if (typeof this.#store.createWorkspaceWithStream === "function") {
-      return this.#store.createWorkspaceWithStream({ name, comment, streamName, settings });
+      return this.#store.createWorkspaceWithStream({ name, comment, streamName, settings,
+        ...(folderTarget ? { folderTarget } : {}) });
     }
     return this.#store.transaction(() => {
       const workspace = this.#store.createWorkspace({ name, comment, settings });
@@ -48,12 +50,23 @@ export class WorkspaceCatalogService {
     return workspace;
   }
 
-  moveWorkspaceToFolder({ workspaceId, folderName = "" } = {}) {
-    return this.#store.moveWorkspaceToFolder(workspaceId, folderName);
+  workspaceFolderCatalog() { return this.#store.workspaceFolderCatalog(); }
+  previewWorkspaceFolderDeletion({ folderId } = {}) { return this.#store.previewWorkspaceFolderDeletion(folderId); }
+  workspaceFolderCommand(input) { return this.#store.workspaceFolderCommand(input); }
+  workspaceFolderCommandResult(input) { return this.#store.workspaceFolderCommandResult(input); }
+
+  moveWorkspaceToFolder({ requestId, workspaceId, sourceFolderId, target, folderName } = {}) {
+    if (folderName !== undefined || !requestId || sourceFolderId === undefined || target === undefined) {
+      throw new Error("Обновите каталог: для перемещения требуются точные identity/revision папки и исходная команда.");
+    }
+    return this.workspaceFolderCommand({ requestId, action: "move", payload: { workspaceId, sourceFolderId, target } });
   }
 
-  renameWorkspaceFolder({ fromFolderName, toFolderName } = {}) {
-    return this.#store.renameWorkspaceFolder(fromFolderName, toFolderName);
+  renameWorkspaceFolder({ requestId, folderId, expectedRevision, name } = {}) {
+    if (!requestId || !folderId || !Number.isSafeInteger(expectedRevision)) {
+      throw new Error("Обновите каталог: для переименования требуются точные identity/revision папки.");
+    }
+    return this.workspaceFolderCommand({ requestId, action: "rename", payload: { folderId, expectedRevision, name } });
   }
 
   archiveWorkspace({ workspaceId } = {}) {

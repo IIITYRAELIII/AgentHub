@@ -102,6 +102,19 @@ export function createApplicationCommandService({ handlers }) {
       mutating: true, target: "none", lane: "global",
       handler: ({ payload }) => handlers.moveWorkspaceToFolder(payload),
     })
+    .register("workspace.folder.catalog", {
+      target: "none", handler: () => handlers.workspaceFolderCatalog(),
+    })
+    .register("workspace.folder.preview", {
+      target: "none", handler: ({ payload }) => handlers.previewWorkspaceFolderDeletion(payload),
+    })
+    .register("workspace.folder.result", {
+      target: "none", handler: ({ payload }) => handlers.workspaceFolderCommandResult(payload),
+    })
+    .register("workspace.folder.command", {
+      mutating: true, target: "none", lane: "global",
+      handler: ({ payload }) => handlers.workspaceFolderCommand(payload),
+    })
     .register("workspace.folder.rename", {
       mutating: true, target: "none", lane: "global",
       handler: ({ payload }) => handlers.renameWorkspaceFolder(payload),

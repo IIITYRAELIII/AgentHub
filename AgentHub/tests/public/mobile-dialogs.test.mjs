@@ -6,6 +6,13 @@ import path from "node:path";
 import test from "node:test";
 import { measureDrawerContrast as drawerContrast } from "./mobile-navigation.metrics.mjs";
 import { chromium } from "playwright";
+import { catalogFixture } from "./workspace-folder.fixture.mjs";
+const folderCleanups = new Set();
+test.after(async()=>{await Promise.all([...folderCleanups]);});
+async function editFromMenu(page,opener,folder=false) {
+  await opener.click();
+  await page.getByRole("menuitem",{name:folder?"Редактировать папку…":"Редактировать…",exact:true}).click();
+}
 
 const assets = new URL("../../assets/web-app/", import.meta.url);
 const captures = new URL("../../WIP/mobile-dialogs-captures/", import.meta.url);
@@ -55,13 +62,23 @@ async function open(page, { vscode = false, transport = null, seed = true, theme
   await page.goto("https://agent-hub.test/");
   await page.waitForFunction(() => window.AgentHub && window.AgentHubMobileDialogs);
   if (transport || !seed) return errors;
-  await page.evaluate((tasks) => {
+  const folderServer=await catalogFixture({initialize:raw=>{
+    raw.createWorkspace({id:"a",name:"AgentHub",settings:{catalogFolder:"РАБОТА"}});
+    raw.createWorkspace({id:"b",name:"Utilities",settings:{catalogFolder:"РАБОТА"}});
+  },baseSnapshot:{tasks}});
+  page.once("close",()=>{const cleanup=folderServer.close();folderCleanups.add(cleanup);});
+  await page.exposeFunction("__mobileFolderControl",message=>folderServer.control(message));
+  await page.evaluate(({tasks,catalog}) => {
     window.testIntents = [];
     document.addEventListener("agenthub:intent", (event) => window.testIntents.push(event.detail));
     AgentHub.setWorkspaces([
       { id: "a", name: "AgentHub", settings: { catalogFolder: "РАБОТА" }, streams: [] },
       { id: "b", name: "Utilities", settings: { catalogFolder: "РАБОТА" }, streams: [] },
     ]);
+    AgentHub.workspaceFolders.setCatalog(catalog);
+    AgentHub.workspaceFolders.configure({control:(action,params)=>window.__mobileFolderControl({action,params}),applySnapshot:next=>{
+      AgentHub.setWorkspaces(next.workspaces,[],next.workspaceFolders);AgentHub.setTasks(next.tasks);
+    }});
     AgentHub.setTasks(tasks);
     AgentHub.setMessages("a1", [
       { id: "u1", role: "user", author: "Вы", messageKey: "message:user-1", pinEligible: true,
@@ -76,7 +93,8 @@ async function open(page, { vscode = false, transport = null, seed = true, theme
       provider: "codex", taskThreadId: "t1", turnThreadId: "t1", turnId: "turn-1", itemId: "r1",
       role: "agent", preview: "Точный закреплённый ответ", available: true }]);
     AgentHub.setConnection("online");
-  }, tasks);
+  }, {tasks,catalog:folderServer.snapshot().workspaceFolders});
+  await page.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
   return errors;
 }
 
@@ -166,17 +184,17 @@ test("Mobile Workspace drawer contrast survives every shipped theme and backgrou
           if (!baseline) {
             await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').focus();
             await check("folder-keyboard-focus", theme.id, background.id);
-            await page.locator('[data-workspace-select="a"] [data-mobile-workspace-edit]').click();
+            await editFromMenu(page,page.locator('[data-workspace-select="a"] [data-mobile-workspace-edit]'));
             await check("workspace-edit", theme.id, background.id);
             assert.equal(await page.locator("[data-mobile-workspace-drawer]").evaluate((d) => d.open), true);
             await page.keyboard.press("Escape");
             await page.waitForFunction(() => !document.querySelector("[data-workspace-card-modal]").open);
             await page.waitForFunction(() => document.activeElement?.matches('[data-workspace-select="a"] [data-mobile-workspace-edit]'));
             assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-edit]').evaluate((n) => document.activeElement === n), true);
-            await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').click();
+            await editFromMenu(page,page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]'),true);
             await check("folder-rename", theme.id, background.id);
             await page.evaluate(() => AgentHub.navigateBack());
-            await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-rename]").open && document.activeElement?.matches('[data-mobile-folder-rename]'));
+            await page.waitForFunction(() => !document.querySelector("[data-folder-dialog=edit]")?.open && document.activeElement?.matches('[data-mobile-folder-rename]'));
             assert.equal(await page.locator("[data-mobile-workspace-drawer]").evaluate((d) => d.open), true);
             assert.equal(await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').evaluate((n) => document.activeElement === n), true);
           }
@@ -377,21 +395,21 @@ test("mobile parity paths expose Workspace/archive, Stream actions and readable 
     await page.locator("[data-mobile-workspaces-open]").click();
     assert.match(await page.locator('[data-mobile-workspace-action="workspace-archive-open"]').innerText(), /\(1\)/u);
     await save("drawer-parity-390.png");
-    await page.locator('[data-workspace-select="a"] [data-mobile-workspace-edit]').click();
+    await editFromMenu(page,page.locator('[data-workspace-select="a"] [data-mobile-workspace-edit]'));
     await save("workspace-edit-390.png");
     assert.equal(await page.locator("[data-workspace-card-modal]").evaluate((d) => d.open), true);
     await page.evaluate(() => AgentHub.navigateBack());
     await page.waitForFunction(() => !document.querySelector("[data-workspace-card-modal]").open && document.activeElement?.matches('[data-mobile-workspace-edit]'));
     assert.equal(await page.locator('[data-workspace-select="a"] [data-mobile-workspace-edit]').evaluate((node) => document.activeElement === node), true);
-    await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').click();
+    await editFromMenu(page,page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]'),true);
     await save("folder-rename-390.png");
     await page.evaluate(() => AgentHub.navigateBack());
-    await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-rename]").open && document.activeElement?.matches('[data-mobile-folder-rename]'));
+    await page.waitForFunction(() => !document.querySelector("[data-folder-dialog=edit]")?.open && document.activeElement?.matches('[data-mobile-folder-rename]'));
     assert.equal(await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').evaluate((node) => document.activeElement === node), true);
-    await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').click();
-    assert.equal(await page.locator("[data-text-dialog]").isVisible(), true);
+    await editFromMenu(page,page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]'),true);
+    assert.equal(await page.locator("[data-folder-dialog=edit]").isVisible(), true);
     await page.evaluate(() => AgentHub.navigateBack());
-    await page.waitForFunction(() => !document.querySelector("[data-mobile-drawer-rename]").open && document.activeElement?.matches('[data-mobile-folder-rename]'));
+    await page.waitForFunction(() => !document.querySelector("[data-folder-dialog=edit]")?.open && document.activeElement?.matches('[data-mobile-folder-rename]'));
     assert.equal(await page.locator('[data-mobile-folder-row] [data-mobile-folder-rename]').evaluate((node) => document.activeElement === node), true);
     await page.locator('[data-mobile-workspace-action="workspace-archive-open"]').click();
     assert.equal(await page.getByRole("button", { name: "Восстановить", exact: true }).isVisible(), true);
@@ -477,7 +495,7 @@ test("mobile parity paths expose Workspace/archive, Stream actions and readable 
   } finally { await context.close(); await browser.close(); }
 });
 
-test("drawer pencils open existing edit and rename directly without selecting or collapsing", async () => {
+test("drawer action controls preserve edit, rename, focus and disclosure through the shared menu", async () => {
   const registry = loadThemeRegistry(fileURLToPath(assets));
   const directory = new URL("../../WIP/mobile-drawer-pencil-captures/", import.meta.url);
   await mkdir(directory, { recursive: true });
@@ -498,21 +516,21 @@ test("drawer pencils open existing edit and rename directly without selecting or
       };
       const drawer = page.locator("[data-mobile-workspace-drawer]");
       const workspaceModal = page.locator("[data-workspace-card-modal]");
-      const renameModal = page.locator("[data-mobile-drawer-rename]");
+      const renameModal = page.locator("[data-folder-dialog=edit]");
       const workspaceOpener = page.locator('[data-workspace-select="b"] [data-mobile-workspace-edit]');
       const folderOpener = page.locator('[data-mobile-folder-rename]');
       const settledFocus = async (selector) => page.waitForFunction((selector) => document.activeElement?.matches(selector)
-        && !document.querySelector("[data-workspace-card-modal]").open && !document.querySelector("[data-mobile-drawer-rename]").open, selector, { timeout: 5000 })
+        && !document.querySelector("[data-workspace-card-modal]").open && !document.querySelector("[data-folder-dialog=edit]")?.open, selector, { timeout: 5000 })
         .catch(async (error) => { throw new Error(JSON.stringify(await page.evaluate(() => ({ focus: document.activeElement?.outerHTML,
           folders: [...document.querySelectorAll('[data-workspace-folder-kind="folder"]')].map((n) => ({ id: n.dataset.workspaceFolderName,
             label: n.querySelector('[data-mobile-folder-rename]')?.getAttribute('aria-label') })) }))), { cause: error }); });
       await page.locator("[data-mobile-workspaces-open]").click();
       await save("default");
       assert.equal(await page.locator("[data-mobile-drawer-menu], [data-mobile-workspace-menu], [data-mobile-folder-menu]").count(), 0);
-      for (const [opener, name] of [[workspaceOpener, "Редактировать Workspace «Utilities»"], [folderOpener, "Переименовать папку «РАБОТА»"]]) {
+      for (const [opener, name] of [[workspaceOpener, "Действия с Workspace «Utilities»"], [folderOpener, "Действия с папкой «РАБОТА»"]]) {
         assert.equal(await opener.getAttribute("aria-label"), name);
         assert.equal(await opener.getAttribute("title"), name);
-        assert.equal(await opener.getAttribute("aria-haspopup"), "dialog");
+        assert.equal(await opener.getAttribute("aria-haspopup"), "menu");
         assert.deepEqual(await opener.evaluate((n) => ({ glyph: n.querySelector("svg").dataset.phosphorIcon,
           target: [n.getBoundingClientRect().width, n.getBoundingClientRect().height],
           size: [n.querySelector("svg").getBoundingClientRect().width, n.querySelector("svg").getBoundingClientRect().height],
@@ -524,13 +542,15 @@ test("drawer pencils open existing edit and rename directly without selecting or
           n.dispatchEvent(key);
           return { contextPrevented: menu.defaultPrevented, keyPrevented: key.defaultPrevented,
             customMenu: !!document.querySelector('.workspace-context-menu:not([hidden])') };
-        }), { contextPrevented: false, keyPrevented: false, customMenu: false });
+        }), { contextPrevented: false, keyPrevented: true, customMenu: true });
+        await page.keyboard.press("Escape");
       }
       assert.equal(await workspaceOpener.evaluate((n) => n.parentElement.querySelector("[data-mobile-workspace-select]")?.parentElement === n.parentElement
         && n.parentElement.getAttribute("role") !== "button"), true);
       await workspaceOpener.focus(); await page.keyboard.press("Tab"); await workspaceOpener.focus();
       await save("workspace-keyboard-focus");
       await page.keyboard.press("Enter");
+      await page.getByRole("menuitem",{name:"Редактировать…",exact:true}).click();
       assert.equal(await workspaceModal.evaluate((d) => d.matches(":modal")), true);
       assert.equal(await page.locator("[data-workspace-card-name]").inputValue(), "Utilities");
       assert.equal(await drawer.evaluate((d) => d.open), true);
@@ -539,10 +559,11 @@ test("drawer pencils open existing edit and rename directly without selecting or
       await page.evaluate(() => history.back());
       await settledFocus('[data-workspace-select="b"] [data-mobile-workspace-edit]');
       assert.equal(await page.evaluate(() => window.drawerClosedCount), 0);
-      await workspaceOpener.click();
+      await editFromMenu(page,workspaceOpener);
       await page.locator("[data-workspace-card-cancel]").click();
       await settledFocus('[data-workspace-select="b"] [data-mobile-workspace-edit]');
       await workspaceOpener.focus(); await page.keyboard.press("Space");
+      await page.getByRole("menuitem",{name:"Редактировать…",exact:true}).click();
       assert.equal(await workspaceModal.evaluate((d) => d.open), true);
       await page.keyboard.press("Escape");
       await settledFocus('[data-workspace-select="b"] [data-mobile-workspace-edit]');
@@ -555,16 +576,17 @@ test("drawer pencils open existing edit and rename directly without selecting or
       await folderOpener.focus(); await page.keyboard.press("Tab"); await folderOpener.focus();
       await save("folder-keyboard-focus");
       await page.keyboard.press("Space");
+      await page.getByRole("menuitem",{name:"Редактировать папку…",exact:true}).click();
       assert.equal(await renameModal.evaluate((d) => d.matches(":modal")), true);
       assert.equal(await folder.evaluate((d) => d.open), false);
-      assert.equal(await page.locator("[data-text-dialog-input]").inputValue(), "РАБОТА");
+      assert.equal(await page.locator("[data-folder-edit-name]").inputValue(), "РАБОТА");
       assert.equal(await drawer.evaluate((d) => d.open), true);
       assert.equal(await renameModal.evaluate((d) => {
-        const box = d.getBoundingClientRect(), style = getComputedStyle(d), inner = getComputedStyle(d.querySelector(".text-dialog"));
-        return box.left >= 16 && innerWidth - box.right >= 16 && box.width <= 356
-          && parseFloat(style.borderTopWidth) === 1 && parseFloat(style.borderRadius) === 12
-          && inner.backgroundColor === "rgba(0, 0, 0, 0)" && parseFloat(inner.borderTopWidth) === 0 && inner.boxShadow === "none"
-          && [...d.querySelectorAll("input:not([hidden]), button:not([hidden])")].filter((n) => n.getClientRects().length).every((n) => n.getBoundingClientRect().height >= 44);
+        const box = d.getBoundingClientRect(), style = getComputedStyle(d), reference = getComputedStyle(document.querySelector("[data-workspace-card-modal]"));
+        return box.left >= 16 && innerWidth - box.right >= 16 && box.width <= innerWidth - 32
+          && ["maxWidth","maxHeight","borderTopWidth","borderRadius","backgroundColor"].every(key => style[key] === reference[key])
+          && !d.querySelector(".text-dialog") && d.querySelectorAll(".workspace-card-fields label").length === 2
+          && [...d.querySelectorAll("input, textarea, button")].filter((n) => n.getClientRects().length).every((n) => n.getBoundingClientRect().height >= 44);
       }), true);
       await save("folder-rename");
       for (let index = 0; index < 5; index++) {
@@ -574,12 +596,13 @@ test("drawer pencils open existing edit and rename directly without selecting or
       await page.keyboard.press("Escape");
       await settledFocus("[data-mobile-folder-rename]");
       await folderOpener.focus(); await page.keyboard.press("Enter");
-      await page.locator("[data-text-dialog-cancel]").click();
+      await page.getByRole("menuitem",{name:"Редактировать папку…",exact:true}).click();
+      await page.locator("[data-folder-dialog=edit] .board-task-quiet").click();
       await settledFocus("[data-mobile-folder-rename]");
-      await folderOpener.click();
+      await editFromMenu(page,folderOpener,true);
       await page.evaluate(() => AgentHub.navigateBack());
       await settledFocus("[data-mobile-folder-rename]");
-      await folderOpener.click();
+      await editFromMenu(page,folderOpener,true);
       await page.mouse.click(4, 100);
       await settledFocus("[data-mobile-folder-rename]");
       assert.equal(await drawer.evaluate((d) => d.open), true);
@@ -587,27 +610,30 @@ test("drawer pencils open existing edit and rename directly without selecting or
       await folder.locator("summary").click();
 
       // Existing mutation owner still addresses the explicit row, not selection A.
-      await workspaceOpener.click();
+      await editFromMenu(page,workspaceOpener);
       await page.locator("[data-workspace-card-name]").fill("Utilities renamed");
       await page.locator("[data-workspace-card-form]").evaluate((form) => form.requestSubmit());
       await settledFocus('[data-workspace-select="b"] [data-mobile-workspace-edit]');
       assert.equal(await page.evaluate(() => window.testIntents.find((i) => i.type === "workspace:update")?.workspaceId), "b");
-      await folderOpener.click();
-      await page.locator("[data-text-dialog-input]").fill("ДРУГАЯ");
-      await page.locator("[data-text-dialog-form]").evaluate((form) => form.requestSubmit());
+      await editFromMenu(page,folderOpener,true);
+      await page.locator("[data-folder-edit-name]").fill("ДРУГАЯ");
+      await page.locator("[data-folder-dialog=edit] form").evaluate((form) => form.requestSubmit());
       await settledFocus("[data-mobile-folder-rename]");
-      assert.equal(await page.evaluate(() => window.testIntents.filter((i) => i.type === "workspace:folder-rename").length), 1);
+      assert.equal(await page.evaluate(() => AgentHub.workspaceFolders.folder("ДРУГАЯ")?.name), "ДРУГАЯ");
 
-      await folderOpener.click();
+      await editFromMenu(page,folderOpener,true);
       await page.evaluate((tasks) => {
         AgentHub.setWorkspaces([{ id: "a", name: "AgentHub", settings: { catalogFolder: "НОВАЯ" } },
           { id: "b", name: "Utilities", settings: { catalogFolder: "НОВАЯ" } }]);
         AgentHub.setTasks(tasks.map((task) => ({ ...task, workspaceSettings: { catalogFolder: "НОВАЯ" } })));
-        AgentHub.renameWorkspaceFolderCatalog("РАБОТА", "НОВАЯ");
+        const folder=AgentHub.workspaceFolders.folders()[0];
+        AgentHub.setWorkspaces([{id:"a",name:"AgentHub",settings:{catalogFolder:"НОВАЯ"}},
+          {id:"b",name:"Utilities",settings:{catalogFolder:"НОВАЯ"}}],[],
+          {version:1,revision:"remote-rename",folders:[{...folder,name:"НОВАЯ",revision:folder.revision+1}]});
       }, tasks);
       await page.keyboard.press("Escape");
-      await settledFocus('[data-mobile-folder-rename][aria-label="Переименовать папку «НОВАЯ»"]');
-      await workspaceOpener.click();
+      await settledFocus('[data-mobile-folder-rename][aria-label="Действия с папкой «НОВАЯ»"]');
+      await editFromMenu(page,workspaceOpener);
       await page.evaluate((tasks) => {
         AgentHub.setWorkspaces([{ id: "a", name: "AgentHub", settings: { catalogFolder: "РАБОТА" } }]);
         AgentHub.setTasks(tasks.filter((task) => task.workspaceId === "a"));
@@ -733,9 +759,9 @@ test("Desktop and wide VS Code host retain existing navigation and composer", as
         const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 100 });
         summary.dispatchEvent(event); return event.defaultPrevented;
       }), true);
-      await page.getByRole("menuitem", { name: "Переименовать папку…", exact: true }).click();
-      assert.equal(await page.locator("[data-text-dialog-input]").inputValue(), "РАБОТА");
-      await page.locator("[data-text-dialog-cancel]").click();
+      await page.getByRole("menuitem", { name: "Редактировать папку…", exact: true }).click();
+      assert.equal(await page.locator("[data-folder-edit-name]").inputValue(), "РАБОТА");
+      await page.locator("[data-folder-dialog=edit] .board-task-quiet").click();
       await page.evaluate(() => AgentHub.showSelectedTask());
       assert.equal(await page.locator("[data-composer-input]").isVisible(), true);
       await page.screenshot({ path: new URL(`host-${vscode ? "webview" : "web"}-${width}.png`, captures).pathname.replace(/^\/(?:([A-Z]:))/u, "$1") });

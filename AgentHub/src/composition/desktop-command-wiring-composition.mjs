@@ -8,6 +8,13 @@ export function destinationStreamSettings(workspaceCatalog, streamId) {
 export function createWorkspaceActions(services) {
   const taskMutation = (operation) => Promise.resolve().then(operation);
   return {
+    workspaceFolderCatalog: () => services.workspaceCatalogService.workspaceFolderCatalog(),
+    previewWorkspaceFolderDeletion: (params) => services.workspaceCatalogService.previewWorkspaceFolderDeletion(params),
+    workspaceFolderCommandResult: (params) => services.workspaceCatalogService.workspaceFolderCommandResult(params),
+    workspaceFolderCommand: (params) => services.workspaceMutation(
+      () => services.workspaceCatalogService.workspaceFolderCommand(params),
+      { resultKey: "workspaceFolderOperation" },
+    ),
     renameWorkspace: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.renameWorkspace(params),
     ),
@@ -17,10 +24,11 @@ export function createWorkspaceActions(services) {
     ),
     moveWorkspaceToFolder: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.moveWorkspaceToFolder(params),
+      { resultKey: "workspaceFolderOperation" },
     ),
     renameWorkspaceFolder: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.renameWorkspaceFolder(params),
-      { resultKey: "renamedWorkspaceFolder" },
+      { resultKey: "workspaceFolderOperation" },
     ),
     updateWorkspaceDeveloperRules: (params) => services.workspaceMutation(
       () => services.workspaceCatalogService.updateWorkspaceDeveloperRules(params),

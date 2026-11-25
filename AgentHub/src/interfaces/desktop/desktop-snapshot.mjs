@@ -172,6 +172,7 @@ export function createDesktopSnapshotFactory({
       return boardStateCache;
     }
     const state = {
+      workspaceFolders: board.workspaceFolderCatalog?.() ?? null,
       workspaces: board.workspaces?.() ?? catalog.hierarchy?.() ?? [],
       archivedWorkspaces: board.archivedWorkspaces?.() ?? [],
       boardTasks: board.snapshot?.({ compactPresentation: true }) ?? [],
@@ -897,6 +898,7 @@ export function createDesktopSnapshotFactory({
     }));
     const snapshot = {
       apiVersion: protocol,
+      workspaceFolders: boardState.workspaceFolders,
       workspaces,
       archivedWorkspaces,
       boardTasks,

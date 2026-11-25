@@ -5,8 +5,7 @@
   // only the compact conversation/overlay route, never messages, drafts or unread state.
   function create({ root, state, currentTask, workspaceKey, workspaceStreams,
     representativeStreamTask, restoreSelection, selectTask, setView, setPane,
-    openSettings, openWorkspaceCard, workspaceDialog, renameWorkspaceFolder,
-    textDialog, cancelTextDialog,
+    openSettings, openWorkspaceCard, workspaceDialog, openWorkspaceMenu, openFolderMenu,
     createStream, retryConnection, closeTransient, closeNative, transientLayers = [], isMobile }) {
     const doc = root.ownerDocument;
     const rail = doc.querySelector("[data-task-rail]");
@@ -29,7 +28,6 @@
     let editOpener = null;
     let editIdentity = null;
     let editRowIndex = 0;
-    let renameHome = null;
     const dialogStack = [];
     doc.addEventListener("beforetoggle", (event) => {
       if (event.target?.tagName !== "DIALOG") return;
@@ -128,42 +126,9 @@
       close(drawer); openWorkspaceCard(workspaceId);
     }));
     drawer.append(drawerFooter);
-    const renameLayer = dialog("Новое название папки", "mobile-drawer-rename-layer", "data-mobile-drawer-rename", closeRename, resolveEditOpener);
-    renameLayer.querySelector("header").hidden = true;
-    renameLayer.addEventListener("keydown", (event) => {
-      if (event.key !== "Tab" || event.ctrlKey || event.altKey || event.metaKey) return;
-      const controls = [...renameLayer.querySelectorAll("button, input, textarea, select, [tabindex]")]
-        .filter((item) => !item.disabled && item.tabIndex >= 0 && item.getClientRects().length && !item.closest("[hidden]"));
-      if (!controls.length) return;
-      event.preventDefault();
-      const index = controls.indexOf(doc.activeElement);
-      controls[(index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length].focus({ preventScroll: true });
-    });
-    function restoreRenameForm() {
-      if (renameHome) {
-        if (!textDialog.hidden) cancelTextDialog();
-        renameHome.parent.insertBefore(textDialog, renameHome.next);
-        if (renameHome.role !== null) textDialog.setAttribute("role", renameHome.role);
-        else textDialog.removeAttribute("role");
-        if (renameHome.modal !== null) textDialog.setAttribute("aria-modal", renameHome.modal);
-        renameHome = null;
-      }
-    }
-    renameLayer.addEventListener("close", () => {
-      if (renameLayer.open) return;
-      restoreRenameForm(); restoreEditFocus();
-    });
     workspaceDialog.addEventListener("close", () => {
       if (!workspaceDialog.open && editIdentity?.kind === "workspace") restoreEditFocus();
     });
-    new MutationObserver(() => {
-      if (!renameHome) return;
-      if (textDialog.hidden) closeRename();
-      else {
-        renameLayer.setAttribute("aria-label", textDialog.querySelector("[data-text-dialog-title]").textContent);
-        window.AgentHubModalOverlays.activateOverlay(renameLayer, editOpener);
-      }
-    }).observe(textDialog, { attributes: true, attributeFilter: ["hidden"] });
     const switcher = dialog("Выбрать поток", "mobile-stream-switcher", "data-mobile-stream-switcher");
     const switchHeading = switcher.querySelector("header strong");
     switchHeading.tabIndex = -1;
@@ -278,11 +243,6 @@
     drawer.addEventListener("close", () => drawerButton.setAttribute("aria-expanded", "false"));
     switcher.addEventListener("close", () => switchButton.setAttribute("aria-expanded", "false"));
     function close(target) { if (target.open) target.close(); }
-    function closeRename() {
-      restoreRenameForm();
-      close(renameLayer);
-      restoreEditFocus();
-    }
     function resolveEditOpener() {
       if (editOpener?.isConnected && !editOpener.disabled && editOpener.getClientRects().length) return editOpener;
       const rows = [...rail.querySelectorAll(editIdentity?.kind === "folder"
@@ -303,14 +263,8 @@
       const rows = [...rail.querySelectorAll(kind === "folder" ? '[data-workspace-folder-kind="folder"]' : "[data-workspace-select]")];
       editRowIndex = Math.max(0, rows.findIndex((row) => kind === "folder" ? row.dataset.workspaceFolderName === identity : row.dataset.workspaceSelect === identity));
       editOpener.focus({ preventScroll: true });
-      if (kind === "workspace") { openWorkspaceCard(identity); return; }
-      renameHome = { parent: textDialog.parentNode, next: textDialog.nextSibling,
-        role: textDialog.getAttribute("role"), modal: textDialog.getAttribute("aria-modal") };
-      renameLayer.append(textDialog);
-      textDialog.setAttribute("role", "presentation"); textDialog.removeAttribute("aria-modal");
-      renameWorkspaceFolder(identity);
-      open(renameLayer);
-      window.AgentHubModalOverlays.activateOverlay(renameLayer, editOpener);
+      if (kind === "workspace") { openWorkspaceMenu(event,identity); return; }
+      if (kind === "folder") { openFolderMenu(event,identity); return; }
     }
     function selectedWorkspace() {
       const selected = currentTask();
@@ -435,9 +389,9 @@
         if (item.querySelector("[data-mobile-workspace-edit]")) continue;
         const id = item.dataset.workspaceSelect;
         const name = state.workspaces?.find((workspace) => workspace.id === id)?.name || item.querySelector(".task-workspace-name")?.textContent || "";
-        const edit = button(`Редактировать Workspace «${name}»`, "pencil-simple", (event) => {
+        const edit = button(`Действия с Workspace «${name}»`, "pencil-simple", (event) => {
           event.stopPropagation(); openDirectEdit(event, id, "workspace");
-        }, { "data-mobile-workspace-edit": "", "aria-haspopup": "dialog" });
+        }, { "data-mobile-workspace-edit": "", "aria-haspopup": "menu" });
         edit.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) event.stopPropagation(); });
         item.append(edit);
       }
@@ -449,9 +403,9 @@
         const row = node("div", { class: "mobile-folder-row", "data-mobile-folder-row": "" });
         const details = summary.parentElement;
         details.replaceWith(row); row.append(details);
-        const edit = button(`Переименовать папку «${item.dataset.workspaceFolderName}»`, "pencil-simple", (event) => {
+        const edit = button(`Действия с папкой «${item.dataset.workspaceFolderName}»`, "pencil-simple", (event) => {
           event.stopPropagation(); openDirectEdit(event, item.dataset.workspaceFolderName, "folder");
-        }, { "data-mobile-folder-rename": "", "aria-haspopup": "dialog" });
+        }, { "data-mobile-folder-rename": "", "aria-haspopup": "menu" });
         edit.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) event.stopPropagation(); });
         row.append(edit);
       }
@@ -480,7 +434,6 @@
     }, true);
     function handleBack() {
       if (!active) return false;
-      if (renameLayer.open) { closeRename(); return true; }
       if (closeTransient()) return true;
       const opened = dialogStack.filter((item) => item.open).at(-1);
       if (opened) {

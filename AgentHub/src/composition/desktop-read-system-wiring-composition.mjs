@@ -78,6 +78,7 @@ export function createDesktopReadSystemWiring({
         get snapshotRevision() { return services.taskBoardSnapshotRevision?.(); },
         snapshot: services.taskBoardSnapshot,
         workspaces: services.taskBoardWorkspaces,
+        workspaceFolderCatalog: services.workspaceFolderCatalog,
         archivedWorkspaces: services.archivedWorkspaces,
         layout: services.taskBoardLayout,
       },

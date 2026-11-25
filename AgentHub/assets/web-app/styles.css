@@ -5742,7 +5742,8 @@ html[data-view="dashboard"] .task-board-view.is-list-view .task-board-columns {
   resize: vertical;
 }
 
-.workspace-card-fields [data-workspace-card-comment] {
+.workspace-card-fields [data-workspace-card-comment],
+.workspace-card-fields [data-folder-edit-comment] {
   height: 4.5rem;
 }
 
