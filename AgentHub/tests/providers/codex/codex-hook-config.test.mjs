@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,10 +12,15 @@ import {
   removeCodexStopHookConfig,
 } from "../../../src/infrastructure/codex/codex-hook-config.mjs";
 import { runtimeLayout } from "../../../src/infrastructure/filesystem/runtime-layout.mjs";
+import {
+  RuntimeCommandServer,
+  runtimeCommandSpoolDirectory,
+} from "../../../src/infrastructure/process/runtime-command.mjs";
 
 const options = {
   nodeExecutable: "C:\\Program Files\\nodejs\\node.exe",
   launcherFile: "C:\\Runtime\\codex-stop-hook-launcher.mjs",
+  runtimeRoot: "C:\\Runtime",
 };
 
 test("Codex hook config preserves unrelated hooks and installs start and stop handlers", () => {
@@ -30,9 +36,14 @@ test("Codex hook config preserves unrelated hooks and installs start and stop ha
   assert.equal(updated.hooks.SessionStart.length, 1);
   assert.equal(updated.hooks.Stop.length, 2);
   assert.equal(updated.hooks.UserPromptSubmit.length, 1);
+  assert.ok(
+    updated.hooks.Stop[1].hooks[0].commandWindows.startsWith(
+      '& "C:\\Program Files\\nodejs\\node.exe" "C:\\Runtime\\codex-stop-hook-launcher.mjs" --runtime-root=',
+    ),
+  );
   assert.equal(
     updated.hooks.Stop[1].hooks[0].commandWindows,
-    '& "C:\\Program Files\\nodejs\\node.exe" "C:\\Runtime\\codex-stop-hook-launcher.mjs"',
+    updated.hooks.UserPromptSubmit[0].hooks[0].commandWindows,
   );
   assert.match(updated.hooks.Stop[1].hooks[0].commandWindows, /codex-stop-hook-launcher\.mjs/);
   assert.match(
@@ -74,6 +85,7 @@ test("Codex hook status reports executable configuration and runtime receipts", 
     await writeFile(hooksFile, `${JSON.stringify(mergeCodexStopHookConfig({}, {
       nodeExecutable: process.execPath,
       launcherFile,
+      runtimeRoot: root,
     }))}\n`, "utf8");
     await writeFile(path.join(layout.dataDir, "state.json"), `${JSON.stringify({
       codexHookReceipts: {
@@ -138,6 +150,72 @@ test("Codex hook installation uses the current immutable release instead of a st
   }
 });
 
+test("installed Codex hooks deliver both events to the selected runtime from a separate environment",
+  { timeout: 30_000 }, async (t) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codex-hook-runtime-binding-"));
+    t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+    const runtimeRoot = path.join(root, "selected runtime");
+    const codexHome = path.join(root, "codex home");
+    const hooksFile = path.join(codexHome, "hooks.json");
+    const defaultRoot = path.join(root, "default");
+    const unexpectedRuntime = path.join(defaultRoot, process.platform === "win32" ? "AgentHub" : "agent-hub");
+    const commands = [];
+    const server = new RuntimeCommandServer({
+      runtimeRoot,
+      handler: async ({ command, cwd }) => { commands.push({ command, cwd }); },
+    });
+    try {
+      const launcher = runtimeLayout(runtimeRoot).codexHookLauncherFile;
+      await mkdir(runtimeRoot);
+      await copyFile(new URL("../../../codex-stop-hook-launcher.mjs", import.meta.url), launcher);
+      await installCodexStopHook({ hooksFile, runtimeRoot });
+      assert.equal((await codexStopHookStatus({ hooksFile, runtimeRoot })).configured, true);
+      const config = JSON.parse(await readFile(hooksFile, "utf8"));
+      await server.start();
+      for (const hookEvent of ["UserPromptSubmit", "Stop"]) {
+        const hook = config.hooks[hookEvent][0].hooks[0];
+        const [, executable, installedFile, rootArgument] = /^"([^"]+)" "([^"]+)" (\S+)$/u.exec(hook.command);
+        await new Promise((resolve, reject) => {
+          const child = spawn(executable, [installedFile, rootArgument], {
+            cwd: os.tmpdir(),
+            env: {
+              SystemRoot: process.env.SystemRoot, LOCALAPPDATA: defaultRoot,
+              XDG_STATE_HOME: defaultRoot, CODEX_HOME: codexHome,
+            },
+            windowsHide: true,
+          });
+          let output = "";
+          let errors = "";
+          child.stdout.setEncoding("utf8").on("data", (value) => { output += value; });
+          child.stderr.setEncoding("utf8").on("data", (value) => { errors += value; });
+          child.once("error", reject);
+          child.once("close", (code) => {
+            if (code === 0 && output.trim() === "{}") resolve();
+            else reject(new Error(`Hook ${hookEvent} failed (${code}): ${JSON.stringify(output)} ${errors}`));
+          });
+          child.stdin.end(JSON.stringify({
+            hook_event_name: hookEvent, session_id: "thread-test", turn_id: "turn-test",
+            cwd: root, prompt: "test prompt",
+          }));
+        });
+      }
+      const deadline = Date.now() + 15_000;
+      const spool = runtimeCommandSpoolDirectory(runtimeRoot);
+      while (Date.now() < deadline) {
+        const files = await readdir(spool);
+        if (files.filter((file) => file.endsWith(".response.json")).length === 2) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      assert.deepEqual(commands, [
+        { command: "turn-start", cwd: root },
+        { command: "turn-complete", cwd: root },
+      ]);
+      await assert.rejects(stat(runtimeCommandSpoolDirectory(unexpectedRuntime)), { code: "ENOENT" });
+    } finally {
+      await server.close();
+    }
+  });
+
 test("Codex hook status rejects a stale launcher and an obsolete command", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "codex-hook-stale-status-"));
   try {
@@ -152,6 +230,7 @@ test("Codex hook status rejects a stale launcher and an obsolete command", async
     await writeFile(hooksFile, `${JSON.stringify(mergeCodexStopHookConfig({}, {
       nodeExecutable: process.execPath,
       launcherFile: path.join(root, "obsolete", "codex-stop-hook-launcher.mjs"),
+      runtimeRoot,
     }))}\n`, "utf8");
 
     const status = await codexStopHookStatus({ hooksFile, runtimeRoot });

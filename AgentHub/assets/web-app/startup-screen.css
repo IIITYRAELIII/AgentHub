@@ -255,6 +255,14 @@ html[data-hub-startup-screen] body::-webkit-scrollbar,
   color: #6fb3e8;
 }
 
+.hub-startup-connection-status {
+  min-height: 2.8em;
+  margin: 10px 0 0;
+  color: #a9bed5;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .hub-startup-meta-separator {
   width: 3px;
   height: 3px;
@@ -572,6 +580,7 @@ html[data-hub-startup-screen] body::-webkit-scrollbar,
   .hub-startup-dial-core img { width: clamp(48px, 6vh, 54px); height: clamp(48px, 6vh, 54px); }
   .hub-startup-meta { margin-top: 20px; font-size: 14px; }
   .hub-startup-completed-list { grid-template-columns: 1fr; gap: 11px; }
+  .hub-startup-completed { box-sizing: border-box; max-height: 20dvh; overflow-y: auto; }
   .hub-startup-queue-item { min-height: 52px; grid-template-columns: 38px 26px minmax(0, 1fr); }
   .hub-startup-queue-label { font-size: 14px; }
 }

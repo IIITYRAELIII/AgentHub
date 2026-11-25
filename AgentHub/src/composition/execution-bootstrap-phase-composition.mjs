@@ -385,6 +385,7 @@ export function createExecutionBootstrapPhase({
     sqliteRecovery: infrastructure.sqliteRecovery,
     acknowledgeSqliteRecovery: infrastructure.acknowledgeSqliteRecovery,
     commandTrace: infrastructure.commandTraceService,
+    startupTraceId: infrastructure.startupTraceId,
   });
   ports.bootstrap.bind(bootstrap);
 

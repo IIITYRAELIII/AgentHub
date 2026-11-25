@@ -19,6 +19,7 @@ async function loadWebviewTransport(session) {
   const listeners = new Map();
   const messages = [];
   const window = {
+    parent: { extensionHost: true },
     location: { href: "https://agent-hub.vscode-webview.test/" },
     acquireVsCodeApi: () => ({ postMessage: (message) => messages.push(message) }),
     fetch: (...args) => fetch(...args),
@@ -37,7 +38,10 @@ async function loadWebviewTransport(session) {
   });
   const available = window.__agentHubDirectTransport.available();
   const request = messages.find((message) => message.type === "agenthub:session");
-  listeners.get("message")({ data: { type: "agenthub:session-result", id: request.id, ok: true, result: session } });
+  listeners.get("message")({ source: { sandboxedFrame: true },
+    data: { type: "agenthub:session-result", id: request.id, ok: true, result: { ...session, token: "child" } } });
+  listeners.get("message")({ source: window.parent,
+    data: { type: "agenthub:session-result", id: request.id, ok: true, result: session } });
   assert.equal(await available, true, "the webview direct transport is ready");
   return window;
 }

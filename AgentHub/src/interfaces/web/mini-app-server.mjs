@@ -46,6 +46,7 @@ const STATIC_CONTENT_TYPES = new Map([
   [".jpeg", "image/jpeg"],
   [".jpg", "image/jpeg"],
   [".js", "text/javascript; charset=utf-8"],
+  [".html", "text/html; charset=utf-8"],
   [".mjs", "text/javascript; charset=utf-8"],
   [".png", "image/png"],
   [".svg", "image/svg+xml; charset=utf-8"],
@@ -54,6 +55,14 @@ const STATIC_CONTENT_TYPES = new Map([
   [".woff", "font/woff"],
   [".woff2", "font/woff2"],
 ]);
+const WORKSPACE_IMAGE_TYPES = new Map([
+  [".apng", "image/png"],
+  [".cur", "image/x-icon"],
+  [".dib", "image/bmp"],
+  [".jfif", "image/jpeg"],
+  [".jpe", "image/jpeg"],
+]);
+
 function staticAssetManifest(assetsDirectory) {
   const root = path.resolve(assetsDirectory);
   const indexSource = readFileSync(path.join(root, "index.html"), "utf8");
@@ -204,6 +213,7 @@ const DEVICE_SESSION_COOKIE = "agent_hub_device";
 const DEVICE_SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const VSCODE_WEBVIEW_ORIGIN = /^(?:vscode-webview:\/\/[a-z0-9-]+|https:\/\/[a-z0-9-]+\.vscode-cdn\.net)$/iu;
 const JSON_GZIP_MIN_BYTES = 16 * 1_024;
+const COLD_HISTORY_IDENTITY_MAX_BYTES = 128 * 1_024;
 
 function safeEqualText(left, right) {
   const leftBytes = Buffer.from(String(left ?? ""), "utf8");
@@ -362,6 +372,7 @@ function responseHeaders(contentType, {
   immutable = false,
   telegramRuntime = true,
   styleNonce = "",
+  externalImages = false,
 } = {}) {
   return {
     "Cache-Control": immutable ? "public, max-age=31536000, immutable" : "no-store",
@@ -370,8 +381,9 @@ function responseHeaders(contentType, {
       "base-uri 'none'",
       "connect-src 'self'",
       "form-action 'none'",
+      "frame-src 'self'",
       "frame-ancestors 'none'",
-      "img-src 'self' data: blob:",
+      `img-src 'self' data: blob:${externalImages ? " http: https:" : ""}`,
       "object-src 'none'",
       `script-src 'self'${telegramRuntime ? " https://telegram.org" : ""}`,
       `style-src 'self'${styleNonce ? ` 'nonce-${styleNonce}'` : ""}`,
@@ -395,7 +407,7 @@ function send(response, statusCode, contentType, body, method = "GET", options =
   response.end(method === "HEAD" ? "" : body);
 }
 
-function acceptedEncodingQuality(value, encoding) {
+function acceptedEncodingQuality(value, encoding, defaultQuality = 0) {
   const qualities = new Map();
   for (const entry of String(value ?? "").toLowerCase().split(",")) {
     const [name, ...parameters] = entry.trim().split(";").map((item) => item.trim());
@@ -404,7 +416,7 @@ function acceptedEncodingQuality(value, encoding) {
     const quality = qualityParameter ? Number(qualityParameter.slice(2)) : 1;
     qualities.set(name, Number.isFinite(quality) ? quality : 0);
   }
-  return qualities.get(encoding) ?? qualities.get("*") ?? 0;
+  return qualities.get(encoding) ?? qualities.get("*") ?? defaultQuality;
 }
 
 function varyHeader(...values) {
@@ -418,19 +430,26 @@ function varyHeader(...values) {
 export function createJsonResponder({ compress = gzip, maxConcurrentCompressions = 2 } = {}) {
   let activeCompressions = 0;
   return function json(response, statusCode, value, method = "GET", options = {}) {
-    const { acceptEncoding = "", headers = {}, timing = null, ...sendOptions } = options;
+    const { acceptEncoding = "", headers = {}, timing = null, coldHistory = false, ...sendOptions } = options;
     const encode = () => Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
     const body = timing ? timing.sync("http-json-encode", encode) : encode();
-    const wantsGzip = body.length >= JSON_GZIP_MIN_BYTES
-      && acceptedEncodingQuality(acceptEncoding, "gzip") > 0;
-    const deliver = (responseBody, compressed) => {
+    const identityAllowed = !coldHistory || acceptedEncodingQuality(acceptEncoding, "identity", 1) > 0;
+    const wantsGzip = acceptedEncodingQuality(acceptEncoding, "gzip") > 0
+      && (body.length >= JSON_GZIP_MIN_BYTES || !identityAllowed);
+    const deliver = (responseBody, compressed, status = statusCode) => {
       if (response.destroyed || response.writableEnded) return;
-      send(response, statusCode, "application/json; charset=utf-8", responseBody, method, {
+      timing?.responseBody?.({
+        jsonBytes: body.length,
+        responseBytes: responseBody.length,
+        compression: compressed ? "gzip" : "identity",
+        socketPendingBytes: response.socket?.writableLength ?? 0,
+      });
+      send(response, status, "application/json; charset=utf-8", responseBody, method, {
         ...sendOptions,
         headers: {
           ...headers,
           "Content-Length": String(responseBody.length),
-          ...(wantsGzip ? {
+          ...(wantsGzip || coldHistory ? {
             Vary: varyHeader(response.getHeader("Vary"), headers.Vary, "Accept-Encoding"),
           } : {}),
           ...(compressed ? {
@@ -439,7 +458,16 @@ export function createJsonResponder({ compress = gzip, maxConcurrentCompressions
         },
       });
     };
-    if (!wantsGzip || activeCompressions >= maxConcurrentCompressions) {
+    // A small first page can reach the browser while background native work
+    // occupies the gzip pool. Preserve compression for larger responses.
+    const sendColdHistoryDirectly = coldHistory && identityAllowed && body.length <= COLD_HISTORY_IDENTITY_MAX_BYTES;
+    const compressionAtCapacity = activeCompressions >= maxConcurrentCompressions;
+    if (!identityAllowed && (!wantsGzip || compressionAtCapacity)) {
+      // No accepted body is available. Do not send identity or grow the gzip queue.
+      deliver(Buffer.alloc(0), false, wantsGzip ? 503 : 406);
+      return;
+    }
+    if (!wantsGzip || sendColdHistoryDirectly || compressionAtCapacity) {
       // HTTP permits an uncompressed representation even when gzip is accepted.
       // Do not queue more whole snapshot buffers behind the compression workers.
       deliver(body, false);
@@ -454,7 +482,8 @@ export function createJsonResponder({ compress = gzip, maxConcurrentCompressions
       activeCompressions -= 1;
       compressionFinished?.(error ? "failed" : "succeeded");
       try {
-        deliver(error ? body : compressedBody, !error);
+        if (error && !identityAllowed) deliver(Buffer.alloc(0), false, 503);
+        else deliver(error ? body : compressedBody, !error);
       } catch {
         // The compression callback runs outside the route's synchronous catch.
         // A broken/disconnected socket must not take down the Hub process.
@@ -973,7 +1002,7 @@ export class MiniAppServer {
 
   async #handle(request, response, transportReceivedAtMs = Date.now()) {
     const method = String(request.method ?? "GET").toUpperCase();
-    const url = new URL(request.url ?? "/", `http://${this.#host}`);
+    const url = new URL(request.url ?? "/", "http://localhost");
     if (this.#startupOnly) {
       const read = ["GET", "HEAD"].includes(method);
       const localSession = url.pathname === "/api/local-session";
@@ -1252,6 +1281,7 @@ export class MiniAppServer {
         json(response, 503, { error: "Управление Agent Hub недоступно." }, method);
         return;
       }
+      let timing = null;
       try {
         const body = await readJsonBody(request);
         const action = String(body.action ?? "").trim();
@@ -1266,24 +1296,34 @@ export class MiniAppServer {
         if (commandId && !CONTROL_COMMAND_ID_PATTERN.test(commandId)) {
           throw new Error("Некорректный идентификатор команды");
         }
+        timing = action === "task-history" ? createHttpReadTiming({
+          commandId: params.clientTraceId, route: action, response,
+          record: this.#recordCommandTrace, receivedAtMs: transportReceivedAtMs,
+        }) : null;
+        const result = await this.#controlHandler({
+          action,
+          params,
+          context: {
+            ...authorization,
+            ...(commandId ? { commandId, transportReceivedAtMs } : {}),
+            ...(timing ? { historyTiming: timing } : {}),
+          },
+        });
         json(response, 200, {
           ok: true,
-          result: await this.#controlHandler({
-            action,
-            params,
-            context: {
-              ...authorization,
-              ...(commandId ? { commandId, transportReceivedAtMs } : {}),
-            },
-          }),
+          result,
           ...(commandId ? { receiptId: commandId } : {}),
         }, method, {
           acceptEncoding: request.headers["accept-encoding"],
+          timing,
+          ...(timing && commandId ? { headers: { "Server-Timing": `hub-history;desc="${commandId}"` } } : {}),
+          coldHistory: action === "task-history" && params.coldHistory === true
+            && params.limit === 2 && params.before == null && params.refreshSource !== true && !params.tracePage,
         });
       } catch (error) {
         const statusCode = Number(error?.statusCode) === 409 ? 409 : 400;
         if (statusCode !== 409) this.#reportUnexpected(error, "control");
-        json(response, statusCode, { ok: false, error: String(error?.message ?? error) }, method);
+        json(response, statusCode, { ok: false, error: String(error?.message ?? error) }, method, { timing });
       }
       return;
     }
@@ -1391,17 +1431,33 @@ export class MiniAppServer {
       }
       const authorization = await this.#authorize(request, response);
       if (!authorization) return;
-      if (authorization.source !== "local-mini-app") {
+      const preview = url.searchParams.get("preview") === "image";
+      const webviewPreview = preview && authorization.source === "local-vscode-webview";
+      if (authorization.source !== "local-mini-app" && !webviewPreview) {
         json(response, 403, { error: "Локальные файлы Workspace доступны только локальному Agent Hub." }, method);
         return;
       }
       try {
         const file = await resolveWorkspaceFile(url.searchParams.get("path"));
-        await sendBoundedFile(response, file.target, file.bytes, file.type, method, {
-          "Content-Disposition": downloadDisposition(file.name),
-        });
+        const headers = { "Content-Disposition": downloadDisposition(file.name) };
+        if (!preview) {
+          await sendBoundedFile(response, file.target, file.bytes, file.type, method, headers);
+          return;
+        }
+
+        // Image documents can also be navigated to directly. Keep the image
+        // response sandboxed even when the source is an active SVG document.
+        headers["Content-Security-Policy"] = "sandbox; default-src 'none'; style-src 'unsafe-inline'";
+        const extension = path.extname(file.name).toLowerCase();
+        const type = WORKSPACE_IMAGE_TYPES.get(extension) ?? STATIC_CONTENT_TYPES.get(extension) ?? file.type;
+        if (!type.startsWith("image/")) {
+          json(response, 415, { error: "Формат изображения не поддерживается" }, method);
+          return;
+        }
+        await sendBoundedFile(response, file.target, file.bytes, type, method, headers);
       } catch (error) {
-        json(response, 404, { error: String(error?.message ?? error) }, method);
+        if (response.headersSent) { response.destroy(error); return; }
+        json(response, 404, { error: preview ? "Изображение недоступно" : String(error?.message ?? error) }, method);
       }
       return;
     }
@@ -1939,6 +1995,11 @@ export class MiniAppServer {
       const styleNonce = url.pathname === "/" ? randomBytes(18).toString("base64") : "";
       const read = () => this.#staticBody(url.pathname, assetBundle, { nonce: styleNonce });
       const body = timing ? await timing.measure("http-asset-read", read) : await read();
+      const frameHeaders = url.pathname === "/visualization-frame.html" ? {
+        "Content-Security-Policy": loopbackRequest(request)
+          ? "frame-ancestors 'self' vscode-webview: vscode-file:"
+          : "frame-ancestors 'self'",
+      } : undefined;
       send(
         response,
         200,
@@ -1950,6 +2011,8 @@ export class MiniAppServer {
           immutable: descriptor.immutable || url.searchParams.has("v"),
           telegramRuntime,
           styleNonce,
+          externalImages: url.pathname === "/",
+          headers: frameHeaders,
         },
       );
     } catch (error) {

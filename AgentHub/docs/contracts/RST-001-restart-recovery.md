@@ -294,6 +294,17 @@ pricing backfill. Its existing post-readiness coordinator remains the owner;
 mandatory terminal projection recovery and its durable ACK fences still finish
 before readiness, with the existing replacement deadline unchanged.
 
+## Task Git retirement evidence (HUB-524)
+
+An individual Hub exit leaves the Windows Job witness able to retire its own
+Git tree and publish matching admission and completion records. Before execution,
+recovery may instead take the exact durable launch permit. The native owner
+must consume the same permit before it can resume Git. The existing
+Task and Git owners validate the evidence and persist recovery before removing
+the guard. A missing or damaged receipt cannot be replaced with PID absence.
+A generation without Job evidence keeps the existing after-guard boot-proof
+route. See ADR-HUB-524.
+
 ## Identity and owner
 
 The optional GitHub account owner pauses credential mutation intake at actual
@@ -545,9 +556,16 @@ measure local disposition and Ready/new input without message content.
 - Restart UI appears only for a real persisted restart phase and cannot hide a
   final response.
   A disconnected health request alone never asserts a restart. While waiting
-  for connection or replacement, the screen shows no stage progress inherited
-  from the previous health sample and does not claim readiness. It shows the
-  measured time since the wait began and says the previous process still
+  for replacement, the screen shows no stage progress inherited
+  from the previous process and does not claim readiness. During transient
+  connection loss in the same startup, its last confirmed stages remain visible
+  with explicit stale status and frozen observed elapsed time. A newer positive
+  startup generation replaces that observation; an online event or an older
+  response cannot establish replacement. The replacement wait shows the
+  measured time since this replacement wait began, independently of a preceding
+  transient connection loss. Repeated events for the same wait preserve that
+  boundary; a canonical terminal predating it cannot settle the new wait.
+  The screen says the previous process still
   answers only after a successful health response. A snapshot served after a
   failed restart carries its recent persisted reason, shown once per operation,
   until a later restart settles successfully; elapsed time is not delivery and
