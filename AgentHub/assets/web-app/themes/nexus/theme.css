@@ -100,9 +100,9 @@ html[data-theme="nexus"] .activity-read-pair,
 html[data-theme="nexus"] .activity-read-button { border-color: #1c5395; }
 html[data-theme="nexus"] .activity-read-button { background: #031024; }
 
-/* Only the two fitted SVG paths paint the running rim. An opaque backing
-   keeps the dark gap between them visible over the Nexus wallpaper. */
-html[data-theme="nexus"] .activity-stream-item[data-running] {
+/* The SVG owns the rim while a card is running or selected. Keep its
+   backing opaque even when the selected stream moves to recent activity. */
+html[data-theme="nexus"] .activity-stream-item:is([data-running], [data-current]) {
   --accent-line: transparent;
   --shell-stream-card-border: 1px solid transparent;
   --shell-stream-tab-background: #051935;
@@ -111,18 +111,18 @@ html[data-theme="nexus"] .activity-stream-item[data-running] {
   --shell-stream-card-shadow: none;
   background: var(--shell-stream-tab-background);
 }
-html[data-theme="nexus"] .activity-stream-item[data-running][data-current] {
+html[data-theme="nexus"] .activity-stream-item[data-current] {
   background: var(--shell-stream-tab-active-background);
 }
-html[data-theme="nexus"][data-view="chat"] .activity-stream-item[data-running],
-html[data-theme="nexus"][data-view="chat"] .activity-stream-item[data-running] > .stream-tab-card {
+html[data-theme="nexus"][data-view="chat"] .activity-stream-item:is([data-running], [data-current]),
+html[data-theme="nexus"][data-view="chat"] .activity-stream-item:is([data-running], [data-current]) > .stream-tab-card {
   border-color: transparent;
 }
-html[data-theme="nexus"] .activity-stream-item[data-running] > .stream-tab-card {
+html[data-theme="nexus"] .activity-stream-item:is([data-running], [data-current]) > .stream-tab-card {
   background: transparent;
   box-shadow: none;
 }
-html[data-theme="nexus"] .activity-stream-item[data-running] .activity-run-frame {
+html[data-theme="nexus"] .activity-run-frame {
   stroke: #15c8f5;
 }
 html[data-theme="nexus"] .activity-stream-item[data-running] .stream-run-track {

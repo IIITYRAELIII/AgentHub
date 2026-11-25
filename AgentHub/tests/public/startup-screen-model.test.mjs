@@ -7,12 +7,22 @@ import {
   createStartupScreenModel,
   formatStartupElapsed,
   shouldShowStartupScreen,
+  restartWaitSettled,
 } from "../../assets/web-app/startup-screen-model.js";
 
 const startupScreenSource = readFileSync(
   new URL("../../assets/web-app/startup-screen.js", import.meta.url),
   "utf8",
 );
+
+test("only fresh canonical restart terminal health can settle a wait without an old generation", () => {
+  const terminal = (ready, status, at) => ({ ready, diagnostics: { restart: { status, completedAt: new Date(at).toISOString() } } });
+  assert.equal(restartWaitSettled(terminal(true, "succeeded", 12000), 10000), true);
+  assert.equal(restartWaitSettled(terminal(true, "succeeded", 9000), 10000), false);
+  assert.equal(restartWaitSettled(terminal(false, "succeeded", 12000), 10000), false);
+  assert.equal(restartWaitSettled(terminal(true, "pending", 12000), 10000), false);
+  assert.equal(restartWaitSettled(terminal(true, "failed", 12000), 10000), true);
+});
 
 test("startup shows the current backend provider error without rewriting completed startup history", () => {
   for (const state of ["completed", "failed"]) {
@@ -102,7 +112,7 @@ test("startup screen renders each completed startup once", () => {
   assert.equal(shouldShowStartupScreen({ available: false, ready: false }), false);
 });
 
-test("startup screen stops attributing a lost connection to the last operation", () => {
+test("startup screen retains only explicitly stale confirmed progress during connection loss", () => {
   const active = createStartupScreenModel({
     ready: false,
     status: "starting",
@@ -117,12 +127,13 @@ test("startup screen stops attributing a lost connection to the last operation",
   const disconnected = createStartupDisconnectedModel(active);
 
   assert.equal(disconnected.connectionLost, true);
-  assert.equal(disconnected.title, "Ожидание соединения");
+  assert.equal(disconnected.title, active.title);
   assert.equal(disconnected.status, "unknown");
-  assert.equal(disconnected.elapsed, "—");
-  assert.equal(disconnected.stageLabel, "Соединение временно недоступно");
-  assert.deepEqual(disconnected.queueOperations, []);
-  assert.deepEqual(disconnected.operations, []);
+  assert.equal(disconnected.elapsed, active.elapsed);
+  assert.equal(disconnected.stale, true);
+  assert.match(disconnected.connectionStatus, /последние подтверждённые/u);
+  assert.deepEqual(disconnected.queueOperations, active.queueOperations);
+  assert.deepEqual(disconnected.operations, active.operations);
 });
 
 test("startup screen can reopen for a runtime replacement after initial startup", () => {
@@ -158,7 +169,7 @@ test("connection loss retains known startup errors without inventing a restart",
     startup: { startedAtMs: 1000, operations: [{ id: "provider", state: "failed", error: "Provider unavailable" }] },
   });
   const disconnected = createStartupDisconnectedModel(failed);
-  assert.equal(disconnected.title, "Ожидание соединения");
+  assert.equal(disconnected.title, failed.title);
   assert.deepEqual(disconnected.failedOperations, failed.failedOperations);
   assert.equal(disconnected.startedAtMs, 1000);
 });

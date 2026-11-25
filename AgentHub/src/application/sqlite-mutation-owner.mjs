@@ -32,7 +32,7 @@ const TASK_MUTATIONS = new Set([
   "assignWorkspaceTaskNumbers", "moveColumn", "setNotesComment", "prepareStart",
   "admitPreparedStart", "cancelPreparedStart", "fencePreparedStartCancellation",
   "completePreparedStartCancellation", "markStarted", "complete", "setWorkflowStatus", "claim",
-  "requestWorkflowStatus", "beginLifecycleTransition", "recordWorkflowAdmissionRefusal", "recordUnadmittedAwaitRefusal", "failLifecycleTransition", "resumeConfirmedDeleteTransition",
+  "requestWorkflowStatus", "beginLifecycleTransition", "admitInterruptedAwaitPromotion", "recordWorkflowAdmissionRefusal", "recordUnadmittedAwaitRefusal", "failLifecycleTransition", "resumeConfirmedDeleteTransition",
   "commitWorkflowTransition", "commitSquashTransferTransition", "rollbackWorkflowOutcome", "recordArchivePreview", "finalizeCleanupTransition", "recordTaskTurn",
   "recordTaskGitReference", "adoptLegacyGitReference", "remove", "setCaptureEnabled",
   "updateChecklist", "applyChecklistLinkedTaskAction", "clearAwaitRebuildPending",

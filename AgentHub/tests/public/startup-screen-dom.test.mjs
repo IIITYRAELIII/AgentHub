@@ -98,6 +98,8 @@ test("failed startup exposes details and retry/restart controls inside the overl
     await page.evaluate(() => window.dispatchEvent(new CustomEvent("agenthub:connection-state", {
       detail: { status: "online" },
     })));
+    assert.equal(await screen.isVisible(), true, "online alone does not prove a replacement generation");
+    health.startup.startedAtMs = 60000;
     await screen.waitFor({ state: "hidden" });
     assert.deepEqual(errors, []);
   } finally {

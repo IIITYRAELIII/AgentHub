@@ -26,6 +26,14 @@ const TEST_THEME_CATALOG = JSON.stringify([{
 
 let browser;
 
+function isUnservedRuntimeProbe(message) {
+  const url = message.location().url;
+  if (message.type() !== "error" || !message.text().includes("404 (Not Found)") || !URL.canParse(url)) return false;
+  const { origin, pathname } = new URL(url);
+  // These routed DOM fixtures supply assets and message data, with no health or SSE service.
+  return origin === "http://127.0.0.1" && (pathname === "/health" || pathname === "/events");
+}
+
 function webAssetContentType(pathname) {
   if (/\.css$/u.test(pathname)) return "text/css; charset=utf-8";
   if (/\.(?:js|mjs)$/u.test(pathname)) return "text/javascript; charset=utf-8";
@@ -154,8 +162,7 @@ test("rollout citation controls survive SQLite, Desktop history and cold mobile 
       const errors = [];
       page.on("pageerror", error => errors.push(error.message));
       page.on("console", message => {
-        if (message.text().includes("404 (Not Found)")
-          && ["http://127.0.0.1/health", "http://127.0.0.1/events"].includes(message.location().url)) return;
+        if (isUnservedRuntimeProbe(message)) return;
         if (["error", "warning"].includes(message.type())) errors.push(message.text());
       });
       try {
@@ -218,8 +225,7 @@ test("positioned annotations interleave four nonsorted answers through stream hi
     page.setDefaultTimeout(3000);
     page.on('pageerror',e=>diagnostics.push(e.message));
     page.on('console',m=>{
-      if(m.type()==='error' && m.text().includes('404 (Not Found)')
-        && ['http://127.0.0.1/health','http://127.0.0.1/events'].includes(m.location().url)) return;
+      if(isUnservedRuntimeProbe(m)) return;
       if(['error','warning'].includes(m.type())) diagnostics.push(m.text());
     });
     try {
@@ -369,9 +375,7 @@ test("generic annotation aliases render one exact source link for each provider 
     page.setDefaultTimeout(3000);
     page.on('pageerror',e=>diagnostics.push(e.message));
     page.on('console',m=>{
-      // This existing routed harness has no runtime health/SSE server.
-      if(m.type()==='error' && m.text().includes('404 (Not Found)')
-        && ['http://127.0.0.1/health','http://127.0.0.1/events'].includes(m.location().url)) return;
+      if(isUnservedRuntimeProbe(m)) return;
       if(['error','warning'].includes(m.type())) diagnostics.push({text:m.text(),location:m.location()});
     });
     try {
@@ -587,9 +591,7 @@ test("Markdown details safely render historical and new messages with native dis
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
-    // The routed DOM fixture intentionally has no runtime health/SSE server.
-    if (message.text().includes("404 (Not Found)")
-      && ["http://127.0.0.1/health", "http://127.0.0.1/events"].includes(message.location().url)) return;
+    if (isUnservedRuntimeProbe(message)) return;
     if (["error", "warning"].includes(message.type())) errors.push(`${message.text()} ${message.location().url}`);
   });
   try {
@@ -1059,7 +1061,9 @@ test("active quote binds native reasoning before response item and survives draf
       await page.evaluate(live=>{
         window.__quoteLive=live;window.__quoteSends=[];
         window.AgentHub.on('message:send',detail=>window.__quoteSends.push(detail));
-        window.AgentHub.on('history:trace-page',({identity,tracePage,resolve})=>{window.__nativeQuoteRequest={identity,tracePage};window.__nativeQuoteResolve=resolve;});
+        window.__removeNativeQuoteListener=window.AgentHub.on('history:trace-page',({identity,tracePage,resolve})=>{
+          window.__nativeQuoteRequest={identity,tracePage};window.__nativeQuoteResolve=resolve;
+        });
         window.AgentHub.setLive('task-1',live);
       },live);
       await page.locator('[data-live-trace] .turn-trace-reasoning').waitFor();
@@ -1072,6 +1076,8 @@ test("active quote binds native reasoning before response item and survives draf
       assert.equal(await page.evaluate(()=>typeof window.__nativeQuoteResolve),'function');
       await page.evaluate(()=>{
         window.AgentHub.setLive('task-1',{...window.__quoteLive,itemId:'later-answer-item',text:'Later answer',activityGroups:[...window.__quoteLive.activityGroups,{id:'reasoning:next',sourceItemId:'next',reasoning:'Next stage',activities:[]}]});
+        window.AgentHub.setMessages('task-1',[{...window.__quoteLive,id:'completed-overlap',role:'agent',
+          itemId:'final-answer-item',text:'Completed'}]);
         window.__nativeQuoteResolve({groups:window.__quoteLive.activityGroups});
       });
       assert.equal(await page.evaluate(()=>window.__nativeQuotePending),true);
@@ -1091,6 +1097,29 @@ test("active quote binds native reasoning before response item and survives draf
       const user={id:'quoted-user',role:'user',provider:'codex',threadId:'thread-1',turnId:'next-turn',itemId:'user-item',text:'Check',responseAnnotations:[{text:annotation.quote,annotation:annotation.annotation,source:annotation.source}]};
       const projection=codexAssistantResponseProjection(':codex-annotation{index="1"} Verified');
       const answer={id:'linked-answer',role:'agent',provider:'codex',threadId:'thread-1',turnId:'next-turn',itemId:'answer-item',...projection};
+      await page.evaluate(({source,user,answer,group})=>{
+        const preview={...group,reasoning:'Current **exact**'};
+        window.AgentHub.setLive('task-1',{...window.__quoteLive,itemId:'later-answer-item',activityGroups:[preview]});
+        window.AgentHub.setMessages('task-1',[{...source,itemId:'final-answer-item',activityGroups:[preview]},user,answer]);
+        window.__removeNativeQuoteListener();
+        window.__navigationReads=[];
+        window.AgentHub.on('history:trace-page',({tracePage,resolve})=>{
+          window.__navigationReads.push(tracePage);resolve({groups:[group]});
+        });
+      },{source,user,answer,group});
+      const sourceLink=page.locator('[data-message-id="quoted-user"] [data-response-annotation-source]');
+      await sourceLink.click();
+      const overlapHighlight=page.locator('[data-message-id="completed-source"] .msg-source-citation-highlight');
+      await overlapHighlight.first().waitFor();
+      assert.equal((await overlapHighlight.allTextContents()).join(''),annotation.quote);
+      assert.deepEqual(await page.evaluate(()=>window.__navigationReads),[{turnId:'quote-turn',groupId:group.id}]);
+      const ambiguous=await page.evaluate(({source,user,answer,group})=>{
+        window.AgentHub.setMessages('task-1',[{...source,itemId:'final-answer-item',
+          activityGroups:[{...group,reasoning:'Different rendered group'}]},user,answer]);
+        return focusResponseCitationSource(document.querySelector('[data-message-id="quoted-user"] [data-response-annotation-source]'));
+      },{source,user,answer,group});
+      assert.equal(ambiguous,false);
+      assert.equal(await page.evaluate(()=>window.__navigationReads.length),1);
       await page.reload();await page.waitForFunction(()=>window.AgentHub);
       await seedMessages(page,[source,user,answer]);if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
       await page.evaluate(group=>window.AgentHub.on('history:trace-page',({resolve})=>resolve({groups:[group]})),group);
@@ -1143,6 +1172,39 @@ test("active quote refuses missing foreign changed and mismatched sources with b
     assert.ok(spans.every(x=>x.outcome==='failed'));
     assert.doesNotMatch(JSON.stringify(results.events),/Private selected|Changed private|dependency details/u);
   } finally {await page.close();}
+});
+
+test("clicking a retained live trace quote shows refusal when the native group is gone", { timeout: 15_000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-missing-native-quote-"));
+  const file = path.join(directory, "rollout.jsonl");
+  const page = await browser.newPage({ viewport: { width: 1366, height: 850 } });
+  try {
+    await writeFile(file, JSON.stringify({ type: "session_meta", payload: { id: "01a0ea85-db2c-7bd3-bfad-2634824c6069" } }) + "\n");
+    await openWebApp(page);
+    await seedMessages(page, [], { running: true, status: "running" });
+    await page.exposeFunction("readMissingNativeGroup", request => readCodexTracePageInWorker(file, request));
+    await page.evaluate(() => {
+      window.AgentHub.on("history:trace-page", ({ tracePage, resolve, reject }) =>
+        window.readMissingNativeGroup(tracePage).then(resolve, reject));
+      window.AgentHub.setLive("task-1", { provider: "codex", threadId: "thread-1", turnId: "old-turn",
+        itemId: null, activityGroups: [{ id: "reasoning:native-item", sourceItemId: "native-item",
+          reasoning: "Previously visible native fragment.", activities: [] }] });
+    });
+    const surface = page.locator("[data-live-trace] .turn-trace-reasoning");
+    await surface.scrollIntoViewIfNeeded();
+    await surface.evaluate(node => {
+      const range = window.AgentHubMessageDisclosure.domRangeFromOffsets(node, 0, node.textContent.length);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+    });
+    await surface.click({ button: "right", position: { x: 10, y: 8 } });
+    await page.locator('[data-action="annotate-selection"]').click();
+    await page.getByText("Не удалось подтвердить источник выделенного фрагмента.", { exact: true }).waitFor();
+    assert.equal(await page.locator("[data-annotations] .annotation-quote").count(), 0);
+  } finally {
+    await page.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("managed quote survives persistence, receipt absence, API, UI reload and history reopen", { timeout: 40_000 }, async () => {
@@ -1207,8 +1269,7 @@ test("managed quote survives persistence, receipt absence, API, UI reload and hi
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
-        if (message.text().includes("404 (Not Found)")
-          && ["http://127.0.0.1/health", "http://127.0.0.1/events"].includes(message.location().url)) return;
+        if (isUnservedRuntimeProbe(message)) return;
         if (["error", "warning"].includes(message.type())) errors.push(message.text());
       });
       try {

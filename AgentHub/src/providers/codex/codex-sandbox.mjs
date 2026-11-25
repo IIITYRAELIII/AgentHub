@@ -12,7 +12,7 @@ export function codexThreadSandboxSettings(mode) {
   };
 }
 
-export function codexTurnSandboxSettings(mode, projectRoot) {
+export function codexTurnSandboxSettings(mode, projectRoot, visualizationDirectory = "", commandSpoolDirectory = "") {
   const normalized = normalizeCodexSandboxMode(mode);
   if (normalized === "danger-full-access") {
     return {
@@ -25,7 +25,7 @@ export function codexTurnSandboxSettings(mode, projectRoot) {
     approvalPolicy: "on-request",
     sandboxPolicy: {
       type: "workspaceWrite",
-      writableRoots: [projectRoot],
+      writableRoots: [projectRoot, ...[visualizationDirectory, commandSpoolDirectory].filter(Boolean)],
       networkAccess: false,
     },
   };
