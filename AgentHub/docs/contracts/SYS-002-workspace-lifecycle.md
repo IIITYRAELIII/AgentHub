@@ -20,6 +20,15 @@ session. Trusted-device download tickets, reveal, copy and ordinary download
 retain their own authentication rules. Image responses remain sandboxed on
 direct navigation, including when the source is SVG.
 
+## Runtime command transport
+
+Local runtime command files belong to the installation's runtime data and are
+independent of a Stream's cwd or registered Git checkout. The original command
+ID, authorization and durable receipt remain authoritative across the upgrade.
+The preceding server's configured spool remains an input only for its former
+owner's pending work and already launched clients. See
+[ADR-HUB-537](../decisions/ADR-HUB-537-runtime-command-spool.md).
+
 ## Archive and deletion
 
 The Dashboard closes a Task card independently of its delivery workflow.

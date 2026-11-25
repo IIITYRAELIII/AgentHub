@@ -11,7 +11,7 @@ import {
 import { resolveChatId as resolveNotificationChatId } from "../../send-message.mjs";
 import * as approvalProtocol from "../providers/codex/codex-approvals.mjs";
 const { formatPermissionsApproval, parseApprovalCallback } = approvalProtocol;
-import { defaultRuntimeRoot } from "../infrastructure/filesystem/runtime-layout.mjs";
+import { runtimeCommandRoot as resolveRuntimeCommandRoot } from "../../codex-stop-hook-launcher.mjs";
 import { ensureLocalWebSecret } from "../interfaces/web/local-web-auth.mjs";
 import { agentHubAutostartShortcut } from "../interfaces/web/server-page.mjs";
 import { createHubStaticSettings } from "./hub-static-settings.mjs";
@@ -71,10 +71,7 @@ const {
   botMenu: BOT_MENU,
   menuCommands: MENU_COMMANDS,
 } = createHubStaticSettings(config, AGENT_HUB_ROOT);
-const runtimeCommandRoot = process.env.AGENT_HUB_RUNTIME_ROOT
-  ?? (process.env.AGENT_HUB_CONFIG
-    ? path.dirname(config.configPath)
-    : defaultRuntimeRoot());
+const runtimeCommandRoot = resolveRuntimeCommandRoot();
 const agentHubAutostartShortcutPath = agentHubAutostartShortcut({ environment: process.env });
 const localWebSecret = config.miniApp.enabled
   ? await ensureLocalWebSecret(path.join(runtimeCommandRoot, "local-web.secret"))

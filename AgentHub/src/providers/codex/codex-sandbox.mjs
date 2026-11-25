@@ -12,7 +12,7 @@ export function codexThreadSandboxSettings(mode) {
   };
 }
 
-export function codexTurnSandboxSettings(mode, projectRoot, visualizationDirectory = "") {
+export function codexTurnSandboxSettings(mode, projectRoot, visualizationDirectory = "", commandSpoolDirectory = "") {
   const normalized = normalizeCodexSandboxMode(mode);
   if (normalized === "danger-full-access") {
     return {
@@ -25,7 +25,7 @@ export function codexTurnSandboxSettings(mode, projectRoot, visualizationDirecto
     approvalPolicy: "on-request",
     sandboxPolicy: {
       type: "workspaceWrite",
-      writableRoots: [projectRoot, ...(visualizationDirectory ? [visualizationDirectory] : [])],
+      writableRoots: [projectRoot, ...[visualizationDirectory, commandSpoolDirectory].filter(Boolean)],
       networkAccess: false,
     },
   };

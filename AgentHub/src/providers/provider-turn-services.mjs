@@ -218,7 +218,7 @@ export class CodexTurnService {
               model: run.modelId,
               reasoningEffort: run.reasoningId,
             }),
-            ...codexTurnSandboxSettings(sandboxMode, run.projectRoot, visualizationDirectory),
+            ...codexTurnSandboxSettings(sandboxMode, run.projectRoot, visualizationDirectory, d.commandSpoolDirectory),
           });
         },
         resume: (params) => d.sendRpc("thread/resume", {
