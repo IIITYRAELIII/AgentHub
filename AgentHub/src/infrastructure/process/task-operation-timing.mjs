@@ -6,6 +6,7 @@ const MAX_DETAIL_SPANS = 512;
 // Fixed diagnostic classes only; no argv, paths or caller-provided stage labels.
 const AGGREGATE_AWAITS = new Set(["lock-owner-readdir-await", "lock-owner-read-await"]);
 const AGGREGATE_STAGES = new Set([...AGGREGATE_AWAITS, "git-child", "owned-command", "lease-assert", "process-guard",
+  "release:planner:canonical-read", "release:planner:selected-authority", "release:planner:git-evidence", "release:planner:projection",
   "dependency-project", "dependency-inventory", "dependency-full-proof", "dependency-npm",
   "dependency-installed-lock-proof", "lock-local-acquire", "task-binding", "mcp:receipt",
   "native-retire:owned-setup", "native-retire:current", "native-retire:source-pins", "native-retire:archive-read",
@@ -15,7 +16,6 @@ const AGGREGATE_STAGES = new Set([...AGGREGATE_AWAITS, "git-child", "owned-comma
   "repository-guards", "release:git-command", "release:git-input", "release:base-evidence",
   "release:integration-evidence", "native:history-authority", "native:task-histories",
   "native:cutover", "native:promotion-authority", "lock-native-bootstrap", "lock-native-publish",
-  "release:planner:canonical-read", "release:planner:selected-authority", "release:planner:git-evidence", "release:planner:projection",
   "release:planner", "release:publication", "release:main-validation", "release:primary-validation", "release:validate-prepared", "release:prepared-source", "release:promotion-validate", "release:promotion-checkout", "release:freeze-admission", "release:freeze-owned", "release:freeze-candidate", "release:freeze-base", "release:freeze-installed-baseline", "release:freeze-callback", "release:freeze-callback-baseline"]);
 const AGGREGATE_COMMANDS = new Set(["rev-parse", "status", "log", "show", "diff", "merge-base", "merge",
   "worktree", "sparse-checkout", "config", "symbolic-ref", "update-ref", "for-each-ref", "cat-file",

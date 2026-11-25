@@ -321,17 +321,19 @@ export class TaskIntegrationService {
     }
     const planOptions = selectedTaskIds ? { selectedTaskIds } : {};
     if (acceptingTask) requiredMethod(this.releasePlanner, "planAcceptance");
-    const readPlans = () => this.measureOperation("release:planner", async () => {
-      if (acceptingTask) return this.releasePlanner.planAcceptance(workspaceId, { ...planOptions, acceptingTask });
+    const readPlans = (checkBaseline = null) => this.measureOperation("release:planner", async () => {
+      if (acceptingTask) return this.releasePlanner.planAcceptance(workspaceId, { ...planOptions, acceptingTask, checkBaseline });
       const current = await this.releasePlanner.plan(workspaceId, planOptions);
+      checkBaseline?.(current);
       return { baseline: current, prospective: current };
     });
     const { baseline, prospective: plan } = await readPlans();
     const validatePlan = async () => {
-      const current = await readPlans();
-      if (current.baseline.revision !== baseline.revision) {
-        throw new Error("release plan revision changed during PreRelease rebuild");
-      }
+      const current = await readPlans(currentBaseline => {
+        if (currentBaseline.revision !== baseline.revision) {
+          throw new Error("release plan revision changed during PreRelease rebuild");
+        }
+      });
       if (acceptingTask) {
         if (current.prospective.revision !== plan.revision) throw new Error("Task changed during PreRelease acceptance preparation");
       }

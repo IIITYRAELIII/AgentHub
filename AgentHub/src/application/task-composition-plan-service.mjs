@@ -132,11 +132,20 @@ export class TaskCompositionPlanService {
 
   // This pair is invocation-local to EACH existing preflight boundary.
   // It never grants authority to a later boundary, retry or process.
-  async planAcceptance(workspaceId, { acceptingTask, selectedTaskIds = null } = {}) {
+  async planAcceptance(workspaceId, { acceptingTask, selectedTaskIds = null, checkBaseline = null } = {}) {
     const rows = await this.#readTasks(workspaceId);
-    const tasks = this.#projectTasks(rows, acceptingTask, selectedTaskIds);
-    const { evidence, authorities } = await this.#resolve(tasks);
-    const baseline = await this.#projection(workspaceId, rows, evidence);
+    const baselineTasks = this.#projectTasks(rows, null, selectedTaskIds);
+    let tasks, prospectiveError;
+    try {
+      tasks = this.#projectTasks(baselineTasks, acceptingTask);
+    } catch (error) {
+      prospectiveError = error;
+    }
+    const { evidence, authorities } = await this.#resolve(tasks ?? baselineTasks);
+    const baseline = await this.#projection(workspaceId, baselineTasks, evidence);
+    // A stale current Await revision takes precedence over prospective errors.
+    checkBaseline?.(baseline);
+    if (prospectiveError) throw prospectiveError;
     const prospective = await this.#projection(workspaceId, tasks, evidence);
     if (!prospective.blocked.length) {
       // The old separate plans could observe changes while Git was awaited.

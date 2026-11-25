@@ -354,9 +354,10 @@ async function verifyInterruptedAwait(t, cancellation = null) {
   };
   const releasePreflight = new TaskIntegrationService({
     releasePlanner: {
-      async planAcceptance(workspaceId, { acceptingTask, ...options }) {
-        return { baseline: await this.plan(workspaceId, options),
-          prospective: await this.plan(workspaceId, { ...options, acceptingTask }) };
+      async planAcceptance(workspaceId, { acceptingTask, checkBaseline, ...options }) {
+        const baseline = await this.plan(workspaceId, options);
+        checkBaseline?.(baseline);
+        return { baseline, prospective: await this.plan(workspaceId, { ...options, acceptingTask }) };
       },
       plan: (_workspaceId, { acceptingTask } = {}) => ({
         revision: acceptingTask ? request.planRevision : "current",

@@ -25,6 +25,8 @@ reads, selected authority, live Git and pure projection separately. There is no
 new public API, writer, cache, selector or deadline. Deterministic counts and real
 end-to-end measurements must establish the actual improvement.
 
+Validation checks the baseline revision before reporting a prospective refusal,
+including when both an accepted result and the accepting Task have changed.
 Fresh validation also propagates a blocked current plan instead of treating an
 unchanged revision hash as successful live Git evidence. The normal public plan
 still reports blocked results; preflight refuses them at the existing boundary.

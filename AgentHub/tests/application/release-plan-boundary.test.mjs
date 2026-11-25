@@ -206,3 +206,24 @@ for (const phase of [0, 1, 2, 3, 4]) {
   });
   }
 }
+
+for (const phase of [0, 4]) {
+  for (const [scope, message] of [
+    ["baseline and accepting Task", "release plan revision changed during PreRelease rebuild"],
+    ["baseline only", "release plan revision changed during PreRelease rebuild"],
+    ["accepting Task only", "Task changed before PreRelease acceptance preparation"],
+  ]) {
+    test(`${scope} drift at ${phase === 4 ? "final CAS" : "promotion"} preserves refusal priority`, async () => {
+      const f = fixture();
+      f.setMutation(async current => {
+        if (current !== phase) return;
+        if (scope !== "accepting Task only") f.rows[0].releaseRevision++;
+        if (scope !== "baseline only") f.rows[19].revision++;
+      });
+      await assert.rejects(f.run(), { message });
+      assert.equal(f.counts.commits, 0);
+      const passes = phase + 2;
+      assert.equal(f.counts.evidence.length, 20 * passes - Number(scope !== "baseline only"));
+    });
+  }
+}
