@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { assertNativeTaskHistories } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
+import { assertNativeTaskHistories, nativeIntegrationRecordFile } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { interstreamAuditContentHash } from "../../../src/domain/interstream-message.mjs";
 import { readNativeUpstreamAdoptions } from "../../../src/infrastructure/filesystem/native-upstream-adoption.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
@@ -117,7 +117,17 @@ test("native absorption accepts only the exact published parent of the returned 
   const devMerge = await commit("returned source with dev parent", f.result, devOnly);
   const foreignMerge = await commit("returned source with foreign parent", f.result, foreign);
   const octopus = await commit("returned source with extra parent", f.result, published, foreign);
-  const historyAuthority = { bases: [devOnly, foreign], metadataBases: [published], publishedHistoryBase: published };
+  const testDevCommit = await commit("retained source Test", devOnly, forward);
+  const retained = nativeIntegrationRecordFile(f.root, "source", f.root, "test");
+  await mkdir(path.dirname(retained), { recursive: true });
+  const record = { version: 1, kind: "native-task-integration-v1", phase: "prepared", operationId: "test",
+    target: testDevCommit, snapshot: { taskId: "source", headCommit: forward, repositoryRoot: f.root },
+    nativeHistoryAuthority: { publishedMetadata: {
+      commit: published, tree, repositoryRoot: f.root, generation: "original", recordHash: "d".repeat(64),
+    } } };
+  await writeFile(retained, JSON.stringify(record));
+  const historyAuthority = { bases: [devOnly, foreign], metadataBases: [published],
+    publishedHistoryBase: published, dataDir: f.root };
   const requestId = "returned-source-handoff";
   const origin = { workspaceId: "workspace", streamId: "stream", provider: "codex", sourceThreadId: "thread", requestId };
   const check = async (resultCommit, priorCommit = resultCommit, authority = historyAuthority, baseCommit = published) => {
@@ -126,7 +136,7 @@ test("native absorption accepts only the exact published parent of the returned 
     const text = JSON.stringify({ version: 1, kind: "task-absorption-handoff-v1", workspaceId: origin.workspaceId,
       sourceTaskId: "source", sourceTaskRevision: 3, survivorTaskId: "survivor", baseCommit: f.base,
       sourceCommit, sourceTree: tree, survivorParentCommit: survivor, absorptionCommit, saved: true, stopped: true });
-    const priorResults = priorCommit ? [{ taskId: "source", projectRoot: f.root, resultCommit: priorCommit,
+    const priorResults = priorCommit ? [{ taskId: "source", projectRoot: f.root, resultCommit: priorCommit, testDevCommit,
       testOperationId: "test", returnOperationId: "return", testRevision: 2, returnRevision: 3,
       testOutcomeHash: "b".repeat(64), returnOutcomeHash: "c".repeat(64) }] : undefined;
     const nativeAbsorptionInput = { requestId, text, origin, contentHash: interstreamAuditContentHash(text, { origin }),
@@ -137,6 +147,13 @@ test("native absorption accepts only the exact published parent of the returned 
   };
   await check(forward);
   await check(forward, forward, historyAuthority, f.base);
+  const advanced = await commit("new publication", devOnly);
+  const advancedAuthority = { ...historyAuthority, bases: [advanced], metadataBases: [advanced], publishedHistoryBase: advanced };
+  await check(forward, forward, advancedAuthority, f.base);
+  await assert.rejects(check(devMerge, devMerge, advancedAuthority, f.base), /explicit historical migration/u);
+  await writeFile(retained, JSON.stringify({ ...record, target: devOnly }));
+  await assert.rejects(check(forward, forward, advancedAuthority, f.base), /explicit historical migration/u);
+  await writeFile(retained, JSON.stringify(record));
   await assert.rejects(check(forward, null), /explicit historical migration/u);
   await assert.rejects(check(forward, f.result), /explicit historical migration/u);
   await assert.rejects(check(forward, foreign), /prior result is not retained/u);

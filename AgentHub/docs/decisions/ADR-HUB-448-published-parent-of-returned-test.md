@@ -2,10 +2,12 @@
 
 The native absorption history check may retain a source-side merge at the exact
 result of the source Task's recorded Test and normal return. The merge must
-have two parents and its second parent must equal the published commit proved
-by the current Git owner. A dev ref, metadata match, survivor Test, foreign
-parent or unverified Test result supplies no such authority. Outside the
-agreed and verified published history, the other source commits stay linear.
+have two parents. Its second parent must be the published commit in the
+source Test's original native capture and must remain in the currently
+verified publication's ancestry. That original publication can supply its
+exact inherited release metadata. A dev ref, metadata match, survivor Test,
+foreign parent or unverified Test result supplies no such authority. Outside
+the agreed and verified published history, the other source commits stay linear.
 Historical Test readback takes this public commit from the original native
 capture, whose identity already includes the owning Test's publication proof.
 

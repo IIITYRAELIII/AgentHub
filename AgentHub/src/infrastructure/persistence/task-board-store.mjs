@@ -2691,7 +2691,7 @@ export class TaskBoardStore {
     });
   }
 
-  #selectedAbsorptionPriorResults(database, tasks, handoffTime) {
+  #selectedAbsorptionPriorResults(database, tasks, handoffTime, savedSourceTaskId = null) {
     const priorResults = [];
     for (const task of tasks) {
       const refs = task.gitReferences ?? [];
@@ -2734,6 +2734,7 @@ export class TaskBoardStore {
           selectedCompositionRequired: true, selectedComposition: tested.evidence.selectedComposition });
       }
       priorResults.push({ taskId: task.id, projectRoot: ref.projectRoot, resultCommit: ref.resultCommit,
+        ...(task.id === savedSourceTaskId ? { testDevCommit: tested.evidence.devHeadCommit } : {}),
         testOperationId: testedRow.operation_id, returnOperationId: returnedRow.operation_id,
         testRevision: tested.task.revision, returnRevision: returned.task.revision,
         testOutcomeHash: createHash("sha256").update(testedRow.result_json).digest("hex"),
@@ -2757,7 +2758,9 @@ export class TaskBoardStore {
         [prior.returnOperationId, prior.returnOutcomeHash]]) {
         const row = database.prepare(`SELECT result_json FROM hub_task_lifecycle_outcomes
           WHERE operation_id = ? AND task_id = ? AND kind = 'workflow'`).get(operationId, prior.taskId);
-        if (!row || createHash("sha256").update(row.result_json).digest("hex") !== hash) {
+        if (!row || createHash("sha256").update(row.result_json).digest("hex") !== hash
+            || operationId === prior.testOperationId && prior.testDevCommit
+              && JSON.parse(row.result_json).evidence?.devHeadCommit !== prior.testDevCommit) {
           throw selectedCompositionRequiredError("absorbed immutable prior outcome changed");
         }
       }
@@ -2769,7 +2772,8 @@ export class TaskBoardStore {
     const { declaration: d } = selectedAbsorptionHandoff({ requestId: input.requestId, text: input.text });
     const source = this.#taskWithRelease(database, this.#taskRow(database, d.sourceTaskId));
     const survivor = this.#taskWithRelease(database, this.#taskRow(database, survivorTaskId));
-    const priorResults = this.#selectedAbsorptionPriorResults(database, [source, survivor], input.createdAtMs);
+    const priorResults = this.#selectedAbsorptionPriorResults(database, [source, survivor], input.createdAtMs,
+      d.preservedSourceHead ? d.sourceTaskId : null);
     if (bindPriorResults && !input.priorResults && priorResults.length) {
       input = normalizedSelectedAbsorption({ ...input, priorResults });
     } else if (JSON.stringify(input.priorResults ?? []) !== JSON.stringify(priorResults)) {

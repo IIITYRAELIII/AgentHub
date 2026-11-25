@@ -957,7 +957,7 @@ export class TaskIntegrationGitService {
       const publicBases = [...new Set([verified.provenance.compositionBaseCommit ?? verified.provenance.sourceBaseCommit,
         ...(verified.provenance.compositionBaseCommit ? [verified.provenance.publishedBaseCommit] : []),
         ...(verified.provenance.ownGitPublication ? [verified.provenance.ownGitPublication.commit] : [])])];
-      return { bases: publicBases, publishedHistoryBase: verified.provenance.publishedBaseCommit,
+      return { bases: publicBases, publishedHistoryBase: verified.provenance.publishedBaseCommit, dataDir: this.dataDir,
         metadataBases: verified.provenance.compositionBaseCommit ? publicBases : verified.metadataBases,
         ...(verified.changelogEntries ? { changelogEntries: verified.changelogEntries } : {}),
         adoptions: verified.adoptions ?? [] };
@@ -979,7 +979,7 @@ export class TaskIntegrationGitService {
           && JSON.stringify(publishedMetadata) !== JSON.stringify(expectedPublishedMetadata))) {
       throw new Error("Native candidate published metadata authority changed");
     }
-    return { bases: [publishedMetadata.commit], publishedHistoryBase: publishedMetadata.commit,
+    return { bases: [publishedMetadata.commit], publishedHistoryBase: publishedMetadata.commit, dataDir: this.dataDir,
       metadataBases: [publishedMetadata.commit], adoptions: [], publishedMetadata };
     });
   }
