@@ -124,10 +124,15 @@ service has no active worker for the cancel ID. Workspace/Stream/provider/audit
 Thread/actor kind, tool and canonical argument hash must still match the original
 cancel receipt. The owner rechecks original Task identity/CAS, execution fence,
 retirement evidence and recovery lease before any effect. A live same-ID worker
-is only read; all other UNKNOWN submissions remain read-only. This continues the
-cancel command, never the interrupted claim/Test/Await. Requested is not stopped;
-past effects and the interrupted UNKNOWN remain retained. No new ID, direct
-internal invocation or timeout-derived no-effect authority is introduced.
+is only read. This continues the cancel command; the interrupted claim, Test or
+Await is never rerun. Requested is not stopped; past effects and the interrupted
+UNKNOWN remain retained.
+
+An addressed `hub_task_operation_reconcile` whose own receipt is UNKNOWN may
+resume with the same control ID and exact authenticated actor and arguments
+when that control has no active worker. The control ID is distinct from the
+target operation ID. Continuation enters the existing reconciliation owner,
+which rechecks the original evidence and cannot replay the original effect.
 
 The existing MCP ledger retains the exact original receipt snapshot, result,
 error and timestamps with separate requested/stopped execution metadata.
@@ -1019,8 +1024,10 @@ phase, cancellation, error and terminal result. The call requires an authenticat
 context. Supplied original arguments/hash must match. Reading
 never resumes or settles an operation. Same-ID mutation submissions read the
 existing receipt without starting another worker; changed arguments refuse.
-The sole UNKNOWN-cancel continuation exception above uses the existing canonical
-interruption owner and its unchanged guards, not general mutation replay.
+The addressed UNKNOWN cancellation, reconciliation and fenced custody
+continuations above use their existing owners and exact receipt identities.
+For cancellation and reconciliation, a retry continues the control command
+and never repeats the original operation's effect.
 
 Long valid work has no transport-derived terminal deadline. A disconnected
 caller reads the original ID instead of submitting another mutation. A real
