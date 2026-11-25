@@ -24,6 +24,14 @@ const TEST_THEME_CATALOG = JSON.stringify([{
 
 let browser;
 
+function isUnservedRuntimeProbe(message) {
+  const url = message.location().url;
+  if (message.type() !== "error" || !message.text().includes("404 (Not Found)") || !URL.canParse(url)) return false;
+  const { origin, pathname } = new URL(url);
+  // These routed DOM fixtures supply assets and message data, with no health or SSE service.
+  return origin === "http://127.0.0.1" && (pathname === "/health" || pathname === "/events");
+}
+
 function webAssetContentType(pathname) {
   if (/\.css$/u.test(pathname)) return "text/css; charset=utf-8";
   if (/\.(?:js|mjs)$/u.test(pathname)) return "text/javascript; charset=utf-8";
@@ -152,8 +160,7 @@ test("rollout citation controls survive SQLite, Desktop history and cold mobile 
       const errors = [];
       page.on("pageerror", error => errors.push(error.message));
       page.on("console", message => {
-        if (message.text().includes("404 (Not Found)")
-          && ["http://127.0.0.1/health", "http://127.0.0.1/events"].includes(message.location().url)) return;
+        if (isUnservedRuntimeProbe(message)) return;
         if (["error", "warning"].includes(message.type())) errors.push(message.text());
       });
       try {
@@ -216,8 +223,7 @@ test("positioned annotations interleave four nonsorted answers through stream hi
     page.setDefaultTimeout(3000);
     page.on('pageerror',e=>diagnostics.push(e.message));
     page.on('console',m=>{
-      if(m.type()==='error' && m.text().includes('404 (Not Found)')
-        && ['http://127.0.0.1/health','http://127.0.0.1/events'].includes(m.location().url)) return;
+      if(isUnservedRuntimeProbe(m)) return;
       if(['error','warning'].includes(m.type())) diagnostics.push(m.text());
     });
     try {
@@ -286,9 +292,7 @@ test("generic annotation aliases render one exact source link for each provider 
     page.setDefaultTimeout(3000);
     page.on('pageerror',e=>diagnostics.push(e.message));
     page.on('console',m=>{
-      // This existing routed harness has no runtime health/SSE server.
-      if(m.type()==='error' && m.text().includes('404 (Not Found)')
-        && ['http://127.0.0.1/health','http://127.0.0.1/events'].includes(m.location().url)) return;
+      if(isUnservedRuntimeProbe(m)) return;
       if(['error','warning'].includes(m.type())) diagnostics.push({text:m.text(),location:m.location()});
     });
     try {
@@ -504,9 +508,7 @@ test("Markdown details safely render historical and new messages with native dis
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
-    // The routed DOM fixture intentionally has no runtime health/SSE server.
-    if (message.text().includes("404 (Not Found)")
-      && ["http://127.0.0.1/health", "http://127.0.0.1/events"].includes(message.location().url)) return;
+    if (isUnservedRuntimeProbe(message)) return;
     if (["error", "warning"].includes(message.type())) errors.push(`${message.text()} ${message.location().url}`);
   });
   try {
@@ -1184,8 +1186,7 @@ test("managed quote survives persistence, receipt absence, API, UI reload and hi
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
-        if (message.text().includes("404 (Not Found)")
-          && ["http://127.0.0.1/health", "http://127.0.0.1/events"].includes(message.location().url)) return;
+        if (isUnservedRuntimeProbe(message)) return;
         if (["error", "warning"].includes(message.type())) errors.push(message.text());
       });
       try {
