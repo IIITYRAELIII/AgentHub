@@ -1,6 +1,44 @@
 # SYS-002 — Workspace cards and permanent archive
 
+## Local file links
+
+The existing authenticated local-file APIs resolve links independently of the
+Workspace/project folder roots, including when no roots are configured. Location
+does not require a folder allowlist, per-file grant or confirmation. Local browser
+download/copy and local/trusted-device runtime reveal retain their current
+authentication modes. Trusted-device downloads retain their existing one-time
+File Bridge tickets; they do not gain the direct local-browser endpoint.
+Path syntax, real-file/size checks and operating-system errors retain their
+existing behavior. Workspace roots may still resolve relative link text; they
+are not an access boundary for these actions. Creating a public external share
+is a separate action with its existing owner and publication policy.
+See [ADR-HUB-447](../decisions/ADR-HUB-447-local-file-location.md).
+
+Chat previews for image files share the direct local GET path resolver. Only
+the image preview response is available to a verified local VS Code webview
+session. Trusted-device download tickets, reveal, copy and ordinary download
+retain their own authentication rules. Image responses remain sandboxed on
+direct navigation, including when the source is SVG.
+
+## Runtime command transport
+
+Local runtime command files belong to the installation's runtime data and are
+independent of a Stream's cwd or registered Git checkout. The original command
+ID, authorization and durable receipt remain authoritative across the upgrade.
+The preceding server's configured spool remains an input only for its former
+owner's pending work and already launched clients. See
+[ADR-HUB-537](../decisions/ADR-HUB-537-runtime-command-spool.md).
+
 ## Archive and deletion
+
+The Dashboard closes a Task card independently of its delivery workflow.
+The card moves to the closed archive and retains its workflow status, Git
+references, requirements, checklist, attachments, and activity history.
+When cleanup leaves paths or branches, the confirmation asks
+"Всё равно закрыть?" and lists the remaining items. A second confirmation is
+required if unexpected leftovers first appear after cleanup, and the user can
+cancel without closing the card. The agent instruction is emitted only through
+the MCP result adapter. The user interface never displays it.
 
 Native release membership references preserve the unique checklist decomposition
 owner and archived Task rows (ADR-HUB-415). Their nullable checklist columns are

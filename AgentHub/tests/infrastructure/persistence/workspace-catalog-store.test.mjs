@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { resolveHubDeveloperInstructions } from "../../../src/composition/hub-developer-instructions-composition.mjs";
+
 
 import {
   createInterstreamMessage,
@@ -16,11 +16,8 @@ import {
   WorkspaceCatalogStore,
 } from "../../../src/infrastructure/persistence/workspace-catalog-store.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
-import { RELEASE_PRIMARY_WORKSPACE_RULE } from "../../../src/domain/release-primary-workspace-policy.mjs";
-import {
-  RELEASE_WORKFLOW_DEVELOPER_RULES,
-  EXPLICIT_USER_WORKFLOW_EXCEPTION,
-} from "../../../src/domain/workspace-release-workflow.mjs";
+
+
 
 async function fixture(t) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspaces-"));
@@ -37,6 +34,142 @@ async function fixture(t) {
   });
   return store;
 }
+
+async function oldCatalogWithMissingFence(t) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-catalog-startup-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const previous = new WorkspaceCatalogStore({ databaseFile });
+  const startup = new WorkspaceCatalogStore({ databaseFile });
+  let writer;
+  t.after(async () => {
+    if (writer?.isTransaction) writer.exec("ROLLBACK");
+    writer?.close();
+    startup.close();
+    previous.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await previous.load();
+  const { workspace, stream } = previous.createWorkspaceWithStream({ name: "Existing Workspace" });
+  const thread = { provider: "codex", threadId: "existing-thread" };
+  previous.bindThread({ ...thread, streamId: stream.id, source: "created" });
+  const before = previous.hierarchy();
+  previous.close();
+  writer = new DatabaseSync(databaseFile);
+  writer.exec(`
+    DROP TRIGGER hub_preparation_forward_legacy_fence;
+    CREATE TABLE startup_writer_probe (value TEXT NOT NULL);
+  `);
+  assert.equal(writer.prepare("PRAGMA journal_mode").get().journal_mode, "wal");
+  const hasFence = () => Boolean(writer.prepare(
+    "SELECT 1 FROM sqlite_schema WHERE type = 'trigger' AND name = 'hub_preparation_forward_legacy_fence'",
+  ).get());
+  assert.equal(hasFence(), false);
+  return { startup, databaseFile, writer, before, thread, hasFence };
+}
+
+test("Workspace catalog startup waits asynchronously for a WAL writer and preserves old data", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  f.writer.exec("BEGIN IMMEDIATE; INSERT INTO startup_writer_probe VALUES ('retained')");
+  const release = setTimeout(() => f.writer.exec("COMMIT"), 120);
+  t.after(() => clearTimeout(release));
+  const timings = [];
+  await f.startup.load({ onTiming: timing => timings.push(timing) });
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+  assert.ok(f.startup.thread(f.thread));
+  assert.equal(f.hasFence(), true);
+  assert.equal(f.writer.prepare("SELECT value FROM startup_writer_probe").get().value, "retained");
+  assert.equal(f.writer.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  assert.deepEqual(f.writer.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.equal(timings.length, 1);
+  assert.equal(timings[0].outcome, "ok");
+  assert.ok(timings[0].attempts > 1 && timings[0].contentionWaitMs > 0);
+
+  f.startup.close();
+  await f.startup.load();
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+  assert.equal(f.hasFence(), true);
+});
+
+test("Workspace catalog startup reports a persistent writer without admitting a partial migration", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  f.writer.exec("BEGIN IMMEDIATE");
+  const timings = [];
+  await assert.rejects(f.startup.load({ onTiming: timing => timings.push(timing) }),
+    error => error.errcode === 5 && /database is locked/u.test(error.message));
+  assert.equal(f.writer.isTransaction, true);
+  assert.equal(f.hasFence(), false);
+  assert.equal(timings.length, 1);
+  assert.equal(timings[0].outcome, "error");
+  assert.ok(timings[0].attempts > 1 && timings[0].contentionWaitMs > 0);
+  assert.equal(f.startup.mutationDiagnostics().exhausted, 1);
+
+  f.writer.exec("ROLLBACK");
+  await f.startup.load();
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+  assert.equal(f.hasFence(), true);
+});
+
+
+test("Workspace catalog startup rolls back schema work on a non-contention error", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  f.writer.exec(`
+    DROP TRIGGER hub_workspaces_no_reuse_after_permanent_delete;
+    CREATE TRIGGER fixture_refuses_catalog_version BEFORE UPDATE ON hub_workspace_catalog_meta
+    WHEN OLD.key = 'schema_version'
+    BEGIN SELECT RAISE(ABORT, 'fixture schema refusal'); END;
+  `);
+  const schema = () => f.writer.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY type,name").all();
+  const before = schema();
+  const timings = [];
+  await assert.rejects(f.startup.load({ onTiming: timing => timings.push(timing) }), /fixture schema refusal/u);
+  assert.deepEqual(schema(), before);
+  assert.equal(f.hasFence(), false);
+  assert.equal(timings.length, 1);
+  assert.equal(timings[0].attempts, 1);
+  assert.equal(timings[0].outcome, "error");
+  assert.equal(f.writer.prepare("PRAGMA quick_check").get().quick_check, "ok");
+});
+
+test("Workspace catalog startup preserves the SQLite error after automatic data rollback", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  f.writer.exec(`
+    UPDATE hub_workspaces SET name = 'Experiments' WHERE system_key = 'experiments';
+    CREATE TRIGGER fixture_refuses_legacy_name BEFORE UPDATE OF name ON hub_workspaces
+    WHEN OLD.system_key = 'experiments' AND NEW.name = 'Other'
+    BEGIN SELECT RAISE(ROLLBACK, 'fixture legacy name refusal'); END;
+  `);
+  const rows = () => f.writer.prepare("SELECT id, name FROM hub_workspaces ORDER BY id").all();
+  const before = rows();
+  const timings = [];
+  await assert.rejects(f.startup.load({ onTiming: timing => timings.push(timing) }),
+    error => error.errcode === 1811 && error.message === "fixture legacy name refusal");
+  assert.deepEqual(rows(), before);
+  assert.equal(timings[0]?.attempts, 1);
+  assert.equal(timings[0]?.outcome, "error");
+  assert.equal(f.writer.prepare("PRAGMA quick_check").get().quick_check, "ok");
+  assert.deepEqual(f.writer.prepare("PRAGMA foreign_key_check").all(), []);
+  f.writer.exec("DROP TRIGGER fixture_refuses_legacy_name");
+  await f.startup.load();
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+});
+
+test("an automatic SQLite rollback unwinds nested catalog savepoints without masking the error", async t => {
+  const f = await oldCatalogWithMissingFence(t);
+  await f.startup.load();
+  const existing = f.startup.hierarchy().find(workspace => workspace.name === "Existing Workspace");
+  f.writer.exec(`
+    CREATE TRIGGER fixture_refuses_nested_name BEFORE UPDATE OF name ON hub_workspaces
+    WHEN NEW.name = 'Refused name'
+    BEGIN SELECT RAISE(ROLLBACK, 'fixture nested refusal'); END;
+  `);
+  assert.throws(() => f.startup.transaction(() => {
+    f.startup.createWorkspace({ name: "Uncommitted outer Workspace" });
+    f.startup.transaction(() => f.startup.renameWorkspace(existing.id, "Refused name"));
+  }), error => error.errcode === 1811 && error.message === "fixture nested refusal");
+  assert.deepEqual(f.startup.hierarchy(), f.before);
+  f.startup.createWorkspace({ name: "After rollback" });
+  assert.ok(f.startup.hierarchy().some(workspace => workspace.name === "After rollback"));
+});
 
 test('exact Thread resolution retains current binding and bounded display semantics', async (t) => {
   const store = await fixture(t);
@@ -125,25 +258,7 @@ test("outer catalog refusal rolls back completed nested mutations together", asy
   assert.equal(store.hierarchy().some((workspace) => workspace.name === "Recovered"), true);
 });
 
-test("preparation-only terminal receipt validator runs atomically and refusal retains original pending", async (t) => {
-  const store = await fixture(t);
-  const workspace = store.createWorkspace({ name: "Preparation" });
-  const stream = store.createStream({ workspaceId: workspace.id, displayName: "RM" });
-  store.beginMcpOperation({ requestId: "preparation", workspaceId: workspace.id, streamId: stream.id,
-    provider: "codex", threadId: "thread-1", toolName: "hub_release_prepare", argumentsHash: "a".repeat(64) });
-  assert.throws(() => store.completeMcpOperation("preparation", { tree: "b".repeat(40) },
-    { validate: () => { throw new Error("stale selected CAS"); } }), /stale selected/);
-  assert.equal(store.mcpOperation("preparation").status, "pending");
-  assert.throws(() => store.completeMcpOperation("preparation", {}, { validate: async () => {} }), /synchronous/);
-  let checks = 0;
-  const receipt = store.completeMcpOperation("preparation", { tree: "b".repeat(40) }, { validate: () => {
-    checks += 1;
-    assert.equal(store.mcpOperation("preparation").status, "pending");
-  } });
-  assert.equal(checks, 1);
-  assert.equal(receipt.status, "succeeded");
-  assert.equal(receipt.result.tree, "b".repeat(40));
-});
+
 
 test("Workspace mutation queue retries real SQLite contention and keeps timers responsive", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-workspace-contention-"));
@@ -1153,67 +1268,9 @@ test.skip("retired release registry schema migration", async (t) => {
   assert.deepEqual(store.changeSets("workspace"), []);
 });
 
-test("release workflow is opt-in and injects policy without changing editable rules", async (t) => {
-  const store = await fixture(t);
-  const workspace = store.createWorkspace({ name: "Agent HUB" });
-  const stream = store.createStream({
-    workspaceId: workspace.id, name: "Release Manager", settings: { releaseManager: true },
-  });
-  store.bindThread({ provider: "codex", threadId: "thread", streamId: stream.id });
-  assert.equal(store.developerRulesForStream(stream.id).workspace.content, "");
-  store.updateWorkspaceDeveloperRules(workspace.id, "Fast Test Contour workflow");
 
-  assert.equal(store.releaseWorkflowEnabledForThread({ provider: "codex", threadId: "thread" }), false);
-  assert.equal(
-    store.developerRulesForStream(stream.id).workspace.content,
-    "Fast Test Contour workflow",
-  );
-  assert.equal(store.developerRulesForStream(stream.id).stream, null);
-  store.updateWorkspaceSettings(workspace.id, { releaseWorkflowEnabled: true });
 
-  assert.equal(store.releaseWorkflowEnabledForThread({ provider: "codex", threadId: "thread" }), true);
-  assert.equal(
-    store.workspaceDeveloperRules(workspace.id).content,
-    "Fast Test Contour workflow",
-  );
-  const injected = store.developerRulesForStream(stream.id);
-  assert.ok(injected.workspace.content.includes(RELEASE_WORKFLOW_DEVELOPER_RULES));
-  assert.match(injected.workspace.content, /releaseCandidates\[\]\.releaseRoot.*standalone clone/u);
-  assert.match(injected.workspace.content, /Fast Test Contour workflow\nThe registered primary Workspace/u);
-  assert.match(injected.stream.content, /Workspace release manager/u);
-  assert.match(injected.stream.content, /releaseCandidates\[\]\.releaseRoot.*only checkout/u);
-  assert.doesNotMatch(injected.stream.content, /update local main|separate integration worktree/u);
-});
 
-test("workflow exception reaches provider context across rotation and follows both toggles", async (t) => {
-  const store = await fixture(t);
-  const workspace = store.createWorkspace({ name: "Policy", settings: { releaseWorkflowEnabled: true } });
-  const stream = store.createStream({ workspaceId: workspace.id, name: "Release", settings: { releaseManager: true } });
-  store.updateWorkspaceDeveloperRules(workspace.id, "Authored Workspace policy");
-  store.updateStreamDeveloperRules(stream.id, "Authored Stream policy");
-  const compose = (threadId) => resolveHubDeveloperInstructions({
-    provider: "codex", threadId, workspaceCatalogStore: store,
-    preTurnInstructions: { snapshot: async () => ({ guide: { content: "Guide" }, global: { content: "" } }) },
-    hubMcpService: { developerContext: () => "Synthetic MCP context" },
-  });
-  for (const threadId of ["before-rotation", "after-rotation"]) {
-    store.bindThread({ provider: "codex", threadId, streamId: stream.id });
-    const output = await compose(threadId);
-    assert.equal(output.split(EXPLICIT_USER_WORKFLOW_EXCEPTION).length - 1, 2);
-    assert.match(output, /Authored Workspace policy/u);
-    assert.match(output, /Authored Stream policy/u);
-  }
-  store.updateStreamSettings(stream.id, { releaseManager: false });
-  assert.equal((await compose("after-rotation")).split(EXPLICIT_USER_WORKFLOW_EXCEPTION).length - 1, 1);
-  store.updateStreamSettings(stream.id, { releaseManager: true });
-  store.updateWorkspaceSettings(workspace.id, { releaseWorkflowEnabled: false });
-  const disabled = await compose("after-rotation");
-  assert.equal(disabled.includes(EXPLICIT_USER_WORKFLOW_EXCEPTION), false);
-  assert.match(disabled, /Authored Workspace policy/u);
-  assert.match(disabled, /Authored Stream policy/u);
-  assert.equal(store.workspaceDeveloperRules(workspace.id).content, "Authored Workspace policy");
-  assert.equal(store.streamDeveloperRules(stream.id).content, "Authored Stream policy");
-});
 
 test.skip("retired destructive release registry discard", async (t) => {
   const store = await fixture(t);
@@ -1258,49 +1315,7 @@ test.skip("retired destructive release registry discard", async (t) => {
   );
 });
 
-test("saving and reopening preserves copied rules without inferring checkbox settings", async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-authored-rules-"));
-  const databaseFile = path.join(directory, "journal.sqlite");
-  let store = new WorkspaceCatalogStore({ databaseFile });
-  await store.load();
-  t.after(async () => {
-    store.close();
-    await rm(directory, { recursive: true, force: true });
-  });
-  const copied = (RELEASE_WORKFLOW_DEVELOPER_RULES + "\n\nCustom rule").replace(/\n/gu, "\r\n");
-  const cases = [];
-  for (const enabled of [true, false, undefined]) {
-    const workspace = store.createWorkspace({ name: "Rules " + enabled });
-    const stream = store.createStream({ workspaceId: workspace.id, name: "Rules" });
-    const workspaceRules = store.updateWorkspaceDeveloperRules(workspace.id, copied);
-    const streamRules = store.updateStreamDeveloperRules(stream.id, copied);
-    assert.equal(workspaceRules.content, copied);
-    assert.equal(streamRules.content, copied);
-    assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, copied).revision, workspaceRules.revision);
-    cases.push({ workspace, stream, workspaceRules, streamRules, settings: { releaseWorkflowEnabled: enabled } });
-  }
-  store.close();
-  const database = new DatabaseSync(databaseFile);
-  for (const entry of cases) {
-    database.prepare("UPDATE hub_workspaces SET settings_json = ? WHERE id = ?")
-      .run(JSON.stringify(entry.settings), entry.workspace.id);
-  }
-  database.close();
-  for (const readOnly of [false, true, false]) {
-    store = new WorkspaceCatalogStore({ databaseFile, readOnly });
-    await store.load();
-    for (const entry of cases) {
-      assert.deepEqual(store.workspace(entry.workspace.id).settings, JSON.parse(JSON.stringify(entry.settings)));
-      assert.deepEqual(store.workspaceDeveloperRules(entry.workspace.id), entry.workspaceRules);
-      assert.deepEqual(store.streamDeveloperRules(entry.stream.id), entry.streamRules);
-      const output = store.developerRulesForStream(entry.stream.id);
-      assert.equal(output.workspace.content, entry.settings.releaseWorkflowEnabled === true
-        ? RELEASE_WORKFLOW_DEVELOPER_RULES + "\n\n" + copied + "\n" + RELEASE_PRIMARY_WORKSPACE_RULE : copied);
-      assert.equal(output.stream.content, copied);
-    }
-    store.close();
-  }
-});
+
 
 test("Release Manager role migrates once from legacy role or exact name without runtime fallback", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-release-manager-role-migration-"));
@@ -1384,7 +1399,7 @@ test("developer rules enforce a 32 KiB UTF-8 limit for each scope", async (t) =>
 
   assert.equal(store.updateWorkspaceDeveloperRules(workspace.id, allowed).content, allowed);
   assert.throws(
-    () => store.updateWorkspaceDeveloperRules(workspace.id, RELEASE_WORKFLOW_DEVELOPER_RULES + "\n\n" + allowed),
+    () => store.updateWorkspaceDeveloperRules(workspace.id, "overflow" + allowed),
     /exceed/u,
   );
   assert.throws(

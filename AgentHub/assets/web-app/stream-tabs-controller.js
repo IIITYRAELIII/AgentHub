@@ -17,7 +17,9 @@
   const MAX_ACTIVITY_RECENT_MINUTES = 30 * 24 * 60;
   const ACTIVITY_STREAM_DETAILED_CARDS_KEY = "agent-hub:activity-stream-detailed-cards:v1";
   const STREAM_STATUS_EFFECT_KEY = "agent-hub-stream-status-effect";
-  const STREAM_STATUS_STYLE_KEY = "agent-hub-stream-status-style";
+  function normalizeStatusEffect(value) {
+    return ["static", "off", "calm"].includes(value) ? "static" : "dynamic";
+  }
   const STREAM_CARD_SETTINGS_CHANGE_EVENT = "agenthub:stream-card-settings-change";
   const STREAM_VIEW_SETTINGS_CHANGE_EVENT = "agenthub:stream-view-settings-change";
   const QUICK_MESSAGE_MAX_SCOPES = 200;
@@ -280,8 +282,41 @@
     const name = String(stream?.name ?? "").trim();
     if (name) return name;
     return Number(streamCount) > 1
-      ? `Stream ${Math.max(1, Number(stream?.ordinal) || 1)}`
-      : "Stream";
+      ? `Поток ${Math.max(1, Number(stream?.ordinal) || 1)}`
+      : "Поток";
+  }
+
+  // Missing history/answer is not evidence of an empty, queued or failed dialog.
+  // This is display-only: the canonical run/history owners retain all authority.
+  function dialogListPresentation(task, { messages = [], live = null } = {}) {
+    const text = (value) => String(typeof value === "string" ? value : value?.text ?? "")
+      .replace(/\s+/gu, " ").trim();
+    const content = messages.filter((message) => ["user", "agent"].includes(message?.role)
+      && !["maintenance", "subagent"].includes(message?.kind));
+    const last = content.at(-1);
+    const currentLive = live?.projectionState === "active" && live?.operationKind === "user-turn"
+      && live?.threadId === task?.threadId && live?.provider === task?.provider && Boolean(live?.turnId)
+      && (!task?.run?.turnId || task.run.turnId === live.turnId);
+    const user = last?.role === "user" ? last : currentLive
+      ? [...content].reverse().find((message) => message.role === "user" && message.turnId === live.turnId)
+      : null;
+    const answer = text(task?.lastAnswer)
+      || (last?.role === "agent" ? text(last) : "");
+    if (task?.activityUnknown || task?.preparing) return {
+      preview: answer, status: streamStatusPresentation(task).statusLabel,
+    };
+    if (task?.status === "unknown") return { preview: answer, status: "Статус неизвестен" };
+    if (task?.running) return {
+      preview: text(user) ? `Вы: ${text(user)}` : answer,
+      status: currentLive && (text(live.text) || text(live.reasoning)
+        || live.activities?.length || live.activityGroups?.length) ? "Отвечает" : "Готовит ответ",
+    };
+    const failed = task?.failed || task?.error || ["failed", "cancelled"].includes(task?.status);
+    if (failed) return { preview: answer || "Ответ не получен",
+      status: task?.status === "cancelled" ? "Отменено" : "Ошибка" };
+    if (answer) return { preview: answer, status: "" };
+    if (last?.role === "user" && text(last)) return { preview: `Вы: ${text(last)}`, status: "" };
+    return { preview: "", status: "" };
   }
 
   function streamTabsMutationAction(mutations) {
@@ -310,7 +345,9 @@
     const active = [];
     const recent = [];
     for (const task of tasks ?? []) {
-      if (task?.running || task?.preparing || task?.activityUnknown || task?.unread) active.push(task);
+      if (task?.running || task?.preparing || task?.activityUnknown || task?.unread || task?.openQuestion
+        || task?.context?.compaction?.status === "running"
+        || ["manual-rotation", "automatic-rotation"].includes(task?.maintenance?.reason)) active.push(task);
       else recent.push(task);
     }
     return { active, recent };
@@ -888,13 +925,13 @@
   }
 
   function pinnedStreamActionLabel(pinned) {
-    return pinned ? "Открепить Stream" : "Закрепить Stream";
+    return pinned ? "Открепить поток" : "Закрепить поток";
   }
 
   function pinnedStreamActionTitle(pinned) {
     return pinned
-      ? "Вернуть Stream в обычный порядок вкладок"
-      : "Показывать Stream первым во вкладках этого Workspace";
+      ? "Вернуть поток в обычный порядок вкладок"
+      : "Показывать поток первым во вкладках этого Workspace";
   }
 
   function reconcileOpenStreamIds(previousIds, availableIds, fallbackId, limit = 4) {
@@ -1089,8 +1126,8 @@
       button.className = "icon-button dialog-settings-close";
       button.dataset.action = "task-settings";
       button.dataset.dialogSettingsClose = "";
-      button.title = "Закрыть настройки диалога";
-      button.setAttribute("aria-label", "Закрыть настройки диалога");
+      button.title = "Закрыть настройки потока";
+      button.setAttribute("aria-label", "Закрыть настройки потока");
       button.innerHTML = `
         <svg data-phosphor-icon="x" viewBox="0 0 256 256" aria-hidden="true">
           <line x1="200" y1="56" x2="56" y2="200" fill="none" stroke="currentColor"
@@ -1168,34 +1205,18 @@
       wrapper.dataset.streamCardSettings = "true";
       wrapper.innerHTML = `
         <button type="button" class="stream-card-settings-toggle" data-stream-card-settings-toggle
-          aria-label="Настройки Streams" aria-expanded="false" title="Настройки Streams"></button>
+          aria-label="Настройки потоков" aria-expanded="false" title="Настройки потоков"></button>
         <div class="stream-card-settings-menu" data-stream-card-settings-menu role="dialog"
-          aria-label="Настройки Streams" hidden>
+          aria-label="Настройки потоков" hidden>
           <section class="stream-card-settings-group" aria-labelledby="stream-settings-status-title">
             <h3 class="stream-card-settings-group-title" id="stream-settings-status-title">Потоки</h3>
             <div class="stream-card-settings-section stream-card-settings-inline-section">
               <span class="stream-card-settings-kicker">Эффект</span>
               <select data-stream-status-effect-select
-                aria-label="Эффект активности и готового ответа Stream">
-                <option value="calm">Спокойный</option>
-                <option value="impulse">Импульс</option>
-                <option value="scanner">Сканер</option>
-                <option value="energy">Энергия</option>
-                <option value="breath">Дыхание</option>
-                <option value="thread">Нить</option>
-                <option value="sediment">Осадок</option>
-                <option value="echo">Эхо</option>
-                <option value="off">Выключено</option>
+                aria-label="Эффект активности и готового ответа потока">
+                <option value="static">Статичный</option>
+                <option value="dynamic">Динамичный</option>
               </select>
-            </div>
-            <div class="stream-card-settings-section stream-card-settings-gap-section"
-              title="Использовать всю поверхность панели вместо одной границы.">
-              <span class="stream-card-settings-kicker">Подсвечивать целиком</span>
-              <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
-                role="switch" aria-checked="false" aria-label="Подсвечивать панели Stream целиком"
-                data-stream-status-fill-toggle>
-                <span class="switch-track" aria-hidden="true"></span>
-              </button>
             </div>
           </section>
           <section class="stream-card-settings-group" aria-labelledby="stream-settings-top-title">
@@ -1243,7 +1264,7 @@
               <span class="stream-card-settings-duration">
                 <label>
                   <input type="number" min="0" max="720" step="0.5" inputmode="decimal"
-                    data-stream-recent-hours aria-label="Часы для недавних Streams">
+                    data-stream-recent-hours aria-label="Часы для недавних потоков">
                   <span>ч</span>
                 </label>
               </span>
@@ -1252,7 +1273,7 @@
               title="Показывать агента, модель и среду в правой панели.">
               <span class="stream-card-settings-kicker">Подробные карточки</span>
               <button type="button" class="stream-card-gap-toggle stream-card-settings-switch"
-                role="switch" aria-checked="false" aria-label="Подробные карточки Streams"
+                role="switch" aria-checked="false" aria-label="Подробные карточки потоков"
                 data-stream-detailed-toggle>
                 <span class="switch-track" aria-hidden="true"></span>
               </button>
@@ -1366,13 +1387,6 @@
         this.applyViewSetting("streamStatusEffect", event.currentTarget.value);
         this.update(wrapper);
       });
-      wrapper.querySelector("[data-stream-status-fill-toggle]").addEventListener("click", () => {
-        this.applyViewSetting(
-          "streamStatusStyle",
-          this.root.dataset.streamStatusStyle === "fill" ? "edge" : "fill",
-        );
-        this.update(wrapper);
-      });
       const range = wrapper.querySelector("[data-stream-card-width]");
       range.addEventListener("input", (event) => {
         this.fixedWidth = Math.min(
@@ -1438,14 +1452,9 @@
           this.window.localStorage.setItem(ACTIVITY_STREAM_DETAILED_CARDS_KEY, String(detailed));
         } catch {}
       } else if (key === "streamStatusEffect") {
-        this.root.dataset.streamStatusEffect = String(value || "impulse");
+        this.root.dataset.streamStatusEffect = normalizeStatusEffect(value);
         try {
           this.window.localStorage.setItem(STREAM_STATUS_EFFECT_KEY, this.root.dataset.streamStatusEffect);
-        } catch {}
-      } else if (key === "streamStatusStyle") {
-        this.root.dataset.streamStatusStyle = value === "fill" ? "fill" : "edge";
-        try {
-          this.window.localStorage.setItem(STREAM_STATUS_STYLE_KEY, this.root.dataset.streamStatusStyle);
         } catch {}
       }
       this.emitViewSetting(key, value);
@@ -1503,11 +1512,7 @@
         String(this.root.hasAttribute("data-activity-tasks-always-separate")),
       );
       const effectSelect = wrapper.querySelector("[data-stream-status-effect-select]");
-      if (effectSelect) effectSelect.value = this.root.dataset.streamStatusEffect || "impulse";
-      wrapper.querySelector("[data-stream-status-fill-toggle]")?.setAttribute(
-        "aria-checked",
-        String(this.root.dataset.streamStatusStyle === "fill"),
-      );
+      if (effectSelect) effectSelect.value = normalizeStatusEffect(this.root.dataset.streamStatusEffect);
       const rangeWrap = wrapper.querySelector("[data-stream-card-range]");
       if (rangeWrap) rangeWrap.hidden = this.widthMode !== STREAM_CARD_WIDTH_MODES.FIXED;
       this.updateCardPresentation();
@@ -1640,6 +1645,7 @@
   }
 
   window.AgentHubStreamTabs = Object.freeze({
+    dialogListPresentation,
     answerArrivalTaskIds,
     archiveStreamIntent,
     activityStreamSections,
@@ -1701,6 +1707,7 @@
     streamLastActivity,
     streamRotationTransitions,
     streamIsPinned,
+    normalizeStatusEffect,
     streamStatusPresentation,
     streamStatusState,
     streamsAreDraggable,

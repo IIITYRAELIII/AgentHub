@@ -436,7 +436,10 @@ export class SharedSqliteRecoveryCoordinator {
           const marker = await measure("marker-read", () => optionalJson(this.#markerFile, this.#fileSystem));
           if (marker) return await measure("resume", () => this.#resume(marker, measure));
           const intent = await measure("intent-read", () => optionalJson(this.#intentFile, this.#fileSystem));
-          if (intent) await measure("intent-rollback", () => this.#rollbackIntent(intent));
+          // Ordinary startup delegates opening and errors to the storage owners.
+          // Only a previously persisted recovery may inspect or replace data.
+          if (!intent) return { degraded: false };
+          await measure("intent-rollback", () => this.#rollbackIntent(intent));
           const databaseInfo = await measure("database-stat", () => optionalStat(this.#databaseFile, this.#fileSystem));
           if (!databaseInfo) return { degraded: false };
           const inspection = await measure("database-check", () => this.#inspectDatabase(measure));

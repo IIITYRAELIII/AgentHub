@@ -138,7 +138,7 @@ SDK без пользовательского сообщения и вызова
 - `shared-dashboard-bot` — единый командный Telegram-бот для добавления карточек в личный Dashboard каждого участника.
 - `test-contour` — изолированная кандидатная сборка с локальным Web UI,
   отдельным VS Code-расширением, браузерным smoke и списком моделей
-  Spark/Luna/Fake Codex;
+  Luna/Fake Codex;
   production runtime, hooks и Telegram не используются.
 
 ### Вопросы агента
@@ -159,10 +159,6 @@ SDK без пользовательского сообщения и вызова
 зафиксированы в `tests/unreachable-tests.json`, поэтому зелёный обычный набор не
 означает, что этот сценарий пройден. Выключенные профили печатают причину пропуска.
 
-Полный этап `publish:changed -- --full-tests` выполняется без общего лимита
-времени. Сохраняются контроль отсутствия вывода и локальные пределы тестов,
-сетевых операций, сборки и готовности. Другие шаги публикации сохраняют свои
-конечные пределы; прежние failed receipts не переписываются.
 
 Для проверки именно готового Windows-артефакта без повторной сборки используйте
 [проверку замены runtime](docs/release-artifact-acceptance.md). Её результат
@@ -270,8 +266,8 @@ Test Contour всегда один и собирается из локально
 ошибка Git или подготовки не гасит уже работающий контур.
 
 Обычный boot/default контура использует `fake-codex`, а в том же списке моделей
-Stream доступны `gpt-5.3-codex-spark` и `gpt-5.6-luna`. Обе реальные модели
-обращаются к Codex и расходуют лимиты аккаунта. Fake Codex работает только внутри
+Stream доступна `gpt-5.6-luna`: она обращается к Codex и расходует лимиты аккаунта.
+Spark исключён из новых запусков. Fake Codex работает только внутри
 marker-owned Test Contour: любой отправленный ему пользовательский ход
 завершается локальным ответом `Принято`, поэтому им можно проверять intake,
 очередь, live/history projection, финал и доставку без вызова модели. Внутренний
@@ -281,7 +277,7 @@ stdio-мультиплексор сохраняет один provider identity `
 `contour:verify` заново собирает candidate, запускает headless Edge, проверяет
 загрузку и переключение основных экранов, отправляет сообщение через настоящий
 Web UI локальному `fake-codex` и сохраняет screenshot вне Git в каталоге
-компонента. `publish:all` и `publish:changed` запускают этот gate только с явным
+компонента. Независимые проверки запускаются с явным
 аргументом `--test-contour`, после автоматических тестов и до первого внешнего
 deploy. Без этого аргумента релиз не требует установленный компонент и
 пропускает контур.
@@ -386,9 +382,9 @@ provider prompt, созданных до релиза `2026.8.30`.
 включает постоянный режим захвата обычных текстовых сообщений для текущего чата,
 а `/task off` возвращает сообщения в выбранный диалог. Отдельная кнопка этого
 режима не показывается в постоянной клавиатуре бота; команда остаётся доступна
-напрямую и продолжает принимать нажатия старой клавиатуры. После сохранения отдельный
-read-only запуск Codex Spark исправляет только очевидные ошибки, создаёт заголовок
-и описание, определяет задачу или заметку и предлагает Workspace. Короткая
+напрямую и продолжает принимать нажатия старой клавиатуры. Автоматический запуск
+Spark после сохранения отключён; кнопки его повтора больше нет. Явно настроенный
+авторазбор другой доступной моделью сохраняется. Короткая
 однострочная запись до 100 символов целиком остаётся заголовком, а описание у неё
 пустое. На доске показывается только заголовок; клик открывает карточку с описанием
 и действиями. `Сохранить изменения` закрывает карточку только после подтверждённой
@@ -423,52 +419,17 @@ Hub фиксирует весь Task-worktree локальным commit, пол�
 Неизвестный результат проверяют повтором только с тем же `request-id` и теми
 же входами; конфликт не является разрешением слить rolling dev в Task.
 
-Встроенные правила `Релизный процесс` и роли `Релиз-менеджер` разрешают явно заданный
-пользователем порядок текущей работы вместо стандартных требований workflow:
-например, иной объём тестов или порядок публикации. Агент должен сохранить
-согласованное исключение при продолжении и ротации до завершения этой работы
-или нового указания; срочность сама по себе исключения не создаёт. Системные
-требования, безопасность и проверки полномочий/целостности в инструментах
-сохраняются. Пропущенные проверки и фактическую публикацию агент сообщает явно.
-Сохранённые пользовательские правила автоматически не переписываются.
+Механизм выпуска удалён. Настройки "Ветки задач" и "Приёмка задач"
+сохраняют управляемые Task-ветки и полномочия приёмки; release API/worker они не
+включают. Test интегрирует результат в dev, Await — в PreRelease с прежними
+проверками содержимого, истории, полномочий и CAS. Сохранённые пользовательские
+правила и исторические данные автоматически не переписываются.
 
-План релиза хеширует Task IDs, ревизии приёмки и Git-результаты, включает
-разрешённые Tasks из `Await` и явно показывает как `blocked` карточки без полного
-Git evidence. `hub_release_run` сохраняет точный состав, validation mode и цели,
-сразу возвращает ID durable операции и асинхронно строит immutable generation в
-независимом Agent Hub-owned clone под runtime data. Его `.git`
-не связан с `.git` пользовательского clone; там строится `PreRelease`, сохраняются
-content-addressed manifest и точный head поколения. Старые linked holders только
-показываются в диагностике, не переиспользуются и не удаляются.
-Название, описание, чек-лист и смена исполнителя повышают ревизию карточки для
-CAS, но не меняют принятую версию результата и не требуют нового кандидата.
-Открытые Done-карточки остаются в аудите, не входят в идентичность выпуска.
-Возврат и повторная приёмка, изменение результата или согласованной основы
-создают следующее поколение той же разрешённой операции до начала внешней
-публикации. Manifest хранит состав и доказательства выпуска, SQLite operation и
-step receipts — этапы выполнения и ссылки для восстановления. Неизменный повтор
-использует те же данные; смена даты не меняет зафиксированную версию.
-Startup audit получает working directory каждого release-enabled Workspace прямо
-из каталога и поэтому обнаруживает detached primary и linked holder даже при
-пустом `release-repositories`, до первого candidate/checkpoint. Такой audit только
-читает Git state: clone, checkout, switch и cleanup не выполняются. Для старой
-Workspace-записи без working directory используется runtime default project root,
-но не исторические thread roots. В injected
-Workspace/Release Manager rules и tooltip единственным release checkout указан
-`releaseCandidates[].releaseRoot`; прежняя рекомендация обновлять local `main`
-или использовать integration worktree удаляется из эффективных Release Manager rules.
-Ожидаемый managed `releaseRoot` проверяется даже без checkpoint: orphan clone,
-невалидный marker или общий Git common dir дают только `manual_required` и не
-усыновляются, не исправляются и не удаляются startup-кодом.
-По команде `Релиз` только Stream с `settings.releaseManager=true` создаёт durable
-operation, валидирует exact generation, публикует и атомарно закрывает
-включённые Tasks. `publish:all` и `publish:changed` отказываются работать из
-зарегистрированного Workspace или clone без Agent Hub release marker. Обычный status update может свободно
-поставить видимый `done`, но не создаёт deployment evidence.
-`hub_task_complete` и финальный текст агента также не создают release evidence.
-Отдельного mutable checkpoint owner, freeze-команды или скрытого readiness-состояния нет:
-`CHANGELOG.md` остаётся канонической историей, Task владеет workflow, а
-`ReleaseOperation` — progress конкретного выпуска.
+Startup audit зарегистрированных Task-репозиториев читает Git identity и
+сообщает конфликты primary/managed checkout; чужие holders не усыновляются и
+не удаляются. Обычное изменение видимого статуса Task не создаёт доказательство
+установки приложения. Приёмка и ручная поставка остаются разными действиями.
+
 Hub включает один внутренний MCP `agent_hub` и автоматически подключает его к
 запущенным через Hub Codex App Server и Claude Code. На каждый ход в developer-
 контекст добавляется подписанная capability текущего Thread; MCP по ней определяет
@@ -537,83 +498,6 @@ references. `Awaiting implementation` не создаёт новый result: о�
 `PreRelease` и только после успеха фиксирует статус одним CAS. `Done` опирается
 на проверенную публикацию и не создаёт результат. `Done` становится
 release-completion evidence только после проверенного production-релиза.
-Release Manager читает Task-backed план через `hub_release_plan_get`, затем вызывает
-`hub_release_run` с точными Task IDs, validation mode и approved targets. После
-durable ACK состояние читается через `hub_release_get`; технические ожидания и
-исправления выбранной Task автоматически продолжают ту же operation. Каждое
-готовое поколение фиксирует принятые результаты, согласованную основу main,
-manifest и clean release root. Оно не обновляет тестовый контур из rolling dev.
-Внешний consumer — `agent-hub-release run|continue|get|accept --connection-file
-<private-connection.json> --request-file <business.json>`.
-`accept` передаёт обычный публичный Await-запрос (`task_id`, `status`, `request_id`,
-точные `expected_task_revision`/`expected_workflow_status`). Caller capability
-хранится отдельно от business JSON в приватном connection-файле действующего
-Hub API. Для source owner команда `release:api` принимает реальные
-provider/thread/stream и выдаёт этот файл; внешний клиент не открывает БД.
-Та же команда дожидается уже запущенной этим принятием
-работы release owner; после потери ответа читают исходную квитанцию и operation,
-а не создают новый выпуск. Отдельный entry/driver/config на каждый префикс не нужен.
-Окончательная фиксация версии/CHANGELOG остаётся частью единого release pipeline. Проверки
-тестового контура выполняются по необходимости; настроенные проверки других
-репозиториев сохраняются и проверяют именно подготовленный кандидат.
-При подготовке Await основа PreRelease берётся из подтверждённой публикации
-этого репозитория. Новая основа допускается по сохранённому согласованию точного
-результата включённой задачи; обычный fetch и изменение local main/origin/main
-сами её не меняют. При отсутствии подтверждённой основы требуется штатное явное
-принятие истории публикации. При переходе в Await состав сначала компонуется,
-а затем фиксируется Task CAS; конфликт сохраняет задачу в Test и прежний кандидат.
-Возврат задачи сохраняет старую принятую интеграцию; проверенная коррекция
-создаёт новый result и следующее поколение без удаления исторического dev merge.
-После проверки exact revision каждого repository, publication generation и
-deployment evidence операция атомарно переводит в `Done` только Tasks, которые
-всё ещё называют опубликованный result. Более новая работа не перезаписывается. Обычное
-`hub_task_complete` и destructive `hub_task_delete` сначала возвращают точный
-cleanup preview/token и требуют отдельного подтверждённого вызова. Complete не
-закрывает implementation Task до workflow `Done` и не удаляет неопубликованный
-result; Delete удаляет DB-строку только после успешного Git cleanup.
-Для служебной Task уже опубликованного релиза Release Manager использует
-`hub_task_complete` с `completion_mode=published_release_service`: owner сверяет
-все Done-пункты checklist с неизменяемым manifest и durable publication state,
-затем закрывает только карточку по preview/token, сохраняя её worktree и историю.
-После подтверждённой публикации основной Workspace синхронизируется только
-безопасным fast-forward, пока он остаётся на `main`. Если его локальные dirty
-пути пересекаются с опубликованными, обновление не является fast-forward либо
-инвариант нарушен, релиз остаётся успешным, а primary HEAD и локальные байты не
-изменяются; диагностика возвращает `manual_required`.
-Курсорная команда
-`hub_events_list` без long poll возвращает ограниченную ленту изменений задач,
-релизов и завершений ходов текущего Workspace. Изменение Workspace/Stream-правил
-применяется к следующему ходу. Все изменяющие MCP-вызовы требуют `request_id`,
-атомарно записываются в SQLite и при точном повторе возвращают сохранённый результат
-без повторного действия. MCP слушает только случайный loopback-порт, использует
-секретный URL и не публикуется через Mini App, Worker или внешний домен.
-Codex ограничивает только внутренние вызовы `agent_hub` клиентским deadline в 75
-секунд: он оставляет запас после 60-секундного server dispatch timeout, но
-останавливает вызов, который завис до HTTP admission. После transport failure
-соединение MCP перезагружается; read-only вызов можно повторить, а mutation
-сверяется по точному `request_id` с журналом операций и не создаёт второй эффект.
-`Закрыть задачу` убирает обычную карточку с активной доски после приёмки заказчиком
-либо когда отдельная сдача работ не требуется; release completion закрывает
-выпущенные Tasks автоматически.
-`Удалить` открывает отдельное подтверждение `Вы уверены?`; карточка закрывается
-только после подтверждённого удаления, а при ошибке остаётся доступной для повтора.
-Этот авторазбор применяется только к
-Telegram-входящим; ручное создание в дашборде его не запускает. Автоматический перенос выполняется только
-при уверенности не ниже `taskBoard.autoPlaceConfidence`; неоднозначная запись и
-ошибка классификации остаются в `Backlog`. Исходный текст сохраняется отдельно от
-исправленного и раскрывается в карточке по ссылке `Показать исходный текст`.
-Модель и порог задаются в `config.json` параметрами
-`taskBoard.triageModel` и `taskBoard.autoPlaceConfidence`.
-Новые отчёты из `Настройки → Обратная связь → Сообщить о баге` можно персонально
-добавлять в Dashboard без Spark: укажите имя целевого Workspace в
-`taskBoard.bugReportWorkspaceName`. Hub запоминает локальную Git-ревизию и после
-следующего `git pull` подхватывает только добавленные `AgentHub/Bugs/bug-*/report.md`;
-при первом включении он также импортирует все уже существующие отчёты, не создавая
-дубли для ранее сохранённых карточек. Проверка выполняется
-раз в пять минут и после локальной отправки отчёта. Пустое значение выключает
-функцию. Workspace ищется по имени без учёта регистра и лишних пробелов; если он не
-найден, карточка остаётся в `Backlog`.
-
 ### Требования компонентов
 
 - Базовый Hub: Node.js 22.5+, Codex CLI либо Claude Code CLI, локальный доступ к разрешённым workspace. Публичный адрес не нужен.
@@ -662,16 +546,16 @@ npm --prefix Utilities/AgentHub run dashboard-bot:pair
 на которое он ответил. `🗑 Отменить` (`/cancel`) отменяет пачку до
 отправки. Обычный текст вне открытой пачки по-прежнему создаёт самостоятельную
 карточку. Изображение, отправленное ответом на собственное исходное сообщение уже
-созданной карточки, прикрепляется к ней без новой карточки и без повторного Spark;
+созданной карточки, прикрепляется к ней без новой карточки и без повторного разбора;
 вложение показывается на доске и в карточке задачи. Если короткий собственный
 комментарий отправлен непосредственно перед пересылкой, следующая пересылка в
 течение минуты включает его в пачку; при отправке пачки уже созданная карточка
-дополняется и повторно разбирается Spark вместо появления второй карточки.
+дополняется вместо появления второй карточки.
 Текстовый ответ на собственное сообщение уже созданной карточки также добавляется
-к ней как уточнение, повторно запускает Spark для объединённого текста и не создаёт
+к ней как уточнение и не создаёт
 новую карточку; ответы цепочкой на предыдущие уточнения сохраняют ту же связь.
-Служебные правила о порядке и авторах передаются только в промпт Spark и
-не попадают в текст самой задачи. `/unlink` удаляет привязку. Локальный Hub получает команды только исходящими
+При явно настроенном авторазборе другой доступной моделью он получает объединённый
+текст; служебные правила не попадают в текст задачи. `/unlink` удаляет привязку. Локальный Hub получает команды только исходящими
 HMAC-подписанными long-poll запросами; его входящие порты и Telegram-токен не
 публикуются. Если компьютер выключен, сообщение хранится в очереди до 30 дней.
 Уведомление `⏳` подтверждает только постановку в удалённую очередь. Подтверждение
@@ -720,62 +604,11 @@ npm run doctor
 dev-зависимости и `node_modules` исходного checkout не переносятся. Ошибка
 установки оставляет текущую работающую версию неизменной.
 
-Для сопровождающего полная публикация всех поверхностей выполняется одной
-командой из `Utilities/AgentHub`:
-
-```powershell
-npm run publish:all
-```
-
-Команда сама выполняет полный набор проверок исходников, unit-тестов, процессных
-E2E и тестов расширения VS Code — отдельно запускать их перед публикацией не
-нужно. Перед `npm run publish:all` не запускайте вручную `npm run check`,
-`npm test`, `npm run test:e2e` или тесты расширения: это только повторит уже
-встроенный прогон. Полный gate не останавливается на первом тестовом файле:
-он собирает ошибки всех групп и возвращает их одним отчётом. Успешные файлы
-checkpoint-ятся по содержимому самого теста, его локальных импортов и исходников
-релиза, поэтому исправление одного устаревшего assertion не повторяет уже
-пройденные независимые файлы. Файлы с доказанно раздельными временными Git,
-lock, port и browser-profile ресурсами выполняются не более чем по два; без
-такой декларации файл остаётся эксклюзивным. Параллельный режим включается
-только при запасе CPU и памяти, а причина промаха кэша печатается без значений
-окружения. Затем команда публикует Cloudflare Worker, создаёт и активирует
-runtime-релиз, устанавливает локальное расширение VS Code и через защищённый
-локальный control channel запрашивает штатный перезапуск Agent Hub.
-Если выполняются активные задачи, сервер сам откладывает перезапуск до
-безопасного момента. Для локальной отладки доступны параметры `--skip-tests`,
-`--skip-worker` и `--skip-restart`; обычная публикация использует полный набор.
-Для Workspace-релиза используйте `publish:changed` из управляемого release clone.
-Команда читает его manifest только для авторизации состава и становится тонким
-клиентом одной durable ReleaseOperation. Application owner создаёт изолированное
-immutable generation, запускает проверки и публикацию через стабильный runner,
-сверяет эффекты и завершает только точные опубликованные Tasks. Низкоуровневый
-`publish:all` без Workspace-адаптера сообщает только `published`: это публикация
-поверхностей, а не завершённый Workspace-релиз.
-
-Релиз-менеджер готовит одну общую запись `CHANGELOG.md` в PreRelease: включённые задачи
-указываются кликабельными ссылками с кратким описанием, обычно из названия. Для
-крупных задач добавляются основные изменения из чек-листа, а при его отсутствии —
-из результата. В ветках задач CHANGELOG не ведётся и версия вручную не повышается.
-Механизм публикации назначает версию по правилам Workspace; общий процесс не
-навязывает другим продуктам формат Hub.
-
-Для Agent Hub базовая версия хранится в `package.json` в формате CalVer, например
-`2026.8.25`. Стабильный runner при фиксации operation generation сам приводит её
-и обе записи `package-lock.json` к локальной календарной дате и коммитит вместе
-с CHANGELOG до финальных проверок. Повтор той же operation сохраняет
-зафиксированные версию, manifest и candidate даже на следующий день.
-Отдельные `release:version` и `publish:all` сохраняют прежнюю проверку календарной
-версии; они не заменяют штатный Workspace pipeline. Каждый развёрнутый runtime
-получает дополнительный последовательный номер внутри календарного дня: первый
-релиз показывается как `v2026.8.25.1`, следующий — `v2026.8.25.2`. Счётчик
-восстанавливается по сохранённым runtime-манифестам; прежний манифест без суффикса
-считается первым релизом дня. Полная версия показывается на странице «Сервер»,
-публикуется через MCP и записывается в runtime-manifest и диагностику. Версия VS Code Extension
-остаётся отдельной, потому что расширение выпускается независимо. Номер runtime
-резервируется при подготовке артефакта и сохраняется при повторе того же выпуска;
-`releaseId` остаётся отдельным
-техническим идентификатором конкретного immutable runtime.
+Сборка и установка выполняются отдельно от Tasks через независимые
+package/installer primitives. Порядок ручной поставки и команды описаны в
+[distribution/README.md](distribution/README.md). Пакет создаётся из проверенного
+PreRelease, устанавливается и проверяется; затем проверенный результат вручную
+объединяется с main. Автоматических release worker/freeze/continue нет.
 
 Каждый процесс HUB публикует новый `instanceId`, а каждый неизменяемый runtime —
 свой `releaseId`. Это технические идентификаторы экземпляра и развёртывания, а
@@ -794,148 +627,6 @@ Android при обнаружении нового экземпляра допо
 его один раз. Неопределённый результат запроса рестарта не вызывает второй
 запуск. Настройка автозагрузки при публикации сохраняется; отсутствующий после
 карантина ярлык восстанавливается отдельно штатным включением автозапуска.
-
-После первой полной публикации последующие локальные изменения можно выпускать
-выборочно:
-
-```powershell
-agent-hub-release run --connection-file <private-connection.json> --request-file <authorized-release.json>
-```
-
-Для ручного выбора всех трёх чисел public version задайте в business JSON
-поле `"release_version": "3.7.9"` вместе с обычными аргументами `hub_release_run`.
-Без этого поля сохраняется автоматический patch. Версия относится к новой
-операции; `continue`/`get` адресуют исходный `operation_id` и не меняют её.
-Значение фиксируется durable owner; package/lock вручную менять не нужно.
-
-После durable ACK стабильный worker сравнивает generation commit с последней
-успешно опубликованной ревизией и собирает только затронутые поверхности. Общие Web UI-файлы обновляют
-runtime и Worker без повторной Android-сборки; Android, Desktop и VS Code
-собираются только при изменении их собственных исходников. Неизвестный путь
-автоматически возвращает полный безопасный сценарий. Для самой первой выборочной
-публикации используются сохранённая подтверждённая основа и полный accepted
-кандидат существующего release owner. Время каждого этапа печатается в
-консоль. Авторитетное состояние читается через `hub_release_get`; журналы
-дочернего стабильного runner сохраняются как step evidence, а не как второй
-release owner. Поэтому потеря PTY не требует нового request ID или повторения
-неизвестно завершившегося эффекта. Изменение исполняемого кода проходит синтаксическую проверку, весь
-unit-набор и межповерхностный процессный E2E. Параллельные публикации из разных
-worktree сериализуются общим lock, а checkout старее текущего `main` не может
-перезаписать уже опубликованный runtime.
-
-До замены установленного runtime все предустановочные проверки плана — freeze,
-prepare и проверка перед Git-публикацией — выполняет стабильный current-owner
-runner над точным candidate root. Код кандидата поставляет проверяемые байты, но
-не подменяет transition executor. Несовместимая схема или дрейф плана
-останавливают публикацию до внешних эффектов. Установленный owner завершает
-подтверждённую публикацию и финализирует Task.
-Устаревший параметр `--bootstrap-mcp-context` отклоняется явно.
-
-Один исполнитель поддерживает три явно различимых режима:
-
-- `npm run publish:changed -- --stream <stream-id> --thread <thread-id> --full-tests` (или `--validation=full`) — полный
-  контрольный прогон. Smoke замороженного кандидата выполняется до дорогих тестов.
-- `npm run publish:changed -- --stream <stream-id> --thread <thread-id> --validation=focused` — проверки и сборки по
-  затронутым поверхностям; неизвестные пути требуют полного набора.
-- `npm run publish:changed -- --stream <stream-id> --thread <thread-id> --quick` — явно запрошенная быстрая публикация
-  без тестового gate. Проверки идентичности кандидата, Git, deployment и готовности
-  runtime сохраняются. Неизвестные пути расширяют сборку до всех поверхностей,
-  но не переключают явно выбранный quick на полный тестовый режим.
-  Команда не подменяет согласие пользователя на этот режим.
-
-Первый ACK сообщает `operationId`. `npm run publish:changed -- --status --operation <operation-id>` читает исходный durable result,
-а `npm run publish:changed -- --resume --operation <operation-id>` продолжает именно его сохранённое поколение,
-режим и step receipts, даже если текущий Thread или CLI-флаги сменились. `--resume` без исходного ID не создаёт новую операцию.
-Git перед deployment всегда проверяется заново: точный
-уже опубликованный SHA не отправляется повторно, движение `origin/main` блокирует
-продолжение. Изменение состава или исходников требует нового кандидата.
-Штатный pipeline после проверок подготавливает необходимые артефакты Android,
-Worker, runtime и расширения **до Git push**, затем применяет именно их. Подготовка
-runtime не переключает работающую версию; Worker публикуется из готового bundle.
-При повторе проверяются сохранённые файлы и фактически установленные компоненты.
-Подтверждённый потерянный ответ не приводит к повторной установке или загрузке.
-Если исход уже начатой установки нельзя подтвердить, повтор останавливается с
-причиной; отметка этапа сама по себе не доказывает установленный результат.
-Артефакты и их хеши сохраняются до завершения восстановления. После выполнения
-deployment повтор продолжает проверку результата, readiness и финализацию.
-Старый незавершённый прогон, уже дошедший до deployment без этих артефактов,
-завершается прежним исполнителем; готовая стадия финализации совместима.
-Ожидание штатного restart имеет статус `awaiting_restart`, частичная финализация —
-`awaiting_finalization`; ни один из них не является успехом. Новый готовый runtime
-сам продолжает pending-финализацию под общим publication lock, без повторной
-сборки, отправки Git или deployment. Успех Workspace-релиза — `succeeded`.
-При отложенном безопасном рестарте команда возвращает агенту явный handoff
-`yield_current_turn`: текущий ход заканчивается без новых операций, а сам
-рестарт по-прежнему выполняет существующий safety gate.
-
-Файловый кэш тестов версии 2 сохраняется после полного прогона и публикации
-до 30 дней (не более 2000 результатов). Переиспользование требует совпадения
-содержимого теста и доказанных зависимостей, runner/policy, Node/ОС/архитектуры,
-lockfiles, параметров и хэша окружения. Значения окружения в кэш не записываются.
-Динамические файловые/процессные входы без явного описания не кэшируются.
-Неуспешный файл автоматически не повторяется. Полный тестовый этап ограничен
-двумя часами и десятью минутами без stdout/stderr; истечение срока — ошибка,
-а не доказательство отсутствия побочного эффекта.
-
-Автоматическая Git-публикация сейчас поддерживает один репозиторий в Workspace.
-Для старого frozen manifest без Workspace требуется `--workspace <id>` либо
-повторное замораживание; старые журналы без точного completion draft автоматически
-не завершаются. Кэш прежнего формата не считается доказательством прохождения.
-
-`runtime:deploy` создаёт новый неизменяемый release и атомарно переключает `current.json`, сохраняя предыдущую версию для `npm run runtime:rollback`. CLI сравнивает физические пути точки входа, поэтому эти команды и `send-message.mjs`/`send-images.mjs` корректно запускаются также из workspace, открытого через Windows junction. Команда `runtime:activate` один раз переносит конфигурацию, данные и модели из рабочей папки во внешний runtime, создаёт маркер активации и удаляет старый workspace-`config.json`. Выполняйте её только при остановленном старом боте; для живой установки сначала дождитесь завершения ходов.
-
-Текущий runtime можно проверить через `npm run runtime:status`. После активации `/restart` запускает release, указанный в `current.json`, поэтому новая публикация начинает действовать при следующем штатном рестарте. Автозапуск Windows также указывает на внешний launcher. В Windows фоновый запуск выполняет `AgentHub.RuntimeHost.exe`: он самостоятельно проверяет `current.json`, runtime-manifest и SHA-256 файлов, а затем напрямую запускает `node.exe` без VBS, `wscript.exe`, скрытого PowerShell и `ExecutionPolicy Bypass`. При первом успешном запуске Runtime Host удаляет прежние `launch.vbs`, `runtime-launch.vbs` и `launch.ps1`.
-
-После `runtime:deploy` установите пользовательские `UserPromptSubmit`- и `Stop`-hooks командой `npm run hook:install` и проверьте `npm run hook:status`. Установщик атомарно копирует launcher из текущего неизменяемого runtime-релиза в постоянный путь `%USERPROFILE%\.codex\agent-hub-hooks`; поэтому заблокированный работающим сервером стабильный Runtime Host не может оставить hooks на старой версии. Статус сверяет точную команду и содержимое установленной копии с текущим release, а также показывает последние фактически принятые start/stop-вызовы. Первый hook до начала модели сразу сохраняет точный запрос, а затем дополняет ту же запись Git-baseline; повторная фаза объединяется с первой и не может стереть уже сохранённые данные. Если клиент Codex не вызывает hook, постоянно работающий terminal-аудит замечает активный ход по rollout и сам создаёт Git-baseline; `apply_patch` дополнительно сохраняется как резервный diff. Второй hook в конце передаёт статус, usage и данные rollout; ошибка чтения rollout обозначается как `unknown`, пока terminal-аудит не уточнит результат. Установщик аккуратно объединяет `%USERPROFILE%\.codex\hooks.json` с существующими hooks. Codex требует отдельно просмотреть и доверить новые или изменившиеся hooks через `/hooks`; доверие привязано к их точному содержимому. После обновления launcher подтвердите оба Agent Hub hook, затем перезапустите Agent Hub Server, а открытые клиенты Codex — переоткройте.
-
-Если Task workflow остался с неизвестным результатом из-за недоказанного завершения дерева Git-процессов, обычный повтор и новый `request_id` запрещены. Release Manager использует `hub_task_operation_reconcile`; для локального cutover до установки исправленного runtime доступна та же операция через `npm run task:reconcile-operation -- --workspace <id> --task <id> --operation <request-id> --repository <root> --guard <guard-id> --summary <evidence> --confirm-system-restart`. Для guard без сохранённой process identity команда принимает только проверяемую границу: `Win32_OperatingSystem.LastBootUpTime` должен быть позже времени создания guard. Доказательство записывается до снятия guard. Если lifecycle уже имеет точный terminal outcome/rollback/failure, guard и restart proof не требуются: та же команда вызывается только с `--workspace`, `--task`, `--operation` и `--repository` и завершает исходный receipt без Git replay. Для receipt, созданного one-shot Await cutover, команда также получает точные исходные `--expected-task-revision`, `--expected-workflow-status`, `--cutover-source-commit` и `--cutover-projector-sha256`; для cross-Task cutover к ним добавляются `--cutover-source-task` и `--cutover-source-task-revision`. Все поля сверяются с durable prior Task/evidence и исходным полным arguments hash. Exact arguments hash связывает reconciliation с фактическим target workflow status (`Test`, `Await` или другим поддерживаемым переходом), а текущие status и revision доказывают отсутствие Task CAS. Операция под Task/repository locks либо продолжает исходный pending lifecycle, либо без Git replay завершает исходный MCP receipt по уже записанному точному outcome/rollback/failure; смешанное состояние остаётся `unknown`.
-
-Если Await блокирует дефект уже исправленного, но ещё не установленного release-проектора, единственный владелец перехода может выполнить one-shot cutover из чистого принятого Task checkout: `npm run task:await-cutover -- --workspace <id> --stream <id> --provider <provider> --thread <id> --task <id> --request <new-request-id> --repository <root> --expected-task-revision <n> --expected-source-commit <sha> --expected-projector-sha256 <sha256> --confirm-cutover`. Если сначала нужно принять другую Task-зависимость, добавляются `--source-task <id> --expected-source-task-revision <n>`: код загружается из результата source Task, а статус и release membership меняются только у `--task`. Команда до открытия production stores сверяет чистый checkout, точный `HEAD` и SHA-256 resolver, затем под детерминированно упорядоченными блокировками обеих Tasks повторно проверяет source Task, её Test revision, единственный result commit, checkout и актуальные Workspace/Stream repository settings. Начало lifecycle в той же SQLite-транзакции атомарно фехтует target и source Task, обе Stream, оба repository root, source result reference и включённый release workflow. Pending reconciliation переносит исходную immutable source identity в terminal outcome. После этого команда вызывает обычный `hub_task_status_update` через текущий `HubMcpService`. Она сохраняет MCP receipt, Task/repository/Await locks, lifecycle CAS, snapshot/dev integration, полный rebuild плана и rollback/unknown semantics. Startup reconciliation других операций отключается только в этом one-shot процессе; новый request нельзя повторять после неопределённого исхода.
-
-Для доставки независимо проверенного native Git owner до установки этот же CLI поддерживает `--initial-native-test --confirm-cutover` с обычными `--workspace`, `--stream`, `--provider`, `--thread`, `--task`, `--request`, `--repository`, `--expected-task-revision` и exact pins: `--expected-source-commit`, `--expected-source-tree`, `--expected-source-branch`, `--expected-main-commit`, `--expected-dev-commit`, `--expected-publication-sha256`, `--expected-candidate-sha256`, `--expected-plan-revision`, `--expected-runtime-sha256`. Projector/squash/source-Task аргументы с этим режимом не смешиваются. Source проверяется до stores; Task должна принадлежать current caller/Thread и оставаться Progress с пустыми refs. Existing preflight `initialNativeTestState` и readonly `inspectInstalledNativeTestOwner` дают hashes без изменения состава. Выполняется обычный canonical Test с original receipt, lifecycle/native intent и существующими leases. Текущий prepared candidate не меняется; дальнейший Await обычный. Когда verified active installed owner предоставляет native status, новые bootstrap admissions закрыты. Повтор exact команды с тем же request восстанавливает только исходный результат/UNKNOWN через existing reconciliation, даже после Test или установки owner; новые request IDs, обход guard и ручной exported runtime helper для production stores запрещены. Production install/restart/push/publication этим source cutover не выполняются. Focused tests: `node --test --test-concurrency=1 tests/interfaces/cli/initial-native-test-cutover.test.mjs tests/interfaces/cli/task-await-cutover.test.mjs`.
-
-
-Для единственного bootstrap уже проверенного squash-результата эта же команда
-принимает `--squash-bootstrap` и полный набор exact-полей: source Task/revision,
-clean-before/new-result/dev-after tree, ожидаемые source/main/dev/preserved trees,
-пути и SHA-256 ZIP/bundle/manifest/files. Первый запуск без
-`--confirm-cutover` возвращает два hash и ничего не меняет. Подтверждение имеет
-новый `--request` и добавляет `--proof-request`, оба `--expected-*-hash` и
-`--confirm-cutover`. Обычный публичный squash остаётся Test→Test; bootstrap
-принимает Progress survivor с прежним Test result и фиксирует новый Test только
-после полного Git readback. После него отдельно обязателен обычный Test→Await и
-успешная сборка candidate.
-
-При доказанном расхождении принятого локального `main` и опубликованного
-`main` Release Manager может провести отдельный выбранный Test через
-`hub_task_status_update`: `status=testing`, `expected_workflow_status=in_progress`,
-точная ревизия Task, `selected_proof_bundle_path`, SHA-256 bundle и
-`selected_proof_commit`. Первый `request_id` возвращает read-only
-`previewHash`. Подтверждение с новым `request_id` передаёт исходный
-`selected_preview_request_id` и `expected_selected_preview_hash`; оно связывает
-актуальные Task/dev/publication/remote с проверенными родителями, конфликтными
-blob и деревом композиции. Неизвестный исход восстанавливается только через
-`hub_task_operation_reconcile` с исходным operation ID и теми же exact-полями.
-Task-result остаётся отдельным от dev-композиции: кандидат выпуска проверяет
-только выбранную дельту Task на опубликованной базе. Путь ограничен обычными
-файлами и не даёт разрешения на произвольный merge, ручное изменение refs или
-принятие новой удалённой вершины.
-
-Для поглощённого результата Progress используется тот же selected Test.
-Дополнительное `selected_absorption_handoff={requestId,text}` ссылается на
-успешную аутентифицированную квитанцию исполнителя исходной Task: точное JSON
-подтверждение saved/stopped связывает обе карточки, source revision/base/commit/tree
-и ordered parents реального автоматического merge. Полные требования и
-незавершённая нативная связь должны быть сохранены; обе own histories и текущий
-исходник перепроверяются перед эффектом. См. ADR-0105 и REL-001.
-При UNKNOWN передаются те же поля, либо
-`--selected-absorption-handoff <json-file>` в существующий reconcile CLI.
-Настоящий конфликт по-прежнему требует reviewed resolution; установка Hub
-не заменяет эту проверку и не закрывает исходную карточку автоматически.
-
-Для ручной настройки используйте `%LOCALAPPDATA%\AgentHub\config.json`. Путь к другому конфигу можно передать через `AGENT_HUB_CONFIG`, а токен — через `TELEGRAM_BOT_TOKEN`.
-
-После активации workspace-команды `send-message.mjs` и `send-images.mjs` не читают Telegram-токен. Они передают только разрешённую операцию, аргументы и идентификатор вызывающей AI-сессии в локальный IPC живого runtime; уже доверенная release-копия выполняет отправку. Получатель повторно сверяется с allowlist, `cwd`, `--message-file` и изображения обязаны находиться внутри настроенных проектов, а окружение runtime очищается от чужих Codex/Claude session ID. Если sandbox запрещает named pipe, используется token-free файловая очередь в системном temp с теми же серверными проверками. `config.json` получает отдельный Windows ACL без доступа `CodexSandboxUsers`.
 
 ### Отправка сообщения из скрипта
 
@@ -1553,8 +1244,7 @@ On Windows, Agent Hub discovers already installed official Codex binaries from O
     { "value": "gpt-5.6-terra", "label": "GPT-5.6-Terra" },
     { "value": "gpt-5.6-luna", "label": "GPT-5.6-Luna" },
     { "value": "gpt-5.4", "label": "GPT-5.4" },
-    { "value": "gpt-5.4-mini", "label": "GPT-5.4-Mini" },
-    { "value": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark" }
+    { "value": "gpt-5.4-mini", "label": "GPT-5.4-Mini" }
   ]
 }
 ```
@@ -1787,29 +1477,11 @@ Focused rendering check: `node --test --test-name-pattern 'cancelled agent card'
 tests/public/message-view-controller.test.mjs`.
 
 
-### Independent release operator (ADR-HUB-419)
+### Independent packaging and installation (ADR-HUB-463)
 
-Release tooling uses the independent `IIITYRAELIII/AgentHub-ReleaseTools` package.
-Its `agent-hub-release run|continue|get|accept|task-read` commands consume existing
-MCP business JSON and a separate private connection file. `identity` prints the
-independent tool version/content digest; `doctor` checks endpoint method support
-without submitting a workflow. The Hub adapters require the exact
-`AGENT_HUB_RELEASE_TOOLS_ROOT` / `AGENT_HUB_RELEASE_TOOLS_SHA256` pin.
-`publish:changed` and `publish:all` are compatibility launchers into that external
-operator; new calls supply `--connection-file` and `--request-file` (plus
-`--full-tests` for the authorized full pipeline). Retained historical callers
-keep their original arguments and executor for their already admitted runs.
-No old original request or frozen generation is rewritten during migration.
-
-For a coherent source owner, `release:api` exposes Hub's existing public API;
-only that Hub component owns stores, actor/CAS checks and addressed worker joins.
-The external client never imports an internal Hub runtime. New request-addressed
-release recovery requires the Hub adapter from ADR-HUB-419; an older endpoint's
-ordinary operation-ID reads remain compatible. Running a new client alone does
-not upgrade the server or its publication executor.
-
-The application retains its own minimal [self-build interface](docs/building.md).
-The independent tool owns archive packaging and publication orchestration in
-[AgentHub-ReleaseTools](https://github.com/IIITYRAELIII/AgentHub-ReleaseTools).
-Its sources and tests live in that repository, outside the Hub source and runtime
-artifacts. Hub adapters consume an explicitly configured immutable tool version.
+Build/package tools use an explicitly configured immutable external package.
+The existing `AGENT_HUB_RELEASE_TOOLS_ROOT` / `AGENT_HUB_RELEASE_TOOLS_SHA256`
+names identify that package for compatibility; they do not enable release
+orchestration. See [building.md](docs/building.md) and
+[distribution/README.md](distribution/README.md). There is no `hub_release_*`
+API, release worker, generation/freeze or automatic Task finalization.

@@ -7,9 +7,9 @@ const WORKSPACE_MUTATIONS = new Set([
   "archiveWorkspace", "restoreWorkspace", "deleteArchivedWorkspace",
   "updateWorkspaceDeveloperRules", "recordWorkspaceEvent", "beginMcpOperation",
   "bindMcpOperationInterstreamContentHash", "bindTaskOperationExecution", "requestTaskOperationInterruption", "finishTaskOperationInterruption",
-  "completeMcpOperation", "failMcpOperation", "recordClaimAdmissionRefusal", "cancelMcpOperation", "beginMcpOperationReconciliation",
+  "completeMcpOperation", "recoverCompactedCleanupPreview", "failMcpOperation", "recordClaimAdmissionRefusal", "cancelMcpOperation", "beginMcpOperationReconciliation",
   "markMcpOperationUnknown", "completeUnknownMcpOperation", "failUnknownMcpOperation", "recordMcpOperationCompletionFailure",
-  "checkpointMcpPreparation", "settleMcpPreparationFailure", "checkpointClaimCustody", "checkpointMcpPreparationForward",
+  "checkpointClaimCustody",
   "mergeWorkspaces", "createWorkspaceFromStream", "createStream", "renameStream",
   "archiveStream", "updateStreamSettings", "updateStreamDeveloperRules", "moveStream",
   "moveStreamToStart", "reorderStream", "moveStreamOrdered", "bindThread", "rebindThread",
@@ -32,10 +32,10 @@ const TASK_MUTATIONS = new Set([
   "assignWorkspaceTaskNumbers", "moveColumn", "setNotesComment", "prepareStart",
   "admitPreparedStart", "cancelPreparedStart", "fencePreparedStartCancellation",
   "completePreparedStartCancellation", "markStarted", "complete", "setWorkflowStatus", "claim",
-  "requestWorkflowStatus", "beginLifecycleTransition", "recordWorkflowAdmissionRefusal", "failLifecycleTransition", "resumeConfirmedDeleteTransition",
-  "commitWorkflowTransition", "commitSquashTransferTransition", "rollbackWorkflowOutcome", "finalizeCleanupTransition", "recordTaskTurn",
-  "recordTaskGitReference", "adoptLegacyGitReference", "completeRelease", "completeReleaseOperation", "remove", "setCaptureEnabled",
-  "updateChecklist", "applyChecklistLinkedTaskAction", "clearAwaitRebuildPending", "recordReleaseFinalizationStage",
+  "requestWorkflowStatus", "beginLifecycleTransition", "admitInterruptedAwaitPromotion", "recordWorkflowAdmissionRefusal", "recordUnadmittedAwaitRefusal", "failLifecycleTransition", "resumeConfirmedDeleteTransition",
+  "commitWorkflowTransition", "commitSquashTransferTransition", "rollbackWorkflowOutcome", "recordArchivePreview", "finalizeCleanupTransition", "recordTaskTurn",
+  "recordTaskGitReference", "adoptLegacyGitReference", "remove", "setCaptureEnabled",
+  "updateChecklist", "applyChecklistLinkedTaskAction", "clearAwaitRebuildPending",
 ]);
 
 // These owners perform external effects outside SQL retry and queue their own
@@ -50,7 +50,7 @@ const TASK_READS = new Set([
   "committedNativeTestForDev",
   "returnedNativeTestPriorResult",
   "assertSelectedAbsorptionState",
-  "checklistRequestResult", "awaitRebuildPending", "releaseFinalizationOutcome",
+  "checklistRequestResult", "manualDeliveryReleaseReference", "awaitRebuildPending", "releaseFinalizationOutcome",
 ]);
 
 const READ_PROPERTIES = new Set(["revision", "snapshotRevision"]);

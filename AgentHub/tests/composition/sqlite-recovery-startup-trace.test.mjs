@@ -10,6 +10,8 @@ import { CommandTraceService } from "../../src/application/command-trace-service
 import { CommandTraceWorkerStore } from "../../src/infrastructure/persistence/command-trace-worker-store.mjs";
 import { withInterprocessLocks, readInterprocessLockStatus } from "../../src/infrastructure/process/interprocess-lock.mjs";
 
+import { seedSqliteRecoveryIntent } from "../helpers/sqlite-recovery-intent.fixture.mjs";
+
 test("existing startup trace persists copy bytes, worker work and cleanup under one original identity", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "startup-inspection-phases-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -17,6 +19,7 @@ test("existing startup trace persists copy bytes, worker work and cleanup under 
   const db = new DatabaseSync(databaseFile);
   db.exec("CREATE TABLE sample(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO sample VALUES(1,'preserved')");
   db.close();
+  await seedSqliteRecoveryIntent(databaseFile);
   const original = await fs.readFile(databaseFile);
   const logs = [];
   const coordinator = new SharedSqliteRecoveryCoordinator({ databaseFile });
@@ -66,6 +69,51 @@ test("existing startup trace persists copy bytes, worker work and cleanup under 
   assert.deepEqual(await fs.readFile(databaseFile), original);
 });
 
+
+test("catalog SQL timing stays under the existing startup identity and excludes SQL content", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "startup-catalog-trace-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const logs = [];
+  const options = { providePhaseRecorder: true, logger: { info: (_prefix, body) => logs.push(JSON.parse(body)) } };
+  const phase = { phase: "catalog-sqlite-mutation", outcome: "succeeded", durationMs: 20,
+    persistenceMs: 3, queueWaitMs: 1, contentionWaitMs: 17, attempts: 2,
+    sql: "never log SQL", databaseFile: root };
+  const measured = await measureStartupBeforeTrace("workspace-catalog-load", record => {
+    record({ ...phase, phase: "not-a-catalog-phase" });
+    record(phase);
+  }, options);
+  const [start, marker, terminal] = logs;
+  assert.equal(logs.length, 3);
+  assert.equal(start.operationSpanId, terminal.operationSpanId);
+  assert.equal(start.operationSpanId, marker.operationSpanId);
+  const { phase: acceptedPhase, outcome, durationMs, observedAtMs, persistenceMs, queueWaitMs, contentionWaitMs, attempts } = marker;
+  const expected = { phase: acceptedPhase, outcome, durationMs, observedAtMs, persistenceMs, queueWaitMs, contentionWaitMs, attempts };
+  assert.deepEqual({ ...expected, observedAtMs: undefined },
+    { phase: phase.phase, outcome: phase.outcome, durationMs: phase.durationMs, observedAtMs: undefined,
+      persistenceMs: 3, queueWaitMs: 1, contentionWaitMs: 17, attempts: 2 });
+  assert.equal("sql" in marker, false);
+  assert.equal("databaseFile" in marker, false);
+  const store = new CommandTraceWorkerStore({ databaseFile: path.join(root, "traces.sqlite") });
+  try {
+    await store.initialize();
+    measured.record(new CommandTraceService({ store }));
+    const timeline = await store.readCommandTimeline(`startup:${start.operationSpanId}`);
+    assert.deepEqual(timeline.find(s => s.outcome === "succeeded").metadata.phaseMarkers, [expected]);
+  } finally { await store.close(); }
+
+  const failure = new Error("database is locked");
+  const before = logs.length;
+  await assert.rejects(measureStartupBeforeTrace("workspace-catalog-load", record => {
+    record({ ...phase, outcome: "failed" });
+    throw failure;
+  }, options), error => error === failure);
+  const [failedStart, failedPhase, failedTerminal] = logs.slice(before);
+  assert.equal(failedPhase.operationSpanId, failedStart.operationSpanId);
+  assert.equal(failedTerminal.operationSpanId, failedStart.operationSpanId);
+  assert.equal(failedPhase.outcome, "failed");
+  assert.equal(failedTerminal.error, failure.message);
+});
+
 test("copy failure retains its original error and content-free same-startup phase", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "startup-inspection-error-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -73,6 +121,7 @@ test("copy failure retains its original error and content-free same-startup phas
   const db = new DatabaseSync(databaseFile);
   db.exec("CREATE TABLE sample(id INTEGER PRIMARY KEY)");
   db.close();
+  await seedSqliteRecoveryIntent(databaseFile);
   const logs = [];
   const failure = Object.assign(new Error("fixture copy unavailable"), { code: "EIO" });
   const coordinator = new SharedSqliteRecoveryCoordinator({ databaseFile,
@@ -152,7 +201,7 @@ test("existing startup owner distinguishes admission from recovery without chang
   });
   assert.deepEqual(measurement.value, { degraded: false });
   const phases = healthyLogs.filter(x => x.phase);
-  const names = ["database-lock", "recovery-lock-acquire", "marker-read", "intent-read", "database-stat", "recovery-lock-release"];
+  const names = ["database-lock", "recovery-lock-acquire", "marker-read", "intent-read", "recovery-lock-release"];
   assert.deepEqual(phases.map(x => [x.phase, x.outcome]), names.flatMap(p => [[p, "started"], [p, "succeeded"]]));
   assert.equal(new Set(healthyLogs.map(x => x.operationSpanId)).size, 1);
   assert.equal(phases.some(x => x.phase === "database-check"), false);

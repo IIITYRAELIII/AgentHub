@@ -1,7 +1,19 @@
 "use strict";
 
 (() => {
+  const imageLinkExtensions = new Set([
+    "apng", "avif", "bmp", "cur", "dib", "gif", "ico", "jfif", "jpe", "jpeg", "jpg",
+    "png", "svg", "webp",
+  ]);
+  const fileOnlyImageExtensions = new Set(["heic", "heif", "jp2", "j2k", "jxl", "psd", "tga", "tif", "tiff"]);
+  const imageLinkMimeTypes = new Set([
+    "image/*", "image/apng", "image/avif", "image/bmp", "image/gif", "image/jpeg",
+    "image/pjpeg", "image/png", "image/svg+xml", "image/vnd.microsoft.icon", "image/webp",
+    "image/x-icon", "image/x-ms-bmp",
+  ]);
   const knownFileExtensions = new Set([
+    ...imageLinkExtensions,
+    ...fileOnlyImageExtensions,
     "avi", "bsl", "c", "cfe", "cf", "cmd", "cpp", "cs", "csproj", "css", "docx", "epf",
     "erf", "go", "h", "html", "ini", "java", "jpeg", "jpg", "js", "json", "jsx", "m4v",
     "md", "mjs", "mkv", "mov", "mp4", "pdf", "php", "png", "ps1", "py", "rb", "rs", "sh",
@@ -45,7 +57,7 @@
   function fileUriPath(raw) {
     const source = String(raw ?? "").trim();
     if (!/^file:/iu.test(source)) return "";
-    const manual = source.match(/^file:\/\/(?<host>[^/]*)(?<pathname>\/.*)$/iu);
+    const manual = source.match(/^file:\/\/(?<host>[^/?#]*)(?<pathname>\/[^?#]*)(?:[?#].*)?$/iu);
     if (manual?.groups) {
       const host = decodedUrlPart(manual.groups.host ?? "");
       const pathname = decodedUrlPart(manual.groups.pathname ?? "");
@@ -225,6 +237,29 @@
     };
   }
 
+  function imageLinkPreview({ href = "", localPath = "", type = "", attachmentName = "" } = {}) {
+    const ending = (value) => value.match(/\.([^./\\\s:]+)$/u)?.[1]?.toLowerCase() ?? "";
+    if (localPath) {
+      const file = workspaceFilePath(localPath);
+      return imageLinkExtensions.has(ending(file))
+        ? { localPath, name: file.split(/[/\\]/u).at(-1) }
+        : null;
+    }
+    try {
+      const url = new URL(href);
+      if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) return null;
+      const name = decodedUrlPart(url.pathname.split("/").at(-1) ?? "");
+      const extension = ending(name);
+      if (fileOnlyImageExtensions.has(extension) || fileOnlyImageExtensions.has(ending(attachmentName))) return null;
+      const mime = String(type).split(";", 1)[0].trim().toLowerCase();
+      return imageLinkExtensions.has(extension) || imageLinkMimeTypes.has(mime)
+        ? { url: url.href, name }
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   function workspaceFilePath(value) {
     return fileReferenceParts(String(value ?? ""))?.file ?? String(value ?? "").trim();
   }
@@ -296,6 +331,7 @@
     fileReferenceBases,
     galleryIndex,
     imageGallery,
+    imageLinkPreview,
     isImageAttachment,
     linkResource,
     localWorkspaceFilesAvailable,

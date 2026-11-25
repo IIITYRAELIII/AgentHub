@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ownedGitArguments, preparationGitInvocation, withPreparationGitIsolation }
+import { assertPreparationProcessOwned, ownedGitArguments, preparationGitInvocation, withPreparationGitIsolation }
   from "../../../src/infrastructure/filesystem/preparation-git-isolation.mjs";
 
 test("shared Git argument policy is Windows-only, idempotent and leaves external commands unchanged", () => {
@@ -41,6 +41,64 @@ test("inactive, authenticated remote and scrubbed local preparation share policy
   assert.equal(Object.keys(process.env).length === Object.keys(before).length
     && Object.keys(before).every(key => process.env[key] === before[key]), true,
   "argument construction must not change process environment");
+});
+
+test("nested preparation checks a covered lease once and still checks each distinct wrapper", async () => {
+  const calls = [];
+  let valid = true;
+  const inherited = { ownerId: "same", async assertOwned() {
+    calls.push("repository");
+    if (!valid) throw new Error("repository lease lost");
+  } };
+  const composed = { async assertOwned() { await inherited.assertOwned(); calls.push("pool"); } };
+  const other = { ownerId: "same", async assertOwned() { calls.push("other"); } };
+  await withPreparationGitIsolation("fixture", async () => {
+    await withPreparationGitIsolation("fixture", assertPreparationProcessOwned, composed, null, inherited);
+    assert.deepEqual(calls, ["repository", "pool"]);
+    calls.length = 0;
+    await withPreparationGitIsolation("fixture", assertPreparationProcessOwned, other, null, other);
+    assert.deepEqual(calls, ["repository", "other"]);
+    calls.length = 0;
+    valid = false;
+    await assert.rejects(withPreparationGitIsolation("fixture", assertPreparationProcessOwned, composed, null, inherited),
+      /repository lease lost/u);
+    assert.deepEqual(calls, ["repository"]);
+  }, inherited);
+});
+
+test("a preparation fence checks independent leases together and joins both on refusal", async () => {
+  const events = [];
+  let permitOuter;
+  let permitInner;
+  const outerHold = new Promise(resolve => { permitOuter = resolve; });
+  const innerHold = new Promise(resolve => { permitInner = resolve; });
+  const lost = new Error("candidate lease lost");
+  const outer = { async assertOwned() {
+    events.push("outer started");
+    await outerHold;
+    throw lost;
+  } };
+  const inner = { async assertOwned() {
+    events.push("inner started");
+    await innerHold;
+    events.push("inner finished");
+  } };
+  const finished = withPreparationGitIsolation("fixture", () =>
+    withPreparationGitIsolation("fixture", assertPreparationProcessOwned, inner), outer);
+  let settled = false;
+  const refusal = assert.rejects(finished, error => error === lost).then(() => { settled = true; });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(events, ["outer started", "inner started"]);
+    permitOuter();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, false);
+  } finally {
+    permitOuter();
+    permitInner();
+    await refusal;
+  }
+  assert.equal(events.at(-1), "inner finished");
 });
 
 test("owned clone configuration survives server environment clearing without changing other Git verbs", () => {

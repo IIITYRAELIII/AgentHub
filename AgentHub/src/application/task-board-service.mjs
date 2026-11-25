@@ -41,7 +41,7 @@ export class TaskBoardService {
     for (const name of [
       "create", "task", "list", "move", "markStarted", "orderedColumnIds", "moveColumn",
       "notesComment", "setNotesComment", "reassignWorkspace", "claim", "claimedTaskForTurn",
-      "recordTaskTurn", "adoptLegacyGitReference", "releaseTasks", "completeRelease",
+      "recordTaskTurn", "adoptLegacyGitReference", "releaseTasks",
     ]) requiredMethod(store, name);
     if (typeof workspaceCatalog?.hierarchy !== "function") throw new TypeError("workspaceCatalog is required");
     this.store = typeof store.runMutation === "function" ? createTaskBoardMutationOwner(store) : store;
@@ -62,6 +62,13 @@ export class TaskBoardService {
 
   close() {
     return this.store.close?.();
+  }
+
+  get snapshotRevision() {
+    const boardRevision = this.store.snapshotRevision ?? this.store.revision;
+    const workspaceRevision = this.workspaceCatalog.snapshotRevision ?? this.workspaceCatalog.revision;
+    if (boardRevision == null || workspaceRevision == null) return "";
+    return `${String(boardRevision)}:${String(workspaceRevision)}`;
   }
 
   #event(type, task, payload = {}, options = {}) {
@@ -226,6 +233,11 @@ export class TaskBoardService {
     return this.#deliverChecklistEvents();
   }
 
+  manualDeliveryReleaseReference(input) {
+    requiredMethod(this.store, "manualDeliveryReleaseReference");
+    return this.store.manualDeliveryReleaseReference(input);
+  }
+
   async updateChecklist(payload = {}) {
     requiredMethod(this.store, "updateChecklist");
     await this.#checklistEventRecovery;
@@ -378,9 +390,19 @@ export class TaskBoardService {
     return this.store.committedNativeTestForDev(payload);
   }
 
+  admitInterruptedAwaitPromotion(payload) {
+    requiredMethod(this.store, "admitInterruptedAwaitPromotion");
+    return this.store.admitInterruptedAwaitPromotion(payload);
+  }
+
   recordWorkflowAdmissionRefusal(payload) {
     requiredMethod(this.store, "recordWorkflowAdmissionRefusal");
     return this.store.recordWorkflowAdmissionRefusal(payload);
+  }
+
+  recordUnadmittedAwaitRefusal(payload) {
+    requiredMethod(this.store, "recordUnadmittedAwaitRefusal");
+    return this.store.recordUnadmittedAwaitRefusal(payload);
   }
 
   returnedNativeTestPriorResult(taskId) {
@@ -423,6 +445,10 @@ export class TaskBoardService {
   resumeConfirmedDeleteTransition(operationId, payload) {
     requiredMethod(this.store, "resumeConfirmedDeleteTransition");
     return this.store.resumeConfirmedDeleteTransition(operationId, payload);
+  }
+
+  recordArchivePreview(taskId, operationId, result, evidence) {
+    return this.store.recordArchivePreview(taskId, operationId, result, evidence);
   }
 
   finalizeCleanupTransition(operationId, payload = {}) {
@@ -472,22 +498,6 @@ export class TaskBoardService {
   assertSelectedAbsorptionState(payload) {
     requiredMethod(this.store, "assertSelectedAbsorptionState");
     return this.store.assertSelectedAbsorptionState(payload);
-  }
-
-  completeRelease(workspaceId, payload = {}) {
-    return this.store.completeRelease(workspaceId, payload);
-  }
-
-  completeReleaseOperation(workspaceId, payload = {}) {
-    requiredMethod(this.store, "completeReleaseOperation");
-    return this.store.completeReleaseOperation(workspaceId, payload);
-  }
-
-  get snapshotRevision() {
-    const boardRevision = this.store.snapshotRevision ?? this.store.revision;
-    const workspaceRevision = this.workspaceCatalog.snapshotRevision ?? this.workspaceCatalog.revision;
-    if (boardRevision == null || workspaceRevision == null) return "";
-    return `${String(boardRevision)}:${String(workspaceRevision)}`;
   }
 
   prepareStart({ id, workspaceId, streamId, requestId, streamName = null, reassign = false, expectedRevision = null } = {}) {

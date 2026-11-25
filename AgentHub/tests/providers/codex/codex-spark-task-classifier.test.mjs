@@ -50,7 +50,7 @@ test("Spark Task prompt contains only the supplied Workspace catalog", () => {
   assert.match(bundlePrompt, /Ниже пакет сообщений, собранный пользователем в Telegram/u);
 });
 
-test("Spark Task classifier keeps one visible DashBot Thread first in Other", async (t) => {
+test("explicit available-model Task classifier keeps one visible DashBot Thread first in Other", async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "agent-hub-dashbot-"));
   const catalog = new WorkspaceCatalogStore({ databaseFile: path.join(directory, "journal.sqlite") });
   await catalog.load();
@@ -61,11 +61,12 @@ test("Spark Task classifier keeps one visible DashBot Thread first in Other", as
   const other = catalog.ensureExperiments();
   catalog.createStream({ workspaceId: other.id, name: "Existing" });
   const stream = ensureDashBotStream(catalog, {
-    model: "gpt-5.3-codex-spark",
+    model: "gpt-6-sol",
     projectRoot: "D:/Workspace",
   });
   const calls = [];
   const classifier = new CodexSparkTaskClassifier({
+    model: "gpt-6-sol",
     projectRoot: "D:/Workspace",
     workspaceCatalog: catalog,
     streamId: stream.id,

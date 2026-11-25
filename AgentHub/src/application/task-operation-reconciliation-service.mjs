@@ -7,7 +7,7 @@ import { taskProjectRoot } from "../domain/task-project-root.mjs";
 import { normalizedTaskSquashTransfer } from "../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../domain/task-squash-cutover.mjs";
 import { normalizedTaskWorkflowStatus, TaskLifecycleNoEffectError, TaskOperationReconciliationRefusedError,
-  workflowAdmissionNoEffectEvidence } from "../domain/task-board-task.mjs";
+  workflowAdmissionNoEffectEvidence, ordinaryAwaitOriginalArguments } from "../domain/task-board-task.mjs";
 
 import { normalizePublishedResolution } from "../domain/published-resolution.mjs";
 import { selectedAbsorptionHandoff } from "../domain/task-selected-composition.mjs";
@@ -413,6 +413,20 @@ export class TaskOperationReconciliationService {
       stream: task.streamId ? this.workspaceCatalog.stream(task.streamId) : null,
     });
     const malformed = malformedWorkflowArguments(receipt);
+    const unentered = !transition && !outcome && ordinaryAwaitOriginalArguments(receipt);
+    if (unentered && receipt.operationStatus === "pending" && receipt.receiptState === "unknown"
+        && receipt.workspaceId === workspace.id && receipt.taskExecution.taskId === task.id
+        && options.expectedArgumentsHash === receipt.argumentsHash
+        && workflowCas?.expected_task_revision === unentered.expected_task_revision
+        && workflowCas?.expected_workflow_status === "testing"
+        && task.revision === unentered.expected_task_revision && task.workflowStatus === "testing"
+        && root && taskRoot && samePath(root, taskRoot) && !exactGuardId
+        && !squash && !selected && !initial && !cutover && options.nativeResolutionReview == null) {
+      // This is only a candidate for the existing locked owner, never a
+      // certificate from absent rows or an exception string.
+      return { workspace, task, receipt, transition, outcome, operationId, projectRoot: root,
+        state: "unentered_await", targetWorkflowStatus: unentered.status };
+    }
     if (malformed) {
       const stream = this.workspaceCatalog.stream(receipt.streamId);
       if (transition || outcome || receipt.result != null || receipt.preparationState || receipt.claimCustody
@@ -435,8 +449,12 @@ export class TaskOperationReconciliationService {
     }
     if (outcome?.result?.noEffect) {
       const proof = !transition && workflowAdmissionNoEffectEvidence(outcome, receipt);
+      const settled = proof && receipt.operationStatus === "failed" && receipt.receiptState === "failed"
+        && receipt.error === new TaskLifecycleNoEffectError(proof).message
+        && JSON.stringify(canonicalValue(receipt.result?.operatorReconciliation))
+          === JSON.stringify(canonicalValue({ outcome: "NO_EFFECT", durableState: "workflow_admission_refusal", evidence: proof }));
       if (!proof || proof.taskId !== task.id || proof.workspaceId !== workspace.id
-          || receipt.operationStatus !== "pending" || receipt.receiptState !== "unknown"
+          || (!(receipt.operationStatus === "pending" && receipt.receiptState === "unknown") && !settled)
           || (proof.projectRoot !== null && (!root || !samePath(root, proof.projectRoot))) || squash || cutover
           || (workflowCas?.expected_task_revision ?? null) !== proof.expectedRevision
           || (workflowCas?.expected_workflow_status ?? null) !== proof.expectedWorkflowStatus
@@ -444,7 +462,7 @@ export class TaskOperationReconciliationService {
             operationId, taskId: task.id, status: proof.targetWorkflowStatus, identityArguments: workflowCas,
           })) throw new Error("Workflow refusal identity does not match the original operation");
       return { workspace, task, receipt, transition, outcome, operationId, projectRoot: proof.projectRoot,
-        guardId: exactGuardId, state: "no_effect", noEffect: proof };
+        guardId: exactGuardId, state: "no_effect", noEffect: proof, receiptSettled: Boolean(settled) };
     }
     if (!root) throw new Error("Unknown workflow operation identity requires a project root");
 
@@ -660,7 +678,7 @@ export class TaskOperationReconciliationService {
     }
     if (identity.state === "no_effect") {
       const reconciliation = { outcome: "NO_EFFECT", durableState: "workflow_admission_refusal", evidence: identity.noEffect };
-      const receipt = await this.workspaceCatalog.failUnknownMcpOperation(identity.operationId, {
+      const receipt = identity.receiptSettled ? identity.receipt : await this.workspaceCatalog.failUnknownMcpOperation(identity.operationId, {
         workspaceId: identity.workspace.id, toolName: "hub_task_status_update",
         error: new TaskLifecycleNoEffectError(identity.noEffect), reconciliation,
       });
@@ -687,6 +705,9 @@ export class TaskOperationReconciliationService {
         proof: recovery?.proof ?? null,
         resultCommit: identity.outcome.result.evidence.resultCommit,
         taskRevision: identity.task.revision,
+        ...(identity.outcome.result.evidence.nativeAwaitRecovery?.interruptedError ? {
+          originalPreparationError: identity.outcome.result.evidence.nativeAwaitRecovery.interruptedError,
+        } : {}),
       };
       const receipt = identity.receiptSettled ? identity.receipt : await this.workspaceCatalog.completeUnknownMcpOperation(identity.operationId, {
         workspaceId: identity.workspace.id,
@@ -805,6 +826,14 @@ export class TaskOperationReconciliationService {
       let effectsStarted = false;
       try {
       let identity = this.#identity(options);
+      if (identity.state === "unentered_await") {
+        requiredMethod(this.taskLifecycle, "refuseUnadmittedAwaitOwned");
+        await this.taskLifecycle.refuseUnadmittedAwaitOwned({ taskId: identity.task.id, receipt: identity.receipt,
+          projectRoot: identity.projectRoot, lease, beforeRecord: () => { effectsStarted = true; } });
+        identity = this.#identity(options);
+        if (identity.state !== "no_effect") throw new Error("Unadmitted Await durable refusal is not confirmed");
+        return this.#settle(identity);
+      }
       if (identity.state === "invalid_input") {
         return await this.#settleMalformed(identity, options, lease, () => { effectsStarted = true; });
       }
@@ -826,13 +855,23 @@ export class TaskOperationReconciliationService {
             allowMetadataRecovery: identity.metadataRecovery });
         if (!native) throw new Error("Pending workflow reconciliation requires the exact process-tree guard id or original native Git intent");
       }
-      const proof = needsRecovery && identity.guardId ? {
+      const proof = needsRecovery && identity.guardId && supplied(options.proofKind) ? {
         kind: requiredText(options.proofKind, "proof kind", 100),
         confirmed: options.confirmed === true,
         summary: requiredText(options.proofSummary, "proof summary", 1_000),
       } : null;
       const settle = async (terminal, recovery = null) => {
         effectsStarted = true;
+        const interruptedAwait = terminal.outcome?.result?.evidence?.nativeAwaitRecovery;
+        if (terminal.state === "succeeded" && !terminal.receiptSettled && interruptedAwait?.preparedPromotion) {
+          try {
+            requiredMethod(this.taskLifecycle, "finalizeInterruptedAwait");
+            await this.taskLifecycle.finalizeInterruptedAwait({ taskId: terminal.task.id,
+              operationId: terminal.operationId, projectRoot: terminal.projectRoot, lease });
+          } catch (error) {
+            return { resolved: false, outcome: "unknown", error: String(error?.message ?? error) };
+          }
+        }
         if (terminal.state === "succeeded" && terminal.withdrawal) {
           try {
             const finalized = await this.taskLifecycle.reconcileUnknownWorkflowStatusOwned({
@@ -899,6 +938,7 @@ export class TaskOperationReconciliationService {
     } catch (error) {
       if (!lockEntered && initial.state === "invalid_input") this.#validationTrace(initial.operationId,
         "task-workflow-invalid-lock-wait", lockStarted, "failed");
+      if (!lockEntered) throw new TaskOperationReconciliationRefusedError(error);
       throw error;
     }
   }

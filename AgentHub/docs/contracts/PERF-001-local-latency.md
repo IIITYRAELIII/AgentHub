@@ -1,5 +1,25 @@
 # PERF-001 — Local command latency
 
+Deferred Codex admission reads the existing rollout activity evidence on a
+bounded path independent of history backfill and trace pages. A missing source
+can be rediscovered through the normal Thread read. An absent .jsonl can use
+its exact .jsonl.zst companion after worker-side streaming validation of the
+archive and Thread identity. Fresh provider activity and native ownership of
+both paths govern dispatch. A proven missing or invalid source pauses the
+saved command with a specific reason until explicit resume. Transient unknown
+evidence or a read deadline holds the original command. The exact message ledger reserves
+dispatch before the provider call. Snapshot persistence remains available for
+unowned legacy input. For exact deferred Codex commands the same ledger also
+checkpoints the admitted run and the provider request on the reserved command.
+Restart overlays only the matching active checkpoint and retains newer run
+state already present in the full snapshot. A rollback withdraws its exact
+checkpoint before the completion snapshot if no provider request was recorded.
+Confirmed provider and terminal
+processing continue through their existing owners. Original-command timing
+separates rollout lookup, worker queue/read, provider
+fallback and exact ledger preparation, SQLite transaction and commit. Timing
+carries only fixed phases, outcomes and scalar measurements.
+
 Journal title writes distinguish row preparation, BEGIN acquisition and the
 actual SQL transaction from local queue wait and contention retries. Existing
 usage-worker spans retain fixed numeric first/last transaction UTC intervals,
@@ -27,18 +47,21 @@ Original-command worker traces retain numeric read/batch/revision measurements,
 including completed phases on callback failure. Synthetic work counts and local
 timings are not production speedup or a changed readiness/ACK contract.
 
-The startup shell can listen after instance ownership while SQLite integrity is
+The startup shell can listen after instance ownership while data preparation is
 pending, using the existing MiniAppServer and browser health polling. The same
 server's later activation keeps its address and auth. Time to listener, first
 HTTP response and actual startup-screen display are distinct from completed
-integrity, business availability and Ready; none substitutes for another.
+data preparation, business availability and Ready; none substitutes for another.
 
-Startup SQLite inspection keeps its full detached DB/WAL integrity check while
-executing synchronous inspection outside the caller event loop. Existing
+Ordinary startup does not copy DB/WAL or run an integrity inspection. Existing
+storage owners open the data and propagate real opening errors; an ordinary
+failure does not quarantine or replace the database. Only an already persisted
+recovery marker/intent continues the existing recovery protocol (ADR-HUB-439).
+That special path retains its detached DB/WAL check outside the caller event loop. Existing
 original-startup phases distinguish DB/WAL copy bytes, query round trip, worker
 open/check/close and cleanup. These bounded numeric phases contain no paths or
-content; logging failure cannot alter recovery. Full required work still gates
-readiness, and event-loop isolation alone does not prove earlier web availability.
+content; logging failure cannot alter recovery. Actual store opening and any
+saved recovery still gate readiness; tiny fixture timing is not production SLO evidence.
 
 ## SQLite capture deadline coverage
 
@@ -167,6 +190,15 @@ Append copies only the groups it mutates. Serialized rollout-cache budgets are
 32 MiB ordinary and 16 MiB active; these are not total process-heap limits.
 Desktop paged history clones only each selected cached turn.
 
+The same rollout cache retains native phase/item data for at most eight latest
+assistant items, retaining paired raw and projected text under the existing
+200,000-character live-preview bound per representation. Those bytes participate
+in its serialized cache budget. Full terminal
+content and explicit trace-source reads retain their existing boundaries.
+Each retained item also carries one record position and append-generation token
+from that cache. A rewrite or cache reconstruction starts a new token. These
+small scalar fields participate in the same budget and require no extra read.
+
 Explicit “All stages” reads use the existing history owner and rollout worker,
 without provider calls, history writes or automatic polling. They stream a fixed
 source prefix in 64 KiB chunks and retain at most 4 MiB for a raw record or its
@@ -198,6 +230,14 @@ its revision. Revision and facts are read in one SQLite snapshot; external
 writes invalidate the next read, rollbacks do not, and restart reconstructs it.
 Oversized projections use uncached reads. Pricing, attribution, projection CAS,
 terminal/outbox durability and full scalar aggregation retain their owners.
+
+## Windows guarded Git timing (HUB-524)
+
+Guarded Windows Git timing includes starting the native Job owner and sealing
+retirement. The diagnostic retirement checkpoint records the process identity,
+exit code and reason, with no arguments or repository content. Cancellation
+recovery events use the original operation ID. A Git ref read cannot stand in
+for the Job retirement checkpoint. See ADR-HUB-524.
 
 ## Trace contract
 
@@ -393,8 +433,12 @@ labelled lock wait. Only fixed phase/outcome and elapsed/UTC scalars are retaine
 without database paths, owner tokens or SQL content. Successful phase observations
 flush through the same trace worker; failure before that worker remains in the
 ordinary startup log. Diagnostic failure cannot change recovery or admission.
-Missing terminal phases and a passing private restart do not establish a
-historical holder or resolve the original stalled startup.
+Workspace catalog startup reports the existing asynchronous SQLite mutation
+queue's attempt count, queue wait, contention wait and SQL attempt duration
+under the same workspace-catalog-load startup identity. Contention retries
+only catalog SQLite work. Catalog schema changes commit atomically; an exhausted
+or unrelated SQLite failure remains a startup failure. Missing terminal phases
+and a passing private restart do not establish a historical lock holder.
 
 
 Retention is at most seven days and 250,000 spans. The existing worker prunes at
@@ -445,18 +489,9 @@ the Task Git snapshot and `dev` integration outside provider admission and
 terminal-delivery latency. Await prepares PreRelease before committing acceptance
 under the existing Workspace Await and Task ownership boundaries. A failed
 preparation leaves the Task in Test (ADR-0055). It does not run release tests,
-builds or deployment. Active release generations never delay later Task work or
-Await acceptance.
+builds or deployment. There is no release worker/generation workload (ADR-HUB-463).
 
-`hub_release_run` measures and persists only bounded admission before returning
-its ACK. Candidate composition, validation, Git/network publication, deployment
-and finalization run after the response under the durable operation owner. Short
-SQLite and identity CAS sections do not enclose tests, child processes, network
-requests or repository publication. Queue/lease time, stage duration, retries,
-waiting reason and per-target effect are separate measurements; transport timeout
-is not operation latency and cannot create a second operation.
-
-Release validation admits independent files against a target of 40% of total
+The standalone test runner admits independent files against a target of 40% of total
 machine CPU capacity and 40% of physical RAM for the whole test process tree,
 including Git, browsers and helpers. Other applications reduce available
 headroom. Admission retains one-core and estimated resident-memory demand until
@@ -731,6 +766,12 @@ Thread. Recovery commits only the addressed turn positions and their history
 search documents through the existing asynchronous SQLite mutation owner.
 Already repaired pages remain read-only; stale cached or delayed history cannot
 replace the durable `terminal-ledger` authority.
+The persisted user-recovery version includes attachment recovery. Version-1
+pages receive one bounded upgrade through the same owner. Version-2 pages do
+not repeat terminal payload reads or enter the mutation lane solely for recovery.
+This attachment upgrade does not invalidate the completed global Journal
+terminal-history backfill. Recent startup recovery and old-page repair retain
+their own bounded recovery version instead of rewriting unopened Threads.
 
 Runtime durability saves coalesce pending requests before snapshot capture while
 preserving each caller's persistence fence. After the durable command ledger has
@@ -749,6 +790,69 @@ another opening and newer revisions; closing releases the full history. See
 ADR-HUB-350-card-history-projection.
 
 Periodic Test Contour journal comparison and full Mini App journal publication
+use their existing ingestion/publication owners. Test Contour ingestion shares
+the existing usage worker and journal mutation lane; it adds no worker, timer,
+store or independent writer. Each read inspects at most 128 indexed metadata
+rows ordered by `(changed_revision, provider, thread_id, turn_id)`, hydrates at
+most 8 MiB of exact-row JSON and probes only eligible exact target identities.
+The original model/status/provisional/valid-JSON eligibility is classified by
+an exact primary-key SQLite lookup before the payload policy. Excluded rows
+advance the metadata cursor without JSON hydration or target lookup even when
+their payload exceeds 8 MiB; they cannot starve following eligible rows.
+SQLite may inspect that one addressed JSON to classify it, on the usage worker,
+not the Hub event loop; the policy bounds hydrated bytes, not arbitrary source
+JSON parsing cost. No complete-journal JSON predicate scan is introduced.
+The payload size check precedes JS materialization; an individual eligible
+record over 8 MiB fails visibly without advancing the checkpoint.
+It is neither truncated nor silently dropped. The owning data must be repaired
+or the explicit import policy revised before that page can continue.
+
+The durable checkpoint is one bounded (4 KiB) value in existing
+`journal_store_meta`, promoted with expected-value CAS only after successful
+canonical batch import and projection. A retry after imported rows but failed
+projection compares those exact target rows with the existing projection
+revision and repairs through the ordinary projection owner before ACK. Lost
+ACK is idempotent. No SQL transaction spans import, projection or worker RPC.
+Read/ACK worker spans and the import span retain the original cycle identity
+across retries and contain only counts, bytes, queue and elapsed measurements.
+
+A window is `(acknowledgedRevision, snapshotUpperRevision]`, with a tuple cursor
+inside it; initial paging includes revision zero. Completion timestamps are
+eligibility/clone-boundary data, never cursor authority. Late timestamps,
+updates that become eligible, and rows moving beyond a page's fixed upper bound
+are observed in the next window. Existing target identities remain authoritative
+and are not overwritten by a richer source. Unchanged cycles read only metadata
+and perform zero record/target-row hydration and no checkpoint mutation.
+Source file identity, clone timestamp, target file identity/reset revision,
+model policy and observed revision rollback fence checkpoint reuse. Canonical
+target ledger replacement/deletion invalidates the checkpoint in the same
+transaction. Reclone/replacement restarts bounded paging, not a full payload
+scan. An active worker observing target-file replacement fails explicitly and requires
+the ordinary worker reopen; it cannot acknowledge via a stale open SQLite handle.
+The canonical source must have its existing `changed_revision` migration
+and index; a legacy schema fails explicitly, with no permanent full-scan fallback.
+Unversioned direct SQL edits are not a supported source mutation protocol.
+The 3-second initial and 10-second idle-after-completion cadence and both-PID
+guard remain; backlog pages yield via the same timer after at most one second.
+Stopping prevents subsequent import/ACK dispatch; an already authorized import
+cannot be recalled, and an unacknowledged page is recovered idempotently.
+
+Owning validation: `node --test tests/infrastructure/persistence/test-contour-journal-source.test.mjs
+tests/application/test-contour-journal-sync-service.test.mjs
+tests/runtime/test-contour-journal-import.test.mjs
+tests/runtime/work-log-usage-sync-worker.test.mjs` (one command).
+The isolated scale helper is `node --expose-gc
+tests/perf/test-contour-journal-import.bench.mjs <exact-base-reader.mjs>`;
+`AGENT_HUB_TEST_TEMP_ROOT` selects disposable storage. It generates only synthetic
+100/20,000-row journals, measures original reader versus existing worker, asserts
+empty-import parity, reports materialized rows/bytes, elapsed request and timer
+gap, main heap and process RSS deltas, and removes its fixtures in `finally`.
+RSS/heap deltas are not peak allocation or physical disk usage. Cold worker
+startup, host timer floor and queue wait must not be attributed to SQL execution.
+It accepts a reader module, not paths to live databases, and supplies no evidence
+of the installed runtime's historical freezes or UI delivery latency.
+
+Periodic comparison and full Mini App journal publication
 must not scan, materialize, stringify or compress the journal on the Hub event
 loop. Test Contour comparison runs in an isolated worker. Production journal
 publication reads one SQLite snapshot and performs JSON encoding plus gzip in an
@@ -1081,3 +1185,15 @@ script work, heap/long tasks and separately qualified test-process CPU/I/O count
 Fixture delays and renderer counters have their own attribution. Natural loaded
 runtime observations and source/fixture AFTER are distinct acceptance evidence.
 The existing bounded recorder owns these measurements. See ADR-HUB-427.
+
+The direct HTTP history route uses the original navigation trace ID for the
+local page, terminal repair, attachment hydration, projection, response
+budget, versioning, JSON encode, optional compression and response-write
+phases. The browser measures request-to-headers, body transfer and JSON
+parsing separately when its resource timing includes the matching HTTP
+request. Node response finish describes handoff to the OS, and a gzip callback
+interval can include native-worker queue and event-loop scheduling. Neither
+is exclusive network time. A cold two-turn page of up to 128 KiB can use
+identity encoding when accepted, allowing the complete latest exchange to
+paint independently of the shared gzip pool. Wider reads and all trace-page
+requests retain ordinary compression. See ADR-HUB-517.

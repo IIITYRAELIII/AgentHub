@@ -1,4 +1,4 @@
-// Compaction snapshots and user input are not agent trace items. Validate their
+// Compaction snapshots, user input and tool results are not agent trace items. Validate their
 // complete JSON structure without materializing large input/history strings.
 // No projected record may supply trace content, lifecycle state or identity.
 export class IgnoredTraceRecord {
@@ -20,7 +20,18 @@ export class IgnoredTraceRecord {
   }
 
   push(chunk) {
-    for (const byte of chunk) {
+    let text;
+    const stringSyntax = /["\\\x00-\x1f]/g;
+    for (let offset = 0; offset < chunk.length; offset += 1) {
+      if (this.#stringStart !== null && this.#elided && !this.#escape && !this.#unicode) {
+        // Only ordinary bytes of an already elided value can be skipped.
+        text ??= chunk.toString("latin1");
+        stringSyntax.lastIndex = offset;
+        const syntax = stringSyntax.exec(text);
+        if (!syntax) break;
+        offset = syntax.index;
+      }
+      const byte = chunk[offset];
       if (this.#stringStart !== null) {
         let closes = false;
         if (this.#unicode) {
@@ -71,7 +82,9 @@ export class IgnoredTraceRecord {
     try { entry = JSON.parse(this.#output.subarray(0, this.#length).toString("utf8")); }
     catch { throw new Error("Trace source contains an invalid record"); }
     const ignored = entry?.type === "compacted"
-      || entry?.type === "response_item" && entry.payload?.type === "message" && entry.payload.role === "user";
+      || entry?.type === "response_item" && (entry.payload?.type === "message" && entry.payload.role === "user"
+        || ["custom_tool_call_output", "customToolCallOutput", "function_call_output", "functionCallOutput"]
+          .includes(entry.payload?.type));
     if (!ignored) throw new Error("Trace record exceeds read budget");
   }
 }

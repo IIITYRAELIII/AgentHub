@@ -21,7 +21,7 @@ import {
   readyTestContourHealth,
   startTestContour,
   TEST_CONTOUR_FAKE_MODEL,
-  TEST_CONTOUR_SPARK_MODEL,
+  TEST_CONTOUR_LUNA_MODEL,
   testContourSmokeAgentPolicy,
   testContourSmokeJournalMatches,
   testContourPaths,
@@ -121,7 +121,7 @@ async function writeRunningContour(root, server, {
   releaseId = "release-old",
   headCommit = "head-old",
   operationId = null,
-  model = TEST_CONTOUR_SPARK_MODEL,
+  model = TEST_CONTOUR_LUNA_MODEL,
   runtimeNonce = `nonce-${releaseId}`,
   operationSourceRoot = root,
 } = {}) {
@@ -289,7 +289,7 @@ test("refresh keeps the old browser runtime readable throughout candidate prepar
       entryFile: "unused-test-entry.mjs",
       refresh: true,
       port: server.address().port,
-      model: TEST_CONTOUR_SPARK_MODEL,
+      model: TEST_CONTOUR_LUNA_MODEL,
       prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "head-new" }),
       prepareCandidate: async () => {
         preparationStarted();
@@ -313,7 +313,7 @@ test("refresh keeps the old browser runtime readable throughout candidate prepar
           releaseId: candidate.releaseId,
           operationId: operation.operationId,
           source: { branch: candidate.branch, headCommit: candidate.headCommit },
-          model: TEST_CONTOUR_SPARK_MODEL,
+          model: TEST_CONTOUR_LUNA_MODEL,
           port,
           url: `http://localhost:${port}/`,
           health: { ok: true, live: true, ready: true },
@@ -359,7 +359,7 @@ test("same-source refresh coalesces only for the exact ready target identity", a
       entryFile: "unused-test-entry.mjs",
       refresh: true,
       port: server.address().port,
-      model: TEST_CONTOUR_SPARK_MODEL,
+      model: TEST_CONTOUR_LUNA_MODEL,
       prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "head-same" }),
       prepareCandidate: async () => { prepared = true; },
       stopRuntime: async () => { stopped = true; },
@@ -392,7 +392,7 @@ test("same source on a different custom port prepares and cuts over the requeste
       entryFile: "unused-test-entry.mjs",
       refresh: true,
       port: requestedPort,
-      model: TEST_CONTOUR_SPARK_MODEL,
+      model: TEST_CONTOUR_LUNA_MODEL,
       prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "head-same" }),
       prepareCandidate: async () => {
         prepared = true;
@@ -421,7 +421,7 @@ test("same source on a different custom port prepares and cuts over the requeste
           releaseId: candidate.releaseId,
           operationId: operation.operationId,
           source: { branch: "dev", headCommit: "head-same" },
-          model: TEST_CONTOUR_SPARK_MODEL,
+          model: TEST_CONTOUR_LUNA_MODEL,
           port: requestedPort,
           url: `http://127.0.0.1:${requestedPort}/`,
         };
@@ -455,7 +455,7 @@ test("release preflight fresh-candidate semantics bypass exact-target coalescing
       refresh: true,
       forceFreshCandidate: true,
       port: server.address().port,
-      model: TEST_CONTOUR_SPARK_MODEL,
+      model: TEST_CONTOUR_LUNA_MODEL,
       prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "head-same" }),
       prepareCandidate: async () => {
         prepared = true;
@@ -483,7 +483,7 @@ test("ready runtime is finalized after refresh owner crash without a duplicate r
       root,
       contourId: "test-contour-refresh",
       port: server.address().port,
-      model: TEST_CONTOUR_SPARK_MODEL,
+      model: TEST_CONTOUR_LUNA_MODEL,
     },
     ownerPid: 2_147_483_000,
     isProcessAlive: () => false,
@@ -514,7 +514,7 @@ test("ready runtime is finalized after refresh owner crash without a duplicate r
       entryFile: "unused-test-entry.mjs",
       refresh: true,
       port: server.address().port,
-      model: TEST_CONTOUR_SPARK_MODEL,
+      model: TEST_CONTOUR_LUNA_MODEL,
       prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "head-recovered" }),
       prepareCandidate: async () => { prepared = true; },
       stopRuntime: async () => { stopped = true; },
@@ -546,7 +546,7 @@ test("readiness rejects a healthy server from another contour identity", async (
     releaseId: "shared-release",
     operationId: "shared-operation",
     port,
-    model: TEST_CONTOUR_SPARK_MODEL,
+    model: TEST_CONTOUR_LUNA_MODEL,
     runtimeNonce: "shared-runtime-nonce",
   };
   try {
@@ -563,7 +563,7 @@ test("readiness rejects a healthy server from another contour identity", async (
         releaseId: "isolated-release",
         operationId: "isolated-operation",
         port,
-        model: TEST_CONTOUR_SPARK_MODEL,
+        model: TEST_CONTOUR_LUNA_MODEL,
         runtimeNonce: "isolated-runtime-nonce",
         runtimePid: process.pid,
       },
@@ -645,7 +645,7 @@ test("foreign healthy process cannot satisfy readiness with a forged root-local 
     contourId: "candidate-contour",
     releaseId: "candidate-release",
     operationId: "candidate-operation",
-    model: TEST_CONTOUR_SPARK_MODEL,
+    model: TEST_CONTOUR_LUNA_MODEL,
     runtimeNonce: "candidate-runtime-nonce",
   };
   const owned = spawnHealth(ownedIdentity);
@@ -653,7 +653,7 @@ test("foreign healthy process cannot satisfy readiness with a forged root-local 
     contourId: "foreign-contour",
     releaseId: "foreign-release",
     operationId: "foreign-operation",
-    model: TEST_CONTOUR_SPARK_MODEL,
+    model: TEST_CONTOUR_LUNA_MODEL,
     runtimeNonce: "foreign-runtime-nonce",
   });
   try {
@@ -703,12 +703,12 @@ test("verify preserves the requested root and custom port through refresh and sm
       sourceRoot,
       port,
       withAgent: false,
-      model: TEST_CONTOUR_SPARK_MODEL,
+      model: TEST_CONTOUR_LUNA_MODEL,
       startContour: async (options) => {
         calls.push({ kind: "start", options });
         return {
           url: `http://127.0.0.1:${port}/`,
-          model: TEST_CONTOUR_SPARK_MODEL,
+          model: TEST_CONTOUR_LUNA_MODEL,
           startedAt: new Date().toISOString(),
         };
       },
@@ -848,7 +848,7 @@ test("verify reports the recording agent probe as skipped and leaves its journal
       withAgent: true,
       startContour: async () => ({
         url: "http://127.0.0.1:18879/",
-        model: TEST_CONTOUR_SPARK_MODEL,
+        model: TEST_CONTOUR_LUNA_MODEL,
         startedAt: new Date().toISOString(),
       }),
       readRecordingConfiguration: async () => ({ root: path.join(root, "recording") }),
@@ -883,7 +883,7 @@ test("verify forwards explicit release-candidate source without changing the def
         start = options;
         return {
           url: "http://127.0.0.1:18880/",
-          model: TEST_CONTOUR_SPARK_MODEL,
+          model: TEST_CONTOUR_LUNA_MODEL,
           startedAt: new Date().toISOString(),
         };
       },
@@ -927,7 +927,7 @@ test("ordinary start replaces a persisted release candidate with the exact curre
         contourId: "contour-main-to-dev",
         operationId: "operation-main",
         port,
-        model: TEST_CONTOUR_SPARK_MODEL,
+        model: TEST_CONTOUR_LUNA_MODEL,
         releaseId: "release-main",
       }), "utf8"),
       writeFile(path.join(releaseRoot, "agent-hub-main.mjs"), "export {};\n", "utf8"),
@@ -937,7 +937,7 @@ test("ordinary start replaces a persisted release candidate with the exact curre
       root,
       sourceRoot,
       port,
-      model: TEST_CONTOUR_SPARK_MODEL,
+      model: TEST_CONTOUR_LUNA_MODEL,
       prepareSource: async () => ({ sourceRoot, branch: "dev", headCommit: "dev-head-current" }),
       prepareCandidate: async ({ source }) => {
         preparedSource = source;
@@ -960,7 +960,7 @@ test("ordinary start replaces a persisted release candidate with the exact curre
           operationId: operation.operationId,
           source: { branch: candidate.branch, headCommit: candidate.headCommit },
           contourId: "contour-main-to-dev",
-          model: TEST_CONTOUR_SPARK_MODEL,
+          model: TEST_CONTOUR_LUNA_MODEL,
           port,
           url: `http://127.0.0.1:${port}/`,
         };
@@ -978,7 +978,7 @@ test("ordinary start replaces a persisted release candidate with the exact curre
       sourceRoot: canonicalPath(sourceRoot),
       contourId: "contour-main-to-dev",
       port,
-      model: TEST_CONTOUR_SPARK_MODEL,
+      model: TEST_CONTOUR_LUNA_MODEL,
       preparedAt: result.operation.createdAt,
       activatedAt: result.source.activatedAt,
       operationId: result.operation.operationId,
@@ -1021,7 +1021,7 @@ test("restart reuses only the persisted release identity on its original port", 
         contourId: "contour-restart",
         operationId,
         port,
-        model: TEST_CONTOUR_SPARK_MODEL,
+        model: TEST_CONTOUR_LUNA_MODEL,
         releaseId,
       }), "utf8"),
       writeFile(path.join(releaseRoot, "agent-hub-main.mjs"), "export {};\n", "utf8"),
@@ -1030,7 +1030,7 @@ test("restart reuses only the persisted release identity on its original port", 
       root,
       sourceRoot,
       port,
-      model: TEST_CONTOUR_SPARK_MODEL,
+      model: TEST_CONTOUR_LUNA_MODEL,
       prepareSource: async () => {
         resolved += 1;
         return { sourceRoot, branch: "dev", headCommit: "head-restart" };

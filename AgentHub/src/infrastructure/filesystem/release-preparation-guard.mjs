@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { ReleasePreparationRejectedError } from "../../domain/release-preparation.mjs";
+import { TaskPreparationRejectedError } from "../../domain/task-preparation-error.mjs";
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const refuse = (message) => { throw new ReleasePreparationRejectedError(message); };
+const refuse = (message) => { throw new TaskPreparationRejectedError(message); };
 
 // Read-only checks run inside the existing candidate owner, before its effects
 // and before commit-tree/update-ref. This helper never writes Git or checkpoints.

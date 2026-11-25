@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+
 import test from "node:test";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
-import { taskReleasePlan, taskReleasePlanRevision } from "../../../src/domain/task-release-snapshot.mjs";
+import { taskReleasePlan } from "../../../src/domain/task-release-snapshot.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-release-identity-"));
@@ -79,35 +79,4 @@ test("open Done audit changes never change the Await candidate identity", async 
   assert.equal(f.plan().revision, before.revision);
   f.complete(before);
   assert.equal(f.store.task(audit.id).status, "open");
-});
-
-test("legacy row identity is seeded once and exact old publication can finish", async (t) => {
-  const f = await fixture(t);
-  f.store.updatePresentation(f.task.id, { title: "Before upgrade", description: "Legacy title edit" });
-  const audit = f.store.create({ text: "Done audit", bucket: "workspace", workspaceId: "workspace" });
-  f.store.setWorkflowStatus(audit.id, "done");
-  const oldTask = f.store.task(f.task.id);
-  const oldPlanRevision = taskReleasePlanRevision("workspace", f.store.releaseTasks("workspace"), { legacy: true });
-  f.store.close();
-  const db = new DatabaseSync(f.databaseFile);
-  db.exec("DROP TRIGGER hub_board_tasks_release_revision_update; ALTER TABLE hub_board_tasks DROP COLUMN release_revision;");
-  db.close();
-  const migrated = new TaskBoardStore({ databaseFile: f.databaseFile });
-  t.after(() => migrated.close());
-  assert.equal(migrated.task(f.task.id).releaseRevision, oldTask.revision);
-  const rows = migrated.releaseTasks("workspace").map((value) => ({ ...value,
-    changedFiles: [{ projectRoot: f.root, path: "app.mjs", operation: "modified" }] }));
-  const plan = taskReleasePlan("workspace", rows);
-  assert.equal(plan.legacyRevision, oldPlanRevision);
-  const legacyPlan = { ...plan, revision: oldPlanRevision };
-  migrated.completeRelease("workspace", { expectedPlanRevision: oldPlanRevision, plan: legacyPlan,
-    verificationEvidence: { publishedRevision: "b".repeat(40) },
-    awaitRebuild: { planRevision: oldPlanRevision, fallbackProjectRoots: [f.root] } });
-  assert.equal(migrated.task(f.task.id).workflowStatus, "done");
-  const releaseRevision = migrated.task(f.task.id).releaseRevision;
-  migrated.updatePresentation(f.task.id, { title: "After upgrade" });
-  migrated.close();
-  const reopened = new TaskBoardStore({ databaseFile: f.databaseFile });
-  try { assert.equal(reopened.task(f.task.id).releaseRevision, releaseRevision); }
-  finally { reopened.close(); }
 });

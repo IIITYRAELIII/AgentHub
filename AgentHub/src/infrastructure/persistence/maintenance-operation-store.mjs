@@ -13,7 +13,7 @@ import {
 } from "../../domain/maintenance-operation.mjs";
 import { openRuntimeDatabase, runtimeDatabasePath } from "./runtime-state-store.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
-import { packageBindingDigest } from "../filesystem/runtime-package-target.mjs";
+import { packageBindingDigest } from "../../domain/runtime-package-identity.mjs";
 
 const LEGACY_RESTART_MIGRATION_KEY = "maintenance-operations:legacy-restart:v1";
 
@@ -80,8 +80,12 @@ export class MaintenanceOperationStore {
     this.now = now;
   }
 
-  runRestartMutation(operation, options = {}) {
+  runMaintenanceMutation(operation, options = {}) {
     return this.#restartMutations.run(operation, options);
+  }
+
+  runRestartMutation(operation, options = {}) {
+    return this.runMaintenanceMutation(operation, options);
   }
 
   #withDatabase(callback) {
@@ -151,11 +155,25 @@ export class MaintenanceOperationStore {
     try {
       const rows = database.prepare(`SELECT operation_id, operation_json FROM maintenance_operations
         WHERE kind='restart' AND operation_id > ? AND CASE WHEN json_valid(operation_json)
-          THEN json_type(operation_json, '$.metadata.packageBackup') IS NOT NULL ELSE 1 END
+          THEN (json_type(operation_json, '$.metadata.packageBackup') IS NOT NULL
+            OR json_type(operation_json, '$.metadata.autonomousInstaller') IS NOT NULL) ELSE 1 END
         ORDER BY operation_id LIMIT ?`).all(after, count + 1);
       const page = rows.slice(0, count);
       return { items: page.map(row => operationFromRow(row) ?? { operationId: row.operation_id, invalid: true }),
         cursor: page.at(-1)?.operation_id ?? after, done: rows.length <= count };
+    } finally { database.close(); }
+  }
+
+  listInstallerStorageEvidenceReadonly({ after = "", limit = 32 } = {}) {
+    const count = Math.min(32, Math.max(1, Math.trunc(limit) || 32));
+    const database = new DatabaseSync(runtimeDatabasePath(this.dataDir), { readOnly: true });
+    try {
+      const rows = database.prepare(`SELECT operation_id, operation_json FROM maintenance_operations
+        WHERE kind='storage-retention' AND stream_id='agent-hub-runtime'
+          AND CASE WHEN json_valid(operation_json) THEN json_type(operation_json, '$.metadata.installerStorageEvidence') IS NOT NULL ELSE 0 END
+          AND operation_id > ? ORDER BY operation_id LIMIT ?`).all(after, count + 1);
+      const page = rows.slice(0, count);
+      return { items: page.map(operationFromRow).filter(Boolean), cursor: page.at(-1)?.operation_id ?? after, done: rows.length <= count };
     } finally { database.close(); }
   }
 
@@ -181,9 +199,14 @@ export class MaintenanceOperationStore {
     `).get(String(kind ?? ""), String(streamId ?? ""), String(threadId ?? ""))));
   }
 
-  activeForReadonly({ kind, streamId, threadId } = {}) {
+  activeForReadonly({ kind, streamId, threadId, allowMissingTable = false } = {}) {
     const database = new DatabaseSync(runtimeDatabasePath(this.dataDir), { readOnly: true });
     try {
+      if (allowMissingTable) {
+        const schema = database.prepare("SELECT type FROM sqlite_schema WHERE name = 'maintenance_operations'").get();
+        if (!schema) return null;
+        if (schema.type !== "table") throw new Error("Invalid maintenance operation schema type");
+      }
       return operationFromRow(database.prepare(`
         SELECT operation_json FROM maintenance_operations
         WHERE kind = ? AND stream_id = ? AND thread_id = ?

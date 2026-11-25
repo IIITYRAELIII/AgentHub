@@ -4,6 +4,18 @@ import { fileURLToPath } from "node:url";
 import { trustedWindowsPowerShellPath } from "../process/system-boot-identity.mjs";
 
 const source = fileURLToPath(new URL("./windows-delete-verified-entry.cs", import.meta.url));
+export function queryInstallerWorkerRetired(worker) {
+  if (process.platform !== "win32" || !Number.isSafeInteger(worker?.pid) || worker.pid <= 0 || !/^\d+$/u.test(worker.created ?? ""))
+    return Promise.reject(Error("Installer worker native identity is required"));
+  const script = "$ErrorActionPreference='Stop'; Add-Type -Path $env:AGENT_HUB_VERIFIED_DELETE_SOURCE; "
+    + "[AgentHubVerifiedEntryDeletion]::ProcessRetired([int]$env:AGENT_HUB_WORKER_PID,$env:AGENT_HUB_WORKER_BIRTH)";
+  return new Promise((resolve, reject) => execFile(trustedWindowsPowerShellPath(process.env),
+    ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+      env: { ...process.env, AGENT_HUB_VERIFIED_DELETE_SOURCE: source, AGENT_HUB_WORKER_PID: String(worker.pid), AGENT_HUB_WORKER_BIRTH: worker.created },
+      windowsHide: true, timeout: 20000, maxBuffer: 4096, encoding: "utf8",
+    }, (error, stdout) => error ? reject(error) : /^(True|False)\s*$/u.test(stdout)
+      ? resolve(stdout.trim() === "True") : reject(Error("Installer worker native reply unavailable"))));
+}
 const script = [
   "$ErrorActionPreference='Stop'",
   "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)",

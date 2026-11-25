@@ -30,6 +30,7 @@ export class HubRuntimeStateCoordinator {
         value: await this.restoreSnapshot(this.canonicalize(loaded.value)),
       };
     } catch (error) {
+      if (error?.code === "ERR_LOCAL_EXECUTION_RETIREMENT") throw error;
       if (error?.code === "ENOENT") return { failed: false, value: null };
       this.log.error("Cannot read state:", error.message);
       return { failed: true, value: null, error };
@@ -273,7 +274,7 @@ export async function restoreHubRuntimeSnapshot(saved, context) {
       ? [saved.activeRun]
       : [];
   for (const savedRun of savedRuns) {
-    const run = restoreTaskRun(savedRun, chatId);
+    const run = await restoreTaskRun(savedRun, chatId);
     if (run) {
       if (taskRuns.addRestored) taskRuns.addRestored(run, savedRun);
       else taskRuns.add(run);

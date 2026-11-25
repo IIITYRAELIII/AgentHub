@@ -17,10 +17,11 @@ import { clearInheritedPublicationOwnership } from "./src/infrastructure/process
 import { testResourceAdmission } from "./src/infrastructure/process/test-resource-admission.mjs";
 import { prepareTaskWorktreeDependencies } from "./src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 import { runTaskGitCommand } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
-import { readPublicationTestSelection } from "./src/infrastructure/filesystem/publication-test-selection.mjs";
+import { withoutGithubAccountEnvironment } from "./src/infrastructure/filesystem/github-git-profile.mjs";
 
 const ROOT = import.meta.dirname;
 const RUNNER_INPUTS = [
+  "src/infrastructure/filesystem/github-git-profile.mjs",
   "src/infrastructure/persistence/test-file-checkpoint.mjs",
   "src/infrastructure/process/test-resource-admission.mjs",
   "src/infrastructure/process/test-resource-monitor.mjs",
@@ -28,7 +29,6 @@ const RUNNER_INPUTS = [
   "src/domain/test-selection.mjs",
   "src/domain/test-suite-groups.mjs",
   "src/infrastructure/filesystem/release-test-inventory.mjs",
-  "src/infrastructure/filesystem/publication-test-selection.mjs",
 ].map((file) => path.join(ROOT, file));
 const TEST_RUNNER_FILE = fileURLToPath(import.meta.url);
 // WIP не содержит поставляемого кода. Без этого исключения случайный
@@ -56,7 +56,7 @@ export async function discoverTestFiles(directory = ROOT) {
 
 function run(command, args, { cwd = ROOT, env, onChild } = {}) {
   return new Promise((resolve, reject) => {
-    const childEnvironment = { ...process.env, ...(env ?? {}) };
+    const childEnvironment = withoutGithubAccountEnvironment({ ...process.env, ...(env ?? {}) });
     clearInheritedPublicationOwnership(childEnvironment);
     const identity = { requestedAt: new Date().toISOString() };
     const observe = () => { try { onChild?.({ ...identity }); } catch { /* Diagnostic only. */ } };
@@ -90,7 +90,7 @@ export async function testFingerprint(file, { cwd = ROOT, root = cwd, declaratio
 export function isolatedTestEnvironment(environment, childRoot, platform = process.platform) {
   // Windows environment keys are case-insensitive. Use the same effective map
   // for execution and input proof, including caller profile overrides.
-  const result = Object.fromEntries(Object.entries(environment).map(([key, value]) =>
+  const result = Object.fromEntries(Object.entries(withoutGithubAccountEnvironment(environment)).map(([key, value]) =>
     [platform === "win32" ? key.toUpperCase() : key, value]));
   clearInheritedPublicationOwnership(result);
   for (const key of ["LOCALAPPDATA", "APPDATA", "HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "TEMP", "TMP", "TMPDIR"]) {
@@ -104,9 +104,10 @@ export async function runWindowsTestFile(file, {
   isolation = true,
   execute = run,
   env,
+  onProgress,
 } = {}) {
   const args = ["--test", "--test-concurrency=1", ...(isolation ? ["--test-isolation=none"] : []), file];
-  return runIsolatedTestCommand(process.execPath, args, { cwd, execute, env });
+  return runIsolatedTestCommand(process.execPath, args, { cwd, execute, env, onProgress });
 }
 
 function annotateTestFailure(failure, facts) {
@@ -122,7 +123,10 @@ function annotateTestFailure(failure, facts) {
   }
 }
 
-export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execute = run, env } = {}) {
+export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execute = run, env, onProgress = () => {} } = {}) {
+  const progress = (phase, details) => {
+    try { onProgress(phase, details)?.catch?.(() => {}); } catch { /* Diagnostic only. */ }
+  };
   // A failed assertion and an OS failure share exit code 1. Neither proves a
   // transient failure; retries require a new explicit run and reuse successes.
   // Keep the disposable owner short: deep Git refs in Windows fixtures still
@@ -143,6 +147,7 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
             if (["string", "number"].includes(typeof value)) facts[key] = typeof value === "string" ? value.slice(0, 128) : value;
           }
           childIdentity = facts;
+          progress(facts.closedAt ? "child-closed" : facts.exitedAt ? "child-exited" : "child-starting", facts);
         } catch { /* Optional child observations cannot change execution. */ }
       },
       // USERPROFILE remains the real OS identity (including Edge KnownFolder).
@@ -152,6 +157,7 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
     executionFailed = true;
     executionError = error;
   }
+  progress("cleanup", childIdentity);
   try {
     // Retry only removal of this owned root after native Windows handles retire.
     // Never replay the test; a persistent lock still preserves both failures.
@@ -165,6 +171,7 @@ export async function runIsolatedTestCommand(command, args, { cwd = ROOT, execut
       testPhase: "cleanup", testRoot: childRoot, testExecutionSucceeded: !executionFailed,
     });
   }
+  progress("cleanup-finished", childIdentity);
   if (!executionFailed && !cleanupError) return;
   const failure = executionFailed && cleanupError
     ? new AggregateError([executionError, cleanupError],
@@ -254,16 +261,17 @@ export async function runTestSuite(mode, {
   prepareDependencies = prepareTestDependencies,
   report = (value) => console.log(`Test resource admission: ${JSON.stringify(value)}`),
   onFile = (value) => console.log(`Test file timing: ${JSON.stringify(value)}`),
+  onProgress = (value) => console.log(`Test file progress: ${JSON.stringify(value)}`),
   selection = null,
 } = {}) {
-  if (selection != null) return runSelectedTests(selection, { checkpointIdentity, checkpoint, execute, createAdmission, prepareDependencies, report, onFile, testConcurrency });
+  if (selection != null) return runSelectedTests(selection, { checkpointIdentity, checkpoint, execute, createAdmission, prepareDependencies, report, onFile, onProgress, testConcurrency });
   const admission = await createAdmission();
   let operationError = null;
   try {
   if (mode === "all") {
     try {
       await runCheckpointedTestFiles(["locked-dependencies"], {
-        suite: "dependencies", admission, onFile,
+        suite: "dependencies", admission, onFile, onProgress,
         fingerprint: async () => null, run: prepareDependencies,
       });
     } catch (error) {
@@ -314,7 +322,7 @@ export async function runTestSuite(mode, {
         await runCheckpointedTestFiles(["syntax-check.mjs"], {
           suite: "syntax", identity: checkpointIdentity, checkpoint,
           fingerprint: async () => null, admission,
-          onFile,
+          onFile, onProgress,
           run: () => execute(process.execPath, ["--no-warnings", "--experimental-vm-modules", "syntax-check.mjs"]),
         });
       } catch (error) { failures.push(error); }
@@ -331,12 +339,12 @@ export async function runTestSuite(mode, {
         },
         concurrency: testConcurrency,
         admission,
-        onFile,
+        onFile, onProgress,
         execution: (key) => testExecutionPolicy(manifest.files[key]),
-        run: (key) => {
+        run: (key, progress) => {
           const entry = entries.get(key);
-          return entry.suite === "installer" ? runIsolatedTestCommand(python, ["-m", "unittest", "install_test.py"], { execute })
-            : runWindowsTestFile(entry.file, { ...entry, execute });
+          return entry.suite === "installer" ? runIsolatedTestCommand(python, ["-m", "unittest", "install_test.py"], { execute, onProgress: progress })
+            : runWindowsTestFile(entry.file, { ...entry, execute, onProgress: progress });
         },
       });
     } catch (error) { failures.push(error); }
@@ -357,6 +365,7 @@ export async function runTestSuite(mode, {
 export async function runSelectedTests(selection, {
   checkpointIdentity = "", checkpoint = null, execute = run, createAdmission = testResourceAdmission,
   prepareDependencies = prepareTestDependencies, report = console.log, onFile = console.log,
+  onProgress = (value) => console.log(`Test file progress: ${JSON.stringify(value)}`),
   testConcurrency = Infinity, inventory = null,
 } = {}) {
   const available = inventory ?? await discoverReleaseTestInventory(ROOT);
@@ -376,17 +385,17 @@ export async function runSelectedTests(selection, {
     await runCheckpointedTestFiles([...entries.keys()], {
       suite: "selected", suiteForFile: id => entries.get(id).suite,
       identity: checkpointIdentity ? `${checkpointIdentity}:selection:${plan.identitySha256}` : "", checkpoint,
-      concurrency: testConcurrency, admission, onFile,
+      concurrency: testConcurrency, admission, onFile, onProgress,
       execution: id => testExecutionPolicy(manifest.files[id]),
       fingerprint: id => {
         const entry = entries.get(id);
         return !checkpointIdentity || ["syntax", "installer"].includes(entry.suite) ? null : declaredFingerprint(entry.file, entry.cwd, manifest, entry.env);
       },
-      run: id => {
+      run: (id, progress) => {
         const entry = entries.get(id);
         if (entry.suite === "syntax") return execute(process.execPath, ["--no-warnings", "--experimental-vm-modules", "syntax-check.mjs"]);
-        if (entry.suite === "installer") return runIsolatedTestCommand(python, ["-m", "unittest", "install_test.py"], { execute });
-        return runWindowsTestFile(entry.file, { ...entry, execute });
+        if (entry.suite === "installer") return runIsolatedTestCommand(python, ["-m", "unittest", "install_test.py"], { execute, onProgress: progress });
+        return runWindowsTestFile(entry.file, { ...entry, execute, onProgress: progress });
       },
     });
     return { plan, status: "completed" };
@@ -430,11 +439,11 @@ if (invokedFile === fileURLToPath(import.meta.url)) {
   else if (mode === "--list-tests") console.log(JSON.stringify(await discoverReleaseTestInventory(ROOT), null, 2));
   else {
     const args = process.argv.slice(3);
-    const fileSelection = args.some(arg => arg.startsWith("--selection-file=") || arg.startsWith("--selection-sha256="));
-    if (fileSelection && mode !== "selected") throw new Error("Selected-test file requires selected mode");
+    if (args.some(arg => arg.startsWith("--selection-file=") || arg.startsWith("--selection-sha256="))) {
+      throw new Error("Publication selection files are no longer supported; use --selection=");
+    }
     const selectionArgument = process.argv.slice(2).find(arg => arg.startsWith("--selection="));
-    const selection = fileSelection ? await readPublicationTestSelection(args, { sourceRoot: ROOT })
-      : selectionArgument ? JSON.parse(selectionArgument.slice(12)) : null;
+    const selection = selectionArgument ? JSON.parse(selectionArgument.slice(12)) : null;
     await runTestSuite(selection ? "selected" : mode, { selection });
   }
 }

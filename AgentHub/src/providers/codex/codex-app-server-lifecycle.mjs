@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { githubAgentEnvironment, githubCodexEnvironmentArguments } from "../../infrastructure/filesystem/github-git-profile.mjs";
 
 import { AGENT_HUB_VERSION } from "../../infrastructure/filesystem/agent-hub-package.mjs";
 import { CodexAppServerTransport } from "./codex-app-server-transport.mjs";
@@ -52,8 +53,10 @@ export class CodexAppServerLifecycle {
     this.#startupTimings.verificationMs = Math.round(performance.now() - phaseStartedAt);
     phaseStartedAt = performance.now();
     d.logger.error(`Starting Codex: ${command}`);
-    const child = (d.spawnProcess ?? spawn)(command, [...d.executableArgs, ...mcp.args, ...args], {
+    const environment = githubAgentEnvironment();
+    const child = (d.spawnProcess ?? spawn)(command, [...d.executableArgs, ...githubCodexEnvironmentArguments(environment), ...mcp.args, ...args], {
       cwd: d.projectRoot(),
+      env: environment,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -247,7 +250,7 @@ export class CodexAppServerLifecycle {
         d.onInitializationPending?.();
         await this.transport.stop();
         await this.#start();
-        await this.#initialize({ attachSelectedThread: d.providerSelected(),
+        await this.#initialize({ attachSelectedThread: false,
           request: (method, params, options) => this.transport.request(method, params, options) });
         return true;
       } catch (error) {
@@ -255,13 +258,7 @@ export class CodexAppServerLifecycle {
         throw error;
       } finally { this.#restarting = false; }
     }).finally(() => { this.#updateFlight = null; });
-    // Existing recovery may issue reads through the ordinary port. Run it only
-    // for lost transport, after removing the RPC fence; exact run lanes remain
-    // occupied and no old user command is resubmitted.
-    this.#updateCompletion = this.#updateFlight.then(async applied => {
-      if (applied && lostTransport) await d.recoverRuns();
-      return applied;
-    }).finally(() => { this.#updateCompletion = null; });
+    this.#updateCompletion = this.#updateFlight.finally(() => { this.#updateCompletion = null; });
     return this.#updateCompletion;
   }
 
@@ -272,8 +269,7 @@ export class CodexAppServerLifecycle {
     this.#restarting = true;
     try {
       await this.start();
-      await this.initialize({ attachSelectedThread: d.providerSelected() });
-      await d.recoverRuns();
+      await this.initialize({ attachSelectedThread: false });
       if (d.activeRuns().some((run) => run.displayRequested === true)) d.startTyping();
       for (const run of runs) d.setStage(run, "Соединение с Codex восстановлено.");
     } catch (error) {

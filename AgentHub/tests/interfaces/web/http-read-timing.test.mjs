@@ -72,3 +72,80 @@ test("compression timing preserves async fallback and exactly one terminal recor
   assert.equal(spans.filter(x => x.stage === "http-json-compress" && x.outcome === "failed").length, 1);
   assert.doesNotMatch(JSON.stringify(spans), /private compressor error/u);
 });
+
+test("small cold history can write while the gzip worker is occupied", () => {
+  const pending = [];
+  const json = createJsonResponder({ compress: (body, done) => pending.push({ body, done }) });
+  const target = () => ({
+    headers: {},
+    getHeader(key) { return this.headers[key]; },
+    writeHead(status, headers) { this.statusCode = status; this.headers = headers; },
+    end(body) { this.body = body; this.writableEnded = true; },
+    destroy() {},
+  });
+  const body = { text: "x".repeat(32 * 1_024) };
+  const background = target();
+  const cold = target();
+  const acceptsGzip = { acceptEncoding: "gzip" };
+  json(background, 200, body, "POST", acceptsGzip);
+  json(cold, 200, body, "POST", { ...acceptsGzip, coldHistory: true });
+  assert.deepEqual(JSON.parse(cold.body), body);
+  assert.equal(cold.headers["Content-Encoding"], undefined);
+  assert.equal(background.body, undefined);
+  assert.equal(pending.length, 1);
+  const gzipOnly = { coldHistory: true, acceptEncoding: "gzip, identity;q=0" };
+  const short = { text: "short answer" };
+  const shortHeld = target();
+  json(shortHeld, 200, short, "POST", gzipOnly);
+  assert.equal(shortHeld.body, undefined);
+  assert.equal(pending.length, 2);
+  const overCapacity = target();
+  json(overCapacity, 200, short, "POST", gzipOnly);
+  assert.equal(overCapacity.statusCode, 503);
+  assert.equal(overCapacity.body.length, 0);
+  assert.equal(pending.length, 2);
+  pending.pop().done(new Error("controlled required gzip failure"));
+  assert.equal(shortHeld.statusCode, 503);
+  assert.equal(shortHeld.body.length, 0);
+  pending.shift().done(new Error("controlled compression failure"));
+
+  const needsGzip = target();
+  json(needsGzip, 200, body, "POST", { coldHistory: true, acceptEncoding: "gzip, identity;q=0" });
+  assert.equal(needsGzip.body, undefined);
+  assert.equal(pending.length, 1);
+  pending.shift().done(null, Buffer.from("gzip fixture"));
+  assert.equal(needsGzip.headers["Content-Encoding"], "gzip");
+
+  const large = target();
+  json(large, 200, { text: "x".repeat(160 * 1_024) }, "POST", { ...acceptsGzip, coldHistory: true });
+  assert.equal(large.body, undefined);
+  assert.equal(pending.length, 1);
+  pending.shift().done(null, Buffer.from("gzip fixture"));
+  assert.equal(large.headers["Content-Encoding"], "gzip");
+});
+
+test("authenticated short cold history honors required gzip and refuses unacceptable encodings", async () => {
+  const secret = "cold-history".repeat(5);
+  const result = { items: [{ id: "short-turn", answer: "short final".repeat(170) }], nextBefore: null };
+  const server = new MiniAppServer({ host: "127.0.0.1", port: 0, localAccessSecret: secret,
+    journalDatabase: { subscribe: () => () => {} }, controlHandler: async () => result });
+  try {
+    const address = await server.start();
+    const request = acceptEncoding => fetch(address.url + "api/control", {
+      method: "POST",
+      headers: { Authorization: `webview ${createLocalWebviewSession(secret).token}`,
+        "Content-Type": "application/json", "Accept-Encoding": acceptEncoding },
+      body: JSON.stringify({ action: "task-history", params: { limit: 2, coldHistory: true } }),
+    });
+    for (const [encoding, expected] of [["gzip, identity;q=0", "gzip"], ["gzip", null]]) {
+      const response = await request(encoding);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-encoding"), expected);
+      assert.match(response.headers.get("vary"), /(^|,\s*)Accept-Encoding(,|$)/i);
+      assert.deepEqual((await response.json()).result, result);
+    }
+    const refused = await request("gzip;q=0, identity;q=0");
+    assert.equal(refused.status, 406);
+    assert.equal(await refused.text(), "");
+  } finally { await server.close(); }
+});

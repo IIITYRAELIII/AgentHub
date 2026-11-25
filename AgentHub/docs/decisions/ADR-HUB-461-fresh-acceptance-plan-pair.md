@@ -6,7 +6,8 @@ The existing preflight independently resolved current and prospective Await plan
 at every validation boundary. In one measured twenty-result admission twelve
 serial full scans occupied 365.8 seconds of a 546.4-second server workflow.
 
-The existing planner now supplies an internal acceptance pair. Each boundary
+The existing TaskCompositionPlanService supplies an internal acceptance pair
+for TaskIntegrationService. Each boundary
 resolves live evidence for the union once and computes both original plans with
 the same domain function. Evidence is never reused by another boundary, retry,
 request or process. Public plan arguments and result shapes remain unchanged.

@@ -2,18 +2,28 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import path from "node:path";
+import { assertInterprocessLeasesOwned } from "../process/interprocess-lock.mjs";
 
 import gitInvocationPolicy from "./git-invocation-policy.json" with { type: "json" };
+import { githubProfileFile } from "./github-git-profile.mjs";
 
 // Arguments only: existing callers retain process, environment and custody ownership.
 // Native Git subcommands inherit command-scoped config, including index-pack.
 export function ownedGitArguments(args, { platform = process.platform, executable = "git" } = {}) {
-  if (platform !== "win32" || !/(?:^|[\\/])git(?:\.exe)?$/iu.test(executable)) return args;
+  if (!/(?:^|[\\/])git(?:\.exe)?$/iu.test(executable)) return args;
   const prefix = gitInvocationPolicy.win32;
   let command = 0;
   while (args[command]?.startsWith("-")) {
     command += ["-c", "-C", "--config-env", "--git-dir", "--work-tree", "--namespace", "--super-prefix"].includes(args[command]) ? 2 : 1;
   }
+  const profile = githubProfileFile(process.env);
+  // Last command-level include overrides the historical internal synthetic
+  // user defaults, without touching any user's global/repository Git config.
+  if (profile) {
+    args = [...args.slice(0, command), "-c", `include.path=${profile}`, ...args.slice(command)];
+    command += 2;
+  }
+  if (platform !== "win32") return args;
   // Git clears client command configuration when starting another repository's
   // upload-pack. Configure our newly created clone before its first fetch, so
   // its later owned server can read packs too; never copy source configuration.
@@ -42,11 +52,14 @@ export async function assertPlainIsolationPath(value) {
 export const preparationGitIsolationActive = () => Boolean(contexts.getStore());
 export const assertPreparationProcessOwned = async () => contexts.getStore()?.lease?.assertOwned();
 export const preparationObjectStore = () => contexts.getStore()?.objects ?? null;
-export function withPreparationGitIsolation(dataDir, operation, lease = null, objects = null) {
+export function withPreparationGitIsolation(dataDir, operation, lease = null, objects = null, coveredLease = null) {
   const parent = contexts.getStore();
-  const owner = lease && parent?.lease ? { ...lease, assertOwned: async () => {
-    await parent.lease.assertOwned(); await lease.assertOwned();
-  } } : lease ?? parent?.lease ?? null;
+  const inherited = parent?.lease ?? null;
+  // A composed lease may already check this exact inherited lease. Distinct
+  // wrappers still run their own checks, even when their owner IDs match.
+  const owner = lease && inherited && inherited !== lease && inherited !== coveredLease
+    ? { ...lease, assertOwned: () => assertInterprocessLeasesOwned(inherited, lease) }
+    : lease ?? inherited;
   return contexts.run({ dataDir, lease: owner, objects: objects ?? parent?.objects ?? null, gitTail: Promise.resolve() }, operation);
 }
 export function guardedPreparationGit(operation) {

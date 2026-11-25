@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { zstdCompressSync } from "node:zlib";
+import { ProviderTaskActivityService } from "../../src/application/provider-task-activity-service.mjs";
+import { readCodexAdmissionActivity } from "../../src/providers/codex/codex-rollout-activity.mjs";
+import { resolveCodexTaskActivity } from "../../src/providers/codex/codex-runtime-owner.mjs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +22,106 @@ import { mcpArgumentsHash } from "../../src/domain/mcp-arguments-hash.mjs";
 
 const noop = async () => {};
 const gate = () => { let release; const promise = new Promise((r) => { release = r; }); return { promise, release }; };
+
+test("browser send intent crosses Desktop intake and resolves the current Stream once", { timeout: 60_000 }, async (t) => {
+  const { launchBrowser, openFixture, snapshot } = await import("../public/composer-production.fixture.mjs");
+  const browser = await launchBrowser();
+  try {
+    for (const scenario of ["new", "idle", "rotated", "known-reject", "unknown", "explicit-queue"]) {
+      await t.test(scenario, async (t) => {
+        const f = await fixture(t);
+        Object.assign(f.target, { streamId: "stream-a", threadId: "thread-a" });
+        f.state.threadId = "thread-a";
+        const oldRun = f.active();
+        const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+        try {
+          const initial = snapshot();
+          initial.tasks[0].running = true;
+          const errors = await openFixture(page, { fixtureSnapshot: initial });
+          const requests = [];
+          let item, attempts = 0;
+          await page.exposeFunction("currentStreamSend", async (params) => {
+            requests.push(params);
+            if (["new", "idle", "rotated"].includes(scenario)) f.taskRuns.remove(oldRun);
+            if (scenario === "rotated") f.state.threadId = "thread-B";
+            if (["new", "rotated"].includes(scenario)) f.active("B");
+            if (["known-reject", "unknown"].includes(scenario)) f.state.provider = async () => {
+              attempts++;
+              if (scenario === "known-reject") f.taskRuns.remove(oldRun);
+              throw Object.assign(new Error(scenario === "unknown" ? "reply lost" : "Active turn not steerable"), {
+                deliveryOutcome: scenario === "unknown" ? "unknown" : "rejected",
+              });
+            };
+            const result = await f.desktop.sendMessage(params);
+            item = f.deferred.get(result.id);
+            await f.process(item);
+            if (scenario === "known-reject") {
+              f.state.provider = null; f.active("B"); await f.process(item);
+            }
+            return result;
+          });
+          await page.evaluate(() => {
+            const bridge = window.__agentHubVscode;
+            const post = bridge.postMessage.bind(bridge);
+            window.__currentStreamDelivery = { replies: 0, errors: [] };
+            bridge.postMessage = (message) => {
+              if (message.action !== "send-message") return post(message);
+              window.currentStreamSend(message.params).then((result) => {
+                window.dispatchEvent(new MessageEvent("message", { data: {
+                  type: "agenthub:control-result", id: message.id, ok: true, result,
+                } }));
+                window.__currentStreamDelivery.replies++;
+              }, (error) => {
+                window.__currentStreamDelivery.errors.push(error.message);
+                window.dispatchEvent(new MessageEvent("message", { data: {
+                  type: "agenthub:control-result", id: message.id, ok: false, error: error.message,
+                } }));
+              });
+            };
+          });
+          await page.locator("[data-composer-input]").fill("Current Stream command");
+          if (scenario === "explicit-queue") await page.locator("[data-composer-send]").click();
+          else await page.locator("[data-composer-input]").press("Meta+Enter");
+          await page.waitForFunction(() => window.__currentStreamDelivery.replies === 1
+            || window.__currentStreamDelivery.errors.length > 0);
+          assert.deepEqual(await page.evaluate(() => window.__currentStreamDelivery.errors), []);
+          assert.equal(requests.length, 1);
+          const params = requests[0], id = params.clientUserMessageId;
+          assert.equal(params.streamId, "stream-a");
+          assert.equal(params.followUpMode, scenario === "explicit-queue" ? "queue" : "steer");
+          assert.equal(params.expectedTurnId, undefined);
+          assert.equal(params.steerTargetTurnId, undefined);
+          assert.equal(await page.locator("[data-composer-input]").inputValue(), "");
+          if (scenario === "unknown") {
+            assert.equal(attempts, 1); assert.equal(f.command(id).state, "dispatching");
+            f.taskRuns.remove(oldRun); f.state.threadId = "thread-B"; f.active("B");
+            await f.reopen(); item = f.deferred.get(item.id);
+            await f.process(item); assert.equal(attempts, 1); assert.equal(f.effects.length, 0);
+            f.state.readback = { id: "turn-A" }; await f.process(item);
+            assert.equal(f.deferred.size, 0); assert.equal(attempts, 1);
+            assert.equal(f.receipts.get({ clientUserMessageId: id }).result.turnId, "turn-A");
+          } else {
+            if (scenario === "explicit-queue") {
+              assert.equal(f.effects.length, 0);
+              f.taskRuns.remove(oldRun); await f.process(item);
+            }
+            assert.equal(f.effects.length, 1);
+            const effect = f.effects[0];
+            assert.equal(effect.id, id);
+            assert.equal(effect.operation, ["idle", "explicit-queue"].includes(scenario) ? "start" : "steer");
+            assert.equal(effect.target.threadId, f.state.threadId);
+            if (effect.operation === "steer") assert.equal(effect.target.steerTargetTurnId, "turn-B");
+            if (scenario === "known-reject") assert.equal(attempts, 1);
+          }
+          const before = f.effects.length;
+          await f.desktop.sendMessage(params);
+          assert.equal(f.effects.length, before, "same accepted browser identity cannot create another effect");
+          assert.deepEqual(errors, []);
+        } finally { await page.close(); }
+      });
+    }
+  } finally { await browser.close(); }
+});
 
 async function fixture(t, { desktopWiring = false } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "hub-stream-routing-"));
@@ -59,7 +163,9 @@ async function fixture(t, { desktopWiring = false } = {}) {
     }
     throw new Error(`Unexpected fixture operation ${action}`);
   } };
-  const coordinatorPorts = { taskRuns, providers, externalActivity: async () => state.external ?? ({ state: "inactive" }),
+  const coordinatorPorts = { taskRuns, providers, externalActivity: async (target, options) => state.activityService
+    ? state.activityService.readCodex(target, options)
+    : state.external ?? ({ state: "inactive" }),
     repositoryConflict: async () => null, deferInput: (...args) => intake.defer(...args),
     isMaintenanceActive: () => state.barrier || state.providerCompaction,
     isManagedMaintenanceActive: () => state.barrier,
@@ -114,7 +220,7 @@ async function fixture(t, { desktopWiring = false } = {}) {
     return c;
   };
   controller = compose();
-  const desktop = createDesktopMessageController({ resolveTarget: async () => target, attachmentPaths: async (files) => files,
+  const desktop = createDesktopMessageController({ resolveTarget: async () => target, attachmentPaths: async (files = []) => files,
     describeAttachments, receipts, persistReceipts: save, runCoordinator: coordinator, durableIntake: true });
   const active = (name = "A", threadId = state.threadId) => taskRuns.add({ ...target, threadId,
     id: name, turnId: `turn-${name}`, status: "running", executionOwner: "hub" });
@@ -548,4 +654,81 @@ for (const originalMode of ["steer", "queue"]) test(`legacy idle ${originalMode}
     assert.equal(trace.metadata.blocked, true); assert.equal(trace.metadata.queueAgeMs >= 900_000, true);
     assert.equal(trace.metadata.waitReason, "managed-run-activity-unknown");
   }
+});
+
+
+test("archived Codex admission preserves exact durable command, attachments and source failure", async (t) => {
+  const f = await fixture(t);
+  const archiveBase = path.join(f.directory, "archived.jsonl");
+  const archive = archiveBase + ".zst";
+  const attachment = path.join(f.directory, "fixture.png");
+  await writeFile(attachment, Buffer.from([1, 3, 5]));
+  const source = Buffer.from(JSON.stringify({ type: "session_meta", payload: { id: f.target.threadId } }) + "\n");
+  await writeFile(archive, zstdCompressSync(source));
+  let status = "active", onThreadRead = noop;
+  f.state.activityService = new ProviderTaskActivityService({
+    knownCodexRolloutPath: () => archiveBase,
+    codexRunning: () => true,
+    codexPid: () => null,
+    readCodexThread: async (id) => {
+      await onThreadRead();
+      return { thread: { id, status: { type: status }, path: archiveBase } };
+    },
+    readRolloutActivity: async () => ({ running: false }),
+    readAdmissionRolloutActivity: readCodexAdmissionActivity,
+    selectActiveTurnId: () => null,
+    capturedCodexExecutionOwner: () => null,
+    resolveActivity: (value, options) => resolveCodexTaskActivity(value, {
+      ...options, platform: "win32", probe: async () => ({ rootProcessIds: [] }),
+    }),
+  });
+  const first = await f.submit({ clientId: "archived-original", followUpMode: "queue", attachments: [attachment] });
+  await f.process(first.item);
+  assert.equal(first.item.waitReason, "provider-thread-active");
+  assert.equal(f.effects.length, 0);
+  assert.equal(first.item.attempts ?? 0, 0);
+  await f.reopen();
+  status = "notLoaded";
+  const restored = f.deferred.get(first.item.id);
+  const entered = gate(), held = gate();
+  onThreadRead = async () => { entered.release(); await held.promise; };
+  const recovering = f.process(restored);
+  try {
+    await entered.promise;
+    const other = await fixture(t);
+    const plain = path.join(other.directory, "plain.jsonl");
+    await writeFile(plain, source);
+    other.state.activityService = new ProviderTaskActivityService({
+      ...f.state.activityService,
+      knownCodexRolloutPath: () => plain,
+      readCodexThread: () => assert.fail("independent plain Thread does not await archive discovery"),
+    });
+    const independent = await other.submit({ clientId: "independent-original", followUpMode: "queue" });
+    await other.process(independent.item);
+    assert.deepEqual(other.effects.map((effect) => effect.id), ["independent-original"]);
+    assert.equal(f.effects.length, 0);
+  } finally {
+    held.release();
+    await recovering;
+    onThreadRead = noop;
+  }
+  await f.process(restored);
+  assert.equal(f.effects.length, 1);
+  assert.equal(f.effects[0].id, first.id);
+  assert.deepEqual(f.effects[0].input, first.item.input);
+  assert.deepEqual(f.receipts.get({ clientUserMessageId: first.id }).result.attachments.map((a) => a.id), ["fixture.png"]);
+  assert.ok(f.traces.some((span) => span.commandId === first.id && span.stage === "deferred-rollout-read"
+    && span.metadata?.sourceKind === "compressed"));
+
+  for (const run of f.taskRuns.values()) f.taskRuns.remove(run);
+  await writeFile(archive, Buffer.from("corrupt"));
+  const second = await f.submit({ clientId: "corrupt-original", followUpMode: "queue", attachments: [attachment] });
+  await f.process(second.item);
+  await f.reopen();
+  const paused = f.deferred.get(second.item.id);
+  assert.equal(paused.paused, true);
+  assert.equal(paused.lastErrorCode, "ERR_CODEX_ROLLOUT_CORRUPT");
+  assert.equal(paused.clientUserMessageId, second.id);
+  await f.process(paused);
+  assert.equal(f.effects.length, 1);
 });

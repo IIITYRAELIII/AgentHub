@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { taskGitIdentityHash } from "../../../src/domain/task-git-reference.mjs";
 import { runTaskGitCommand, TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { assertNativeMergedResults, assertNativePreparedComposition, mergeSelectedResults, NATIVE_RELEASE_POLICY }
   from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 
@@ -171,7 +171,7 @@ test("canonical preparation refuses missing selected content before promotion an
   await gitAt(f.root, ["init", "--bare", "--initial-branch=main", origin]);
   await gitAt(f.sourceRoot, ["remote", "add", "origin", origin]);
   await gitAt(f.sourceRoot, ["push", "origin", "main"]);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "release-data"),
+  const service = new TaskIntegrationGitService({ dataDir: path.join(f.root, "release-data"),
     environment: { ...process.env, LOCALAPPDATA: path.join(f.root, "state"), XDG_STATE_HOME: path.join(f.root, "state") } });
   const task = { taskId: "selected", taskRevision: 1, baseCommit: f.base, resultCommit: result };
   let callbacks = 0;

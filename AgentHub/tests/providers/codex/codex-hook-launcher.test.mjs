@@ -3,7 +3,9 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 
-import { enqueueLifecycleRequest, lifecycleRequest, main } from "../../../codex-stop-hook-launcher.mjs";
+import {
+  enqueueLifecycleRequest, lifecycleRequest, main, runtimeCommandSpoolDirectory,
+} from "../../../codex-stop-hook-launcher.mjs";
 
 test("sandbox launcher builds a narrow turn-start relay request", () => {
   const { request } = lifecycleRequest({
@@ -54,8 +56,9 @@ test("sandbox launcher enqueues lifecycle input once without waiting for rollout
 test("sandbox launcher returns valid empty JSON after a successful Stop hook", async () => {
   const writes = [];
   const requests = [];
+  const runtimeRoot = path.resolve("isolated-runtime");
   await main({
-    environment: { LOCALAPPDATA: "C:\\AgentHubTest" },
+    environment: { AGENT_HUB_RUNTIME_ROOT: runtimeRoot },
     input: Readable.from([JSON.stringify({
       hook_event_name: "Stop",
       session_id: "thread-1",
@@ -67,6 +70,8 @@ test("sandbox launcher returns valid empty JSON after a successful Stop hook", a
   });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].request.command, "turn-complete");
-  assert.equal(requests[0].options.temporaryRoot, `${path.resolve(".")}\\.agent-hub\\runtime`);
+  assert.equal(requests[0].runtimeRoot, runtimeRoot);
+  assert.equal(requests[0].options, undefined);
+  assert.equal(runtimeCommandSpoolDirectory(runtimeRoot), path.join(runtimeRoot, "data", "runtime-command"));
   assert.equal(writes.join(""), "{}\n");
 });

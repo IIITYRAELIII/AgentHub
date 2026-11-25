@@ -2361,8 +2361,8 @@ test("known dev sibling context is preview-only while unrelated dev work is pres
   await git(root, "clone", "--bare", "--no-local", root, origin);
   await git(root, "remote", "add", "origin", origin);
   const main = await git(root, "rev-parse", "main");
-  const { ReleaseGitWorkspaceService } = await import("../../../src/infrastructure/filesystem/release-git-workspace.mjs");
-  const release = new ReleaseGitWorkspaceService({ dataDir: path.join(dataDir, "publication") });
+  const { TaskIntegrationGitService } = await import("../../../src/infrastructure/filesystem/task-integration-git.mjs");
+  const release = new TaskIntegrationGitService({ dataDir: path.join(dataDir, "publication") });
   await assert.rejects(release.prepareCandidate({
     projectRoot: root, workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     planRevision: "a".repeat(64), approvedBaseCommit: main,
@@ -2791,7 +2791,10 @@ test("Task Git actual dependency caller reuses compatible payload and fences an 
   assert.equal(installs, 1);
   const af = await lstat(path.join(a.projectRoot, "node_modules/tiny/payload.bin"));
   const bf = await lstat(path.join(b.projectRoot, "node_modules/tiny/payload.bin"));
-  assert.equal(af.ino, bf.ino); assert.equal(af.nlink, 3);
+  assert.equal(af.ino, bf.ino);
+  assert.equal(af.nlink, 1);
+  assert.equal((await lstat(path.join(a.projectRoot, "node_modules/tiny"))).isSymbolicLink(), true);
+  assert.equal((await lstat(path.join(b.projectRoot, "node_modules/tiny"))).isSymbolicLink(), true);
   assert.equal(await git(root, "status", "--porcelain=v1"), "");
   // New exact compatibility key; simulated unknown child must fence every
   // later Task using the same key, even though their Task locks differ.

@@ -6,6 +6,7 @@ import {
   TaskViewController,
 } from "../../../src/interfaces/telegram/task-view-controller.mjs";
 import { createInterstreamMessage } from "../../../src/domain/interstream-message.mjs";
+import { codexAssistantResponseProjection } from "../../../src/domain/codex-response-annotation.mjs";
 
 function controller(overrides = {}) {
   return new TaskViewController({
@@ -815,6 +816,36 @@ test("rollout fallback keeps response annotations structured", () => {
     { text: "Вторая цитата", annotation: "Второй комментарий" },
   ]);
   assert.doesNotMatch(exchange.prompt, /response-annotations|My request for Codex/iu);
+});
+
+test("rollout fallback retains the exact assistant citation references for final and active history", () => {
+  const projected = codexAssistantResponseProjection(':agent-annotation{index="1"} First\n\n:agent-annotation{index="2"} Second');
+  for (const completed of [true, false]) {
+    const activity = {
+      userMessages: { "turn-1": [{ text: "Question", responseAnnotations: [
+        { text: "First quote", annotation: "First comment" },
+        { text: "Second quote", annotation: "Second comment" },
+      ] }] },
+      latestMessages: { "turn-1": projected.text },
+      ...(completed ? { finalMessages: { "turn-1": projected.text } } : { activeTurnIds: ["turn-1"] }),
+      responseAnnotationReferences: { "turn-1": structuredClone(projected.responseAnnotationReferences),
+        foreign: [{ index: 3, position: { start: 0, end: 8 } }] },
+    };
+    const [exchange] = codexRolloutHistory(activity);
+    const answer = exchange.messages.findLast(message => message.role === "agent");
+    assert.equal(answer.itemId, `turn-1:rollout-agent:${completed ? "final" : "latest"}`);
+    assert.equal(answer.text, projected.text);
+    assert.deepEqual(answer.responseAnnotationReferences, projected.responseAnnotationReferences);
+    assert.deepEqual(exchange.responseAnnotationReferences, projected.responseAnnotationReferences);
+    assert.equal(exchange.messages[0].responseAnnotations.length, 2);
+    answer.responseAnnotationReferences[0].position.start = 999;
+    assert.deepEqual(activity.responseAnnotationReferences["turn-1"], projected.responseAnnotationReferences,
+      "history cannot mutate its source's canonical positions");
+    activity.responseAnnotationReferences["turn-1"] = [];
+    const [plain] = codexRolloutHistory(activity);
+    assert.deepEqual(plain.messages.at(-1).responseAnnotationReferences ?? [], [],
+      "an explicit empty mapping cannot borrow another turn's references");
+  }
 });
 
 test("rollout fallback keeps annotations normalized by the activity parser", () => {

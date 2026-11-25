@@ -104,6 +104,7 @@ test("candidate inspection rejects replacement during bounded version execution"
   const calls = [];
   const candidate = { executable: "C:/official/codex.exe", installRoot: "C:/official", source: "desktop" };
   await assert.rejects(inspectOfficialCodexCandidate(candidate, {
+    inspectBundle: async (_candidate, { beforeFeatures }) => { await beforeFeatures(); return null; },
     realpathImpl: async (value) => value,
     statImpl: async () => ({ isFile: () => true }),
     verifySignature: async () => {

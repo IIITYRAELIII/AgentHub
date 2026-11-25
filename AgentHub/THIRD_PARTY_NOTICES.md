@@ -6,9 +6,17 @@ Agent Hub uses SVG geometry from `@phosphor-icons/core` 2.1.1, Regular weight.
 
 Source: <https://github.com/phosphor-icons/core>
 
-MIT License
-
 Copyright (c) 2023 Phosphor Icons
+
+## Bootstrap Icons
+
+Agent Hub uses the SVG paths for `eye`, `eye-fill`, `pencil`, `arrow-up` and `arrow-down` from Bootstrap Icons 1.13.1.
+
+Source: <https://github.com/twbs/icons/tree/v1.13.1>
+
+Copyright (c) 2019-2024 The Bootstrap Authors
+
+## MIT License (both icon sets)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

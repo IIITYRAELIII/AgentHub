@@ -17,7 +17,6 @@ export function createRuntimeTimersComposition({
   scheduleQueuedInput,
   scheduleDeliveryOutboxFlush,
   turnEndDelivery = null,
-  selectedTaskWatch,
   scheduleCodexTerminalAudit,
   scheduleBugReportScan,
   rateLimitTelemetry,
@@ -25,11 +24,13 @@ export function createRuntimeTimersComposition({
   storageRetention = null,
   testContourJournalSync = null,
   providerLogin = null,
+  githubAccount = null,
 }) {
   function stopRuntimeTimers() {
     stopTyping();
     contextCompactions.dispose();
     providerLogin?.pause?.();
+    githubAccount?.pause?.();
     usageSyncAuto?.stop?.();
     storageRetention?.stop?.();
     testContourJournalSync?.stop?.();
@@ -45,6 +46,7 @@ export function createRuntimeTimersComposition({
 
   function startRuntimeTimers() {
     providerLogin?.resume?.();
+    githubAccount?.resume?.();
     deferredInputController.startExpiryMaintenance?.();
     codexContextMaintenance.schedulePeriodic();
     if (!deferredInputController.wakeAll()) {
@@ -52,7 +54,6 @@ export function createRuntimeTimersComposition({
     }
     if (telegramEnabled) scheduleDeliveryOutboxFlush(1_000);
     turnEndDelivery?.startProjectionRecovery?.();
-    selectedTaskWatch.schedule(500);
     scheduleCodexTerminalAudit(500);
     scheduleBugReportScan(500);
     rateLimitTelemetry.schedule(1_000);

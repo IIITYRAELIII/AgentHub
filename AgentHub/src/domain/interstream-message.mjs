@@ -270,6 +270,20 @@ export function trustedAuditedInterstreamBodyDetails(value, {
   };
 }
 
+export function isInterstreamOnlyTurn(run) {
+  const root = confirmedInterstreamOrigin(run?.prompt, {
+    origin: run?.messageOrigin, clientUserMessageId: run?.clientUserMessageId,
+  });
+  if (!root) return false;
+  return (run.userMessages ?? []).every(message => {
+    if (message.role === "agent") return true;
+    const id = message.clientUserMessageId;
+    const origin = message.origin ?? message.messageOrigin
+      ?? (id && id === run.clientUserMessageId ? root : null);
+    return Boolean(confirmedInterstreamOrigin(message.text, { origin, clientUserMessageId: id }));
+  });
+}
+
 export function consistentInterstreamRecordIdentity({
   clientUserMessageIds = [],
   origins = [],

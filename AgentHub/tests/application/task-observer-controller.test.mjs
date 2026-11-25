@@ -94,10 +94,69 @@ test("observer preserves uncertain ownership and clears its display only from ex
   const pending = fixture({ snapshot: { turnId: "exact", activityUnknown: true } });
   await pending.controller.poll(run);
   assert.equal(run.activityUnknown, true);
-  const active = fixture({ snapshot: { turnId: "exact", running: true } });
+  const active = fixture({ snapshot: { turnId: "exact", active: true } });
   await active.controller.poll(run);
   assert.equal(run.activityUnknown, false);
   const missing = fixture({ snapshot: null });
   await missing.controller.poll(run);
   assert.equal(run.activityUnknown, true);
+});
+
+test("unconfirmed Codex snapshots cannot clear current uncertainty", async () => {
+  for (const snapshot of [
+    { turnId: "original", active: true, activityUnknown: true, completed: false },
+    { turnId: "original", active: false, completed: false },
+  ]) {
+    const run = { provider: "codex", observer: false, turnId: "original", activityUnknown: true };
+    const f = fixture({ snapshot });
+    await f.controller.poll(run);
+    assert.deepEqual(f.events, ["unknown"]);
+    assert.equal(run.activityUnknown, true);
+    assert.equal(f.timers.length, 1);
+  }
+});
+
+test("observation preserves terminal, exact active, ordinary and external observations", async () => {
+  for (const [runInput, snapshot, expected] of [
+    [{}, { turnId: "original", completed: true }, "completed"],
+    [{}, { turnId: "original", active: true }, "active"],
+    [{ activityUnknown: false }, { turnId: "original", active: true }, "active"],
+    [{ observer: true }, { turnId: "original", active: true }, "active"],
+    [{ provider: "claude" }, { turnId: "original", active: true }, "active"],
+  ]) {
+    const run = { provider: "codex", observer: false, turnId: "original", activityUnknown: true, ...runInput };
+    const f = fixture({ snapshot });
+    await f.controller.poll(run);
+    assert.deepEqual(f.events, [expected]);
+    if (snapshot.active) assert.equal(run.activityUnknown, false);
+  }
+});
+
+test("a managed snapshot cannot transfer the current run to a foreign turn", async () => {
+  const run = { provider: "codex", observer: false, turnId: "current", activityUnknown: true };
+  const f = fixture({ snapshot: { turnId: "foreign", active: true } });
+  await f.controller.poll(run);
+  assert.equal(run.turnId, "current");
+  assert.equal(run.activityUnknown, true);
+  assert.deepEqual(f.events, []);
+});
+
+test("an in-flight observation cannot publish after its exact identity changes", async () => {
+  for (const change of [
+    run => { run.turnId = "replacement"; },
+    run => { run.threadId = "other-thread"; },
+  ]) {
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const run = { provider: "codex", observer: false, threadId: "thread", turnId: "current",
+      activityUnknown: true, providerStart: { lastEventAtMs: 1 } };
+    const f = fixture({ readSnapshot: () => pending });
+    const polling = f.controller.poll(run);
+    change(run);
+    release({ turnId: "current", active: true });
+    await polling;
+    assert.equal(run.activityUnknown, true);
+    assert.deepEqual(f.events, []);
+    assert.equal(f.timers.length, 1);
+  }
 });

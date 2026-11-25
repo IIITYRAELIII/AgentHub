@@ -10,6 +10,8 @@ import test from "node:test";
 import { SharedSqliteRecoveryCoordinator, SQLITE_RECOVERY_RESTART_REQUIRED } from "../../../src/infrastructure/persistence/shared-sqlite-recovery.mjs";
 import { inspectSqliteFileInWorker } from "../../../src/infrastructure/persistence/shared-sqlite-inspection.mjs";
 
+import { seedSqliteRecoveryIntent } from "../../helpers/sqlite-recovery-intent.fixture.mjs";
+
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "hub-sqlite-inspection-"));
   const databaseFile = path.join(root, "journal.sqlite");
@@ -21,6 +23,7 @@ async function fixture(t) {
   const database = new DatabaseSync(databaseFile);
   database.exec("CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT); INSERT INTO sample VALUES (1, 'original')");
   database.close();
+  await seedSqliteRecoveryIntent(databaseFile);
   return { root, databaseFile, handles };
 }
 
@@ -50,13 +53,14 @@ test("production inspection runs the full check in a worker while the caller rem
   assert.deepEqual(await fs.readdir(root), ["journal.sqlite"]);
 });
 
-test("no prior healthy result skips a later corruption check", async (t) => {
+test("a saved recovery intent still checks current bytes rather than a previous healthy result", async (t) => {
   const { databaseFile } = await fixture(t);
   const recovery = new SharedSqliteRecoveryCoordinator({ databaseFile });
   await recovery.prepare();
   const previous = await fs.stat(databaseFile);
   await fs.writeFile(databaseFile, Buffer.alloc(previous.size, 0));
   await fs.utimes(databaseFile, previous.atime, previous.mtime);
+  await seedSqliteRecoveryIntent(databaseFile);
   await assert.rejects(recovery.prepare(), (error) => error.code === SQLITE_RECOVERY_RESTART_REQUIRED);
 });
 
@@ -115,7 +119,8 @@ for (const fault of ["copy", "check", "cleanup"]) test(`${fault} failure never b
   const failure = new Error(`${fault} unavailable`);
   const fileSystem = { ...fs,
     copyFile: (...args) => fault === "copy" ? Promise.reject(failure) : fs.copyFile(...args),
-    rm: (...args) => fault === "cleanup" ? Promise.reject(failure) : fs.rm(...args),
+    rm: (...args) => fault === "cleanup" && args[0].includes(".recovery-inspection-")
+      ? Promise.reject(failure) : fs.rm(...args),
   };
   await assert.rejects(new SharedSqliteRecoveryCoordinator({ databaseFile, fileSystem,
     ...(fault === "check" ? { inspectFile: () => Promise.reject(failure) } : {}),
@@ -164,7 +169,7 @@ test("concurrent startup keeps the database lock until the checker has finished"
   await entered;
   const second = new SharedSqliteRecoveryCoordinator({ databaseFile, inspectFile: (file) => {
     secondEntered = true; assert.equal(firstDone, true); return inspectSqliteFileInWorker(file);
-  } }).prepare();
+  } }).prepare().then(result => { assert.equal(firstDone, true); return result; });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(firstDone, false);
   assert.equal(secondEntered, false);

@@ -706,7 +706,8 @@ test("codex history preserves response annotations as structured prompt data", (
   assert.equal(exchange.promptRequest, "Общий вопрос");
   assert.deepEqual(exchange.messages[0].responseAnnotations, [{ text: "Цитата", annotation: "Комментарий", source }]);
   assert.equal(exchange.messages[1].text, "Цитата 1\nГотово");
-  assert.deepEqual(exchange.messages[1].responseAnnotationReferences, [{ index: 1, position: { start: 0, end: 8 } }]);
+  assert.deepEqual(exchange.messages[1].responseAnnotationReferences, [{ index: 1, position: { start: 0, end: 8 },
+    target: { itemId: exchange.messages[0].itemId, sourceOccurrenceId: exchange.messages[0].sourceOccurrenceId } }]);
 });
 
 test("codexThreadHistory returns user and assistant pairs", () => {

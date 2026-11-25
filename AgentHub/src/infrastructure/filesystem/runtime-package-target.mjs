@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
+import { githubAccountFetch } from "../network/github-account-request.mjs";
 import { createReadStream } from "node:fs";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { verifyRuntimeManifest } from "./runtime-manifest-verifier.mjs";
-import { waitForRuntimeReplacement } from "../../runtime/publication-readiness.mjs";
 
 const REPOSITORY = "IIITYRAELIII/AgentHub";
 const SHA = /^[a-f0-9]{64}$/u;
-export const packageDigest = (value) => createHash("sha256").update(value).digest("hex");
-export const packageBindingDigest = (value) => packageDigest(JSON.stringify(value));
+import { packageDigest, packageBindingDigest } from "../../domain/runtime-package-identity.mjs";
+export { packageDigest, packageBindingDigest };
 
 export async function packageFile(file) {
   const absolute = path.resolve(file);
@@ -32,7 +32,7 @@ export async function packageDirectory(directory) {
 }
 
 async function metadataFor(tag) {
-  const response = await fetch(`https://api.github.com/repos/${REPOSITORY}/releases/tags/${tag}`, {
+  const response = await githubAccountFetch(`https://api.github.com/repos/${REPOSITORY}/releases/tags/${tag}`, {
     redirect: "error", signal: AbortSignal.timeout(30_000),
     headers: { Accept: "application/vnd.github+json", "User-Agent": "AgentHub-Package-Handoff",
       "X-GitHub-Api-Version": "2022-11-28" },
@@ -97,7 +97,8 @@ export async function assertPackageFiles(target) {
 }
 
 export async function capturePackageRuntime(runtimeRoot, dataDir, { pid = process.pid,
-  hostPid = Number(process.env.AGENT_HUB_HOST_PID) } = {}) {
+  hostPid = Number(process.env.AGENT_HUB_HOST_PID), verifyReady } = {}) {
+  if (typeof verifyReady !== "function") throw new TypeError("Package readiness port is required");
   const root = await realpath(runtimeRoot);
   const data = await realpath(dataDir);
   if (data !== await realpath(path.join(root, "data"))) {
@@ -123,7 +124,7 @@ export async function capturePackageRuntime(runtimeRoot, dataDir, { pid = proces
   if (!declared || declared.sha256 !== launcher.sha256 || declared.bytes !== launcher.bytes) {
     throw new Error("Stable Host differs from the current runtime manifest");
   }
-  await waitForRuntimeReplacement({ runtimeRoot: root, expectedReleaseId: pointer.current, timeoutMs: 10000 });
+  await verifyReady({ runtimeRoot: root, expectedReleaseId: pointer.current, timeoutMs: 10000 });
   if (!currentRaw.equals(await readFile(path.join(root, "current.json")))
     || !manifest.equals(await readFile(path.join(releaseRoot, "runtime-manifest.json")))
     || !lockRaw.equals(await readFile(path.join(data, "bot.lock")))) throw new Error("Old ready runtime drifted during admission");

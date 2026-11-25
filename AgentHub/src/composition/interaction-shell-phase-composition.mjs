@@ -114,6 +114,7 @@ export function createInteractionShellPhase({
     spawnCapture: provider.spawnCapture,
     preTurnInstructions: infrastructure.preTurnInstructions,
     providerLogin: clients.providerLogin,
+    githubAccount: infrastructure.githubAccount,
   });
 
   const desktopShell = createDesktopShellComposition({
@@ -185,8 +186,6 @@ export function createInteractionShellPhase({
       workLogUsageRemoteConfigStore: infrastructure.workLogUsageRemoteConfigStore,
       workspaceCatalogStore: infrastructure.workspaceCatalogStore,
       taskReleasePlanner: infrastructure.taskReleasePlanner,
-      workspaceReleaseService: infrastructure.workspaceReleaseService,
-      releaseOperationCommands: infrastructure.releaseOperationCommands,
       streamHandoff: infrastructure.streamHandoff,
       runtimeStateStore,
       taskBoard: infrastructure.taskBoard,

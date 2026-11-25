@@ -1,6 +1,42 @@
 # UI-001 — Canonical message projection
 
+The Server accounts panel projects the shared GitHub account's public identity and
+connected/disconnected/expired state. Connect, reconnect and disconnect use protected
+local control; remote clients cannot start or poll authorization. Primary sign-in
+is GitHub OAuth in the default browser, including from VS Code. The existing
+"?" disclosure next to the GitHub title contains the explanatory text and opens
+by hover, keyboard or touch. Actual state, action, errors and pending confirmation
+remain visible. The short-lived authorization URL comes only from the local start
+response and stays in page memory across snapshot refresh. No manual code is required.
+The private PKCE verifier and token never enter the page. Cancellation/replacement fences late responses. Credentials
+are never persisted as a client draft, command receipt or shared snapshot. A failed
+request is displayed without reflecting response secrets. See ADR-HUB-254.
+
+## Inline Codex visualizations
+
+A standalone visualization reference in a completed Codex answer occupies its
+position in both current and retained chat. Markdown code keeps the literal
+reference. Ordinary Markdown and HTML file links continue using the existing
+safe message and file renderers. Missing, invalid or unauthorized artifacts
+have a local unavailable state without displaying the machine path.
+
+The addressed history read joins the Stream, Codex Thread, turn, final item and
+exact marker digest. The provider transcript and the configured artifact
+directory authorize the read. Neither the browser nor an arbitrary path in
+message text can select a file. The sandboxed frame accepts artifact script
+execution on an opaque origin, with no Hub API credentials or parent DOM access.
+Its only host integration is a source-checked layout measurement. The
+browser may reload the artifact when its message is reopened.
+See [ADR-HUB-520](../decisions/ADR-HUB-520-inline-codex-visualization.md).
+
 ## Addressed queue receipts and deferred Task presentation
+
+An addressed lookup projects the same result as the recent window. The command
+ledger takes precedence when it owns the ID. An exact retained runtime receipt
+still participates while it has no ledger row, including after it leaves the
+recent window. A lookup without a result never replaces a complete receipt.
+The client can correlate the visible removal of a provider-accepted queue card
+with the existing receipt and paint traces under the original client ID.
 
 The recent receipt window is a bounded projection, not cancellation authority.
 The normal client snapshot includes the exact original client message IDs of
@@ -11,8 +47,14 @@ requested identity sets cannot reuse a cached response for another set.
 Explicit canonical cancellation removes the exact queue card and count while
 preserving command history and unknown past provider effects. A known canonical
 queued receipt keeps its public cancellation action when its RAM item is absent.
-Unknown/provider-accepted states do not gain that action. Existing snapshot
-generation fencing still rejects late responses.
+Unknown/provider-accepted states do not gain that action. One addressed cancel
+holds its queue action slot through the snapshot readback. A receipt-only
+card's local display alias requires a known canonical item in that Task.
+An exact positive cancel acknowledgement removes that local card immediately
+and suppresses another cancel until neither the queue rows nor the queued
+receipts retain the item, even if its first readback fails. An unknown cancel
+result does not create that suppression. Existing snapshot generation fencing
+still rejects late responses.
 
 Desktop snapshots carry Task titles and revisioned deferred presentation, with
 full raw text and descriptions available through the existing addressed Task
@@ -29,6 +71,10 @@ retires stale queued intake membership even when its wait reason is retained
 and canonical history has not arrived. Explicit identity conflicts cannot
 consume another command's wait. Unresolved intake ACKs, unknown outcomes and
 manual pause retain their existing queue guards, including after reload.
+The original send ACK can arrive after that exact confirmation. Its local queue
+membership is derived after the existing canonical entity reducer, so an older
+intake result cannot restore a saved card while the entity remains accepted or
+terminal. Equal text with a different command identity keeps its own wait.
 
 The Task card's operation action exposes explicit interruption of a bound
 claim/workflow attempt, including pending and UNKNOWN. It reaches the same
@@ -135,6 +181,15 @@ to truncate or infer an annotation source.
 
 ## Invariants
 
+- Copying a selected ordered list inside one message preserves its visible
+  ordinals in plain text, including a non-one start, selected item values,
+  nesting and selected line breaks. Partial selection includes only the selected
+  item text and retains its source ordinal. Ctrl+C and the message selection
+  menu share this clipboard projection. Quote source offsets/hashes and the
+  whole-message Markdown copy remain unchanged. Editable controls, selections
+  outside messages and plain text without ordered items keep native copying;
+  this introduces no keyboard shortcut or general clipboard interception.
+
 A message, live-answer or queue update in one supplementary visible Stream
 refreshes that column without replacing the other current columns. Their scroll,
 expanded disclosures and the selected composer remain intact. A changed layout,
@@ -179,6 +234,20 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
 
 - Optimistic, queued, active and historical forms of one command are one entity
   keyed by `clientUserMessageId`, not separately appendable cards.
+- Exact provider acceptance with its original turn retires that command's local
+  optimistic queue membership, including after a cached receipt, Thread rotation
+  or a late intake response. A bounded snapshot may omit the old Thread: an
+  explicitly Stream-bound receipt may reconcile only an already-owned occurrence
+  with the same provider, source Thread and client ID while that Stream exists.
+  It cannot create an old occurrence or modify another Stream's local command.
+  Unknown receipts and unrelated drafts remain intact. Focused history preserves
+  its supplied client ID. Queue retirement tracing contains only those identities,
+  never message text, attachment contents or transport secrets.
+- A cancel action first reconciles a retained local queue card through the same
+  exact receipt owner. If that owner proves the original already cancelled,
+  the stale card retires without another cancellation command. An unknown or
+  foreign receipt cannot certify cancellation; ordinary live queue cancellation
+  still crosses the existing server owner.
 - Provider entities use `provider + threadId + turnId`; items additionally use
   `itemId + role`.
 - `clientUserMessageId` is the sole Hub ownership signal for a user message.
@@ -228,6 +297,13 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   commands; inter-Stream authorship must not leak into another user message.
 - Context compaction and maintenance operations have separate kinds and never
   create user-turn cards. Context estimates are observations, not generated turns.
+  A dedicated compaction awaiting its provider turn is preparation, not a
+  confirmed start notification. Repeated snapshots and reconnect retain the
+  same operation's terminal revision; an older running projection cannot revive
+  it. Reload reuses the existing terminal maintenance marker. Notifications of
+  observed automatic starts occur once per exact operation in the current
+  client session, with the initial snapshot as its baseline; new operations and
+  real failures remain visible.
 - The ordinary browser shell never waits on the third-party Telegram runtime.
   A same-origin parser bootstrap requests that runtime only when Telegram launch
   parameters or a native Telegram bridge are already present, preserving the
@@ -258,6 +334,13 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   decode share its remaining budget and never restart it. Every unresolved or
   failed image therefore leaves the loading state within that deadline with a
   visible error, and late work cannot replace or dispose a newer generation.
+- In chat, an ordinary click on a recognized local or direct web image link
+  opens the same image viewer. Use the file target or matching projected
+  attachment metadata, never the link caption. File actions remain available
+  from the explicit control or context menu. The browser loads web images
+  as images from their origin. Native decoding limitations, missing files,
+  authorization failures and invalid image responses leave a visible error
+  in the viewer. See [ADR-HUB-519](../decisions/ADR-HUB-519-image-links.md).
 - Current Codex limits expose every available provider window separately. A
   healthy short window cannot hide an exhausted longer window for the same model.
 - Agent response-annotation locators cross either provider boundary as unique
@@ -271,8 +354,20 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   ordinary prose, before validating the payload (ADR-0036);
   invalid payloads retain only a readable generic fallback and do not enter
   structured state. Partial markers remain hidden while streaming. The UI
-  resolves each valid index to the nearest preceding annotated user entity by
-  its canonical message key,
+  resolves each valid index to its captured annotated user entity by exact
+  client command, source occurrence or native item identity within the same
+  provider/Thread/turn. Native items and trace groups retain that target across
+  steer, observation, terminal storage and reload; a new input does not retarget
+  an existing item. Missing, foreign or ambiguous explicit targets fail closed.
+  A native item-start capture takes precedence over a target inferred from
+  completion order. Observation, hydration and existing SQLite history merges
+  retain it only for the same provider/Thread/turn and native item/group identity;
+  a later completion after steer B cannot replace item A's captured target.
+  Incoming reference positions and explicit empty lists remain authoritative.
+  Native commentary is projected from its original provider text; its hidden
+  response body must not create a second detached citation.
+  Legacy references without target metadata retain the nearest preceding
+  annotated-user compatibility mapping by canonical message key. The renderer
   renders the user's annotation/comment text and exposes a keyboard-operable
   jump to that exact annotation card only when the target annotation exists.
   Missing mappings render non-interactive
@@ -287,6 +382,15 @@ rebuild; partial rendering never supplies message, read or lifecycle authority.
   without coordinates retain an explicit compatibility list until their trusted
   original is reprojected through the existing history owner; no stored source
   or user text is rewritten. See ADR-HUB-401.
+  Commentary shown in live and historical trace groups, including addressed
+  trace pages, carries a read-only presentation from that same assistant parser.
+  The original reasoning, provider item and source-generation/hash fields stay
+  intact. Rendering and citation navigation use the group's presentation in the
+  exact owning message context; a later annotated user cannot become its target.
+  Addressed full-source reconstruction retains only the selected exact group's
+  captured target, after group/native-item validation. An empty answer has no
+  citation surface: commentary references cannot create a detached answer card.
+  Distinct native items and equal-text user commands remain distinct links.
 - A new user-created annotation records its exact source user command or agent
   provider item, including an active non-final agent item. A user with a durable
   `clientUserMessageId` uses the client namespace scoped by provider and Thread,
@@ -400,6 +504,38 @@ Thread and Stream identity; it never replays a command or infers read state.
 In-flight pages for a closed column are superseded through the existing request
 generation fence. Pending sends, drafts, queue/live authority and exact read
 receipts are independent and are not evicted with history (ADR-HUB-343).
+
+Known phased Codex rollout items retain their native item identity and phase
+through observation and active-history projection. Commentary remains in its
+trace group, while an explicit streaming final keeps its own answer body and
+citations, including when its text equals an earlier commentary item. The
+existing item reducer preserves a later streamed item during an older rollout
+observation. Unphased legacy recovery and exact terminal status/content retain
+their existing owners.
+
+That read captures the reducer's process-local mutation revision before yielding.
+Native start, delta, completion, hydration and accepted observation advance it.
+An intervening mutation retains the current item body and citations, including
+for the same item ID. A fresh observation may apply an authoritative shorter
+body. Its canonical text and complete annotation metadata cross the reducer
+together, with the bounded raw provider text retained for subsequent deltas.
+The shared observation annotation-copy owner retains that native projection.
+Its legacy metadata-only, empty-answer and different-turn behavior remains
+available through the same constructor and publication entry points.
+This ephemeral revision is separate from durable terminal revision authority.
+Native updates that precede the read also retain ownership of their item. The
+rollout reader carries the record position in its existing append-validated
+cache generation. An unchanged record or unrelated file growth cannot replace
+that native body. A later record for the item in the same append generation can
+apply a shorter update. Rewrites, cache loss and missing ordering retain native
+ownership until ordering is available through the canonical native item path.
+The selected native item also owns selection against a different incoming ID.
+An unseen observation needs the same later-record proof to displace it. A
+proven later record may select a different item with equal text or refresh an
+earlier retained item. Array insertion order alone supplies no such proof.
+Source completeness accompanies a shortened live preview. A complete native
+item retains its full body when the bounded observation covers a suffix, while
+preview-owned items continue to refresh within the existing preview bound.
 
 Hidden or zero-sized chat panes do not automatically expand cached history or
 request older pages. Queued frame and scroll callbacks recheck current visibility;
@@ -650,7 +786,17 @@ rendered and cannot stop history refresh or remove a completion overlay.
 Canonical ordering follows durable provider sequence without rewriting user
 chronology. Durable intake owns immutable `submittedAt`, which remains the
 displayed `time` through queued, active and completed projections. Provider
-dispatch owns the separate `startedAt`. Legacy rows without `submittedAt` fall
+dispatch owns the separate `startedAt`. While live and paged projections are
+mixed, ordering across turns uses the exact root's provider start as a lower
+bound. A prior terminal answer precedes the new turn at an equal boundary on
+the same provider Thread. If both turns start and end in one clock tick,
+retain the observed same-Thread terminal sequence as history replaces either
+overlay. Both full snapshots and compact snapshots with exact final identity
+can establish this sequence. The answer body is required to create a new
+snapshot overlay. Two confirmed history positions take precedence. Intake
+times never establish provider execution order.
+Intra-turn placement and displayed timestamps keep
+their original evidence. Legacy rows without `submittedAt` fall
 back to the existing user-message time. Only the root user message may then
 fall back to provider start. A steer never inherits the parent turn's start or
 submission time: its exact receipt supplies intake time, or its own timestamp
@@ -913,6 +1059,13 @@ the connection owner retains its own diagnostic. An authoritative `ready=false`
 response still opens startup, including a replacement runtime with no stage
 metadata yet. A queued restart request alone does not prove replacement began.
 
+A delayed or failed health read during one startup retains its last confirmed
+stage list, counts and elapsed observation, explicitly labelled stale. It never
+presents the cached stage as fresh progress. One single-flight polling owner
+coalesces timer/event refreshes; restart/page disposal invalidate old requests
+and late responses cannot replace a newer confirmed startup generation. A real
+replacement wait does not inherit the old process's stages. See ADR-0138.
+
 ## Task operation result projection
 
 A durable Task admission is pending, not a successful status/update/cleanup.
@@ -953,5 +1106,32 @@ command. Other callers receive the ordinary selection snapshot.
 
 Canonical history supplies the complete last request and final response. Existing
 history pages, older-page cursors, retained windows and exact navigation provide
-the rest of the conversation. The same rendered-final and durable read-cursor
-owner clears Ready on both tabs and activity cards. See ADR-HUB-427.
+the rest of the conversation. The cold tab starts with the latest two turns
+from that owner, with the ordinary wider read under the same navigation identity
+if this tail misses the known complete exchange. Selection, identity, exact
+final revision and freshness guards still apply. After the first paint, the
+existing refresh path widens the page while retaining its scroll and cursor.
+The same rendered-final and durable read-cursor owner clears Ready on both
+tabs and activity cards. See ADR-HUB-427 and ADR-HUB-517.
+## Task attachment and retired Spark actions (ADR-HUB-434)
+
+Attaching a Dashboard Task keeps the visible composer reference, draft,
+remove/send behavior and error feedback without a redundant success toast.
+New Spark selection and Task retry controls/routing are removed. Historical
+Spark messages, Task records and accounting remain readable; ordinary available
+model actions are preserved. There is no replacement setting or silent model
+substitution. The provider owner also refuses new Spark dispatch.
+
+## Stream status and explicit read actions
+
+The two eye controls beside the activity heading acknowledge the exact displayed
+ready identities on explicit user action. One selects finals of purely
+inter-Stream turns and the other selects all ready finals. Both use the existing
+account-scoped read cursor and exact-revision receipt. Automatic acknowledgement
+continues to require a rendered final. A newer revision retains its own marker.
+
+Stream cards show running, compaction, unread final and outstanding question
+independently. The static and dynamic modes share their geometry. A verified
+inter-Stream root stays dotted only while every accepted user input in that turn
+has inter-Stream origin. Legacy finals without this evidence use the ordinary
+stroke. See ADR-HUB-420.

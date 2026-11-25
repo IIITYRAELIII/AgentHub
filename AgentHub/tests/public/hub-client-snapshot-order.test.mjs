@@ -4,24 +4,45 @@ import {
   launchBrowser, openFixture, snapshot, applyFixtureSnapshot,
 } from './composer-production.fixture.mjs';
 
-test('late open-task snapshot cannot replace a newer active run', { timeout: 30000 }, async () => {
+
+async function holdSelectionSnapshot(page) {
+  await page.evaluate(() => {
+    const original = window.__agentHubVscode.postMessage;
+    let selectionRequested = false;
+    window.__agentHubVscode.postMessage = message => {
+      if (message.action === 'select-task' && message.params.streamId === 'stream-b') selectionRequested = true;
+      if (selectionRequested && message.action === 'snapshot' && !window.__heldSelectionSnapshot) {
+        window.__heldSelectionSnapshot = message;
+        return;
+      }
+      original(message);
+    };
+  });
+}
+
+async function warmSelectionPage(page) {
+  await page.locator('[data-stream-task-id="stream-b"]:visible').first().click();
+  await page.waitForFunction(() => document.querySelector('[data-chat-pane]')?.dataset.streamChatTaskId === 'stream-b');
+  await page.locator('[data-stream-task-id="stream-a"]:visible').first().click();
+  await page.waitForFunction(() => document.querySelector('[data-chat-pane]')?.dataset.streamChatTaskId === 'stream-a');
+}
+
+async function applySelectionSnapshot(page, snapshot) {
+  await page.evaluate(value => {
+    window.__agentHubFixture.snapshot = value;
+    document.querySelector('[data-stream-task-id="stream-b"]').click();
+  }, snapshot);
+}
+
+test('late selection-triggered snapshot cannot replace a newer active run', { timeout: 30000 }, async () => {
   const browser = await launchBrowser();
   const page = await browser.newPage();
   try {
     const idle = snapshot();
     await openFixture(page, { fixtureSnapshot: idle });
-    await page.evaluate(() => {
-      const original = window.__agentHubVscode.postMessage;
-      window.__agentHubVscode.postMessage = (message) => {
-        if (message.action === 'open-task' && !window.__heldOpenTask) {
-          window.__heldOpenTask = message;
-          return;
-        }
-        original(message);
-      };
-      document.querySelector('[data-stream-task-id="stream-b"]').click();
-    });
-    await page.waitForFunction(() => Boolean(window.__heldOpenTask));
+    await holdSelectionSnapshot(page);
+    await page.locator('[data-stream-task-id="stream-b"]:visible').first().click();
+    await page.waitForFunction(() => Boolean(window.__heldSelectionSnapshot));
     const active = snapshot();
     active.version = 'active-run';
     active.tasks = active.tasks.map((item) => item.streamId === 'stream-b'
@@ -30,17 +51,13 @@ test('late open-task snapshot cannot replace a newer active run', { timeout: 300
         startedAt: '2026-09-29T12:00:54.420Z',
       } }
       : { ...item, selected: false });
-    await applyFixtureSnapshot(page, active);
+    await applySelectionSnapshot(page, active);
     await page.waitForFunction(() => Boolean(document.querySelector('[data-activity-stream-list] [data-activity-task-id="stream-b"]')));
     await page.evaluate((old) => {
-      const held = window.__heldOpenTask;
+      const held = window.__heldSelectionSnapshot;
       window.dispatchEvent(new MessageEvent('message', { data: {
         type: 'agenthub:control-result', id: held.id, ok: true,
-        result: {
-          history: { provider: 'codex', threadId: 'thread-b', streamId: 'stream-b',
-            items: [], start: 0, end: 0, total: 0, messageTotal: 0, nextBefore: null, version: 'old' },
-          snapshot: old,
-        },
+        result: old,
       } }));
     }, idle);
     await page.waitForTimeout(100);
@@ -64,36 +81,23 @@ test('late active snapshot cannot revive a completed final', { timeout: 30000 },
       } }
       : item);
     await openFixture(page, { fixtureSnapshot: active });
-    await page.evaluate(() => {
-      const original = window.__agentHubVscode.postMessage;
-      window.__agentHubVscode.postMessage = (message) => {
-        if (message.action === 'open-task' && !window.__heldOpenTask) {
-          window.__heldOpenTask = message;
-          return;
-        }
-        original(message);
-      };
-      document.querySelector('[data-stream-task-id="stream-b"]').click();
-    });
-    await page.waitForFunction(() => Boolean(window.__heldOpenTask));
+    await holdSelectionSnapshot(page);
+    await page.locator('[data-stream-task-id="stream-b"]:visible').first().click();
+    await page.waitForFunction(() => Boolean(window.__heldSelectionSnapshot));
     const final = snapshot();
     final.version = 'new-final';
     final.tasks = final.tasks.map((item) => item.streamId === 'stream-b'
       ? { ...item, unread: true, lastAnswerAt: '2026-09-29T12:03:10.534Z',
         latestFinal: { provider: 'codex', threadId: 'thread-b', turnId: 'turn-old', revision: 'final-1' } }
       : item);
-    await applyFixtureSnapshot(page, final);
+    await applySelectionSnapshot(page, final);
     const entry = page.locator('[data-activity-stream-list] [data-activity-task-id="stream-b"]');
     await page.waitForFunction(() => document.querySelector('[data-activity-stream-list] [data-activity-task-id="stream-b"]')?.title.includes('Ответ готов'));
     await page.evaluate((old) => {
-      const held = window.__heldOpenTask;
+      const held = window.__heldSelectionSnapshot;
       window.dispatchEvent(new MessageEvent('message', { data: {
         type: 'agenthub:control-result', id: held.id, ok: true,
-        result: {
-          history: { provider: 'codex', threadId: 'thread-b', streamId: 'stream-b',
-            items: [], start: 0, end: 0, total: 0, messageTotal: 0, nextBefore: null, version: 'old' },
-          snapshot: old,
-        },
+        result: old,
       } }));
     }, active);
     await page.waitForTimeout(100);
@@ -105,7 +109,7 @@ test('late active snapshot cannot revive a completed final', { timeout: 30000 },
   }
 });
 
-test('normal open-task applies history and selects the chat without an intervening snapshot', { timeout: 30000 }, async () => {
+test('cold selection applies its independent history and selects the chat', { timeout: 30000 }, async () => {
   const browser = await launchBrowser();
   const page = await browser.newPage();
   try {
@@ -125,6 +129,7 @@ test('late poll response cannot replace a newer action snapshot', { timeout: 300
   try {
     const idle = snapshot();
     await openFixture(page, { fixtureSnapshot: idle });
+    await warmSelectionPage(page);
     await page.evaluate(() => {
       const original = window.__agentHubVscode.postMessage;
       window.__agentHubVscode.postMessage = (message) => {
@@ -165,6 +170,7 @@ test('late fallback reset cannot replace a newer active snapshot', { timeout: 30
   try {
     const idle = snapshot();
     await openFixture(page, { fixtureSnapshot: resetWire(idle, 'idle') });
+    await warmSelectionPage(page);
     await page.evaluate(() => {
       const original = window.__agentHubVscode.postMessage;
       window.__agentHubVscode.postMessage = (message) => {
@@ -205,23 +211,18 @@ test('late fallback reset cannot replace a newer active snapshot', { timeout: 30
   }
 });
 
-test('late open-task history cannot replace a newer displayed final', { timeout: 30000 }, async () => {
+test('late independent history cannot replace a newer displayed final', { timeout: 30000 }, async () => {
   const browser = await launchBrowser();
   const page = await browser.newPage();
   try {
-    const idle = snapshot();
-    await openFixture(page, { fixtureSnapshot: idle });
+    await openFixture(page);
     await page.evaluate(() => {
       const original = window.__agentHubVscode.postMessage;
+      window.__historyRequests = [];
       window.__agentHubVscode.postMessage = (message) => {
-        if (message.action === 'open-task' && !window.__heldOpenTask) {
-          window.__heldOpenTask = message;
-          return;
-        }
         if (message.action === 'task-history' && message.params.threadId === 'thread-b') {
-          window.__historyRequests ??= [];
           window.__historyRequests.push(message);
-          if (window.__historyRequests.length > 1) return;
+          if (window.__historyRequests.length === 1) return;
           window.dispatchEvent(new MessageEvent('message', { data: {
             type: 'agenthub:control-result', id: message.id, ok: true,
             result: { provider: 'codex', threadId: 'thread-b', streamId: 'stream-b',
@@ -233,35 +234,25 @@ test('late open-task history cannot replace a newer displayed final', { timeout:
         }
         original(message);
       };
-      document.querySelector('[data-stream-task-id="stream-b"]').click();
     });
-    await page.waitForFunction(() => Boolean(window.__heldOpenTask), undefined, { timeout: 5000 });
-    const final = snapshot();
-    final.version = 'new-final';
-    final.tasks = final.tasks.map((item) => item.streamId === 'stream-b'
-      ? { ...item, unread: true, lastAnswerAt: '2026-09-29T12:03:10.534Z',
-        latestFinal: { provider: 'codex', threadId: 'thread-b', turnId: 'finished-turn', revision: 1 } }
-      : item);
-    await page.evaluate((next) => { window.__agentHubFixture.snapshot = next; }, final);
-    await page.evaluate(() => document.querySelector('[data-provider-connection-retry]').click());
-    await page.waitForFunction(() => window.__historyRequests?.length >= 1, undefined, { timeout: 5000 });
-    await page.waitForFunction(() => document.body.textContent.includes('Свежий финальный ответ'), undefined, { timeout: 5000 });
-    await page.evaluate((old) => {
-      const held = window.__heldOpenTask;
+    await page.locator('[data-stream-task-id="stream-b"]:visible').first().click();
+    await page.waitForFunction(() => window.__historyRequests.length === 1);
+    // A new selection has its own history read and navigation generation.
+    await page.locator('[data-stream-task-id="stream-b"]:visible').first().click();
+    await page.waitForFunction(() => window.__historyRequests.length >= 2);
+    await page.getByText('Свежий финальный ответ', { exact: true }).waitFor({ state: 'visible' });
+    await page.evaluate(() => {
+      const held = window.__historyRequests[0];
       window.dispatchEvent(new MessageEvent('message', { data: {
         type: 'agenthub:control-result', id: held.id, ok: true,
-        result: { history: { provider: 'codex', threadId: 'thread-b', streamId: 'stream-b',
+        result: { provider: 'codex', threadId: 'thread-b', streamId: 'stream-b',
           items: [], start: 0, end: 0, total: 0, messageTotal: 0, nextBefore: null, version: 'old-history' },
-          snapshot: old },
       } }));
-    }, idle);
-    await page.waitForTimeout(100);
-    assert.equal(await page.getByText('Свежий финальный ответ').count(), 1);
+    });
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.getByText('Свежий финальный ответ', { exact: true }).count(), 1);
     assert.equal(await page.locator('[data-chat-pane]').getAttribute('data-stream-chat-task-id'), 'stream-b');
-  } finally {
-    await page.close();
-    await browser.close();
-  }
+  } finally { await page.close(); await browser.close(); }
 });
 
 test('old server response cannot roll back a newer server identity while reload is deferred', { timeout: 30000 }, async () => {
@@ -270,18 +261,9 @@ test('old server response cannot roll back a newer server identity while reload 
   try {
     const idle = snapshot();
     await openFixture(page, { fixtureSnapshot: idle });
-    await page.evaluate(() => {
-      const original = window.__agentHubVscode.postMessage;
-      window.__agentHubVscode.postMessage = (message) => {
-        if (message.action === 'open-task' && !window.__heldOpenTask) {
-          window.__heldOpenTask = message;
-          return;
-        }
-        original(message);
-      };
-      document.querySelector('[data-stream-task-id="stream-b"]').click();
-    });
-    await page.waitForFunction(() => Boolean(window.__heldOpenTask));
+    await holdSelectionSnapshot(page);
+    await page.locator('[data-stream-task-id="stream-b"]:visible').first().click();
+    await page.waitForFunction(() => Boolean(window.__heldSelectionSnapshot));
     await page.evaluate(() => window.AgentHub.openDialogSettings());
     const newer = snapshot();
     newer.version = 'new-server-active';
@@ -290,15 +272,13 @@ test('old server response cannot roll back a newer server identity while reload 
       ? { ...item, running: true, run: { turnId: 'turn-new', operationKind: 'user-turn',
         projectionState: 'active', startedAt: '2026-09-29T12:00:54.420Z' } }
       : item);
-    await applyFixtureSnapshot(page, newer);
+    await applySelectionSnapshot(page, newer);
     await page.waitForFunction(() => Boolean(document.querySelector('[data-activity-stream-list] [data-activity-task-id="stream-b"]')));
     await page.evaluate((old) => {
-      const held = window.__heldOpenTask;
+      const held = window.__heldSelectionSnapshot;
       window.dispatchEvent(new MessageEvent('message', { data: {
         type: 'agenthub:control-result', id: held.id, ok: true,
-        result: { history: { provider: 'codex', threadId: 'thread-b', streamId: 'stream-b',
-          items: [], start: 0, end: 0, total: 0, messageTotal: 0, nextBefore: null, version: 'old' },
-          snapshot: old },
+        result: old,
       } }));
     }, idle);
     await page.waitForTimeout(100);

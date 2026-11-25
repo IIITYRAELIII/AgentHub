@@ -11,7 +11,7 @@ import { readNativeUpstreamAdoptions } from "../../../src/infrastructure/filesys
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 import { assertInstalledLocalSourceBaseline } from "../../../src/infrastructure/filesystem/local-source-baseline.mjs";
 import { LOCAL_SOURCE_BASELINE_PROVENANCE, localSourceSelectionHash } from "../../../src/domain/release-base-provenance.mjs";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 import { createContourExternalEffectsPort } from "../../../src/ports/contour-external-effects.mjs";
 
 const exec = promisify(execFile);
@@ -49,7 +49,7 @@ for (const method of ["deriveInstalledLocalSourceBaselineForSelection", "validat
   test(`installed source contour policy excludes ${method} before authority access`, async t => {
     const f = await fixture(t), exclusions = [];
     const dataDir = path.join(f.root, ".git", "fixture-data");
-    const service = new ReleaseGitWorkspaceService({
+    const service = new TaskIntegrationGitService({
       dataDir, environment: { LOCALAPPDATA: path.join(f.root, ".git", "fixture-local") },
       contourExternalEffects: createContourExternalEffectsPort(event => exclusions.push(event)),
       readPreparationAuthority: () => { throw new Error("unexpected preparation authority access"); },
@@ -101,6 +101,31 @@ test("history uses one metadata diff and retains equal-base object validation an
   const missing = "a".repeat(40);
   await assert.rejects(assertNativeTaskHistories({ git: f.git, baseCommit: missing,
     tasks: [{ taskId: "missing", baseCommit: missing, resultCommit: missing }] }), /main-based result/u);
+});
+
+test("three selected results share only immutable metadata reads inside each fresh proof", async t => {
+  const f = await fixture(t);
+  await f.save("CHANGELOG.md", "published notes\n");
+  await f.save("nested/package.json", JSON.stringify({ version: "3.0.0" }));
+  const published = await f.commit();
+  const tasks = [];
+  for (let i = 0; i < 3; i++) {
+    await f.git(["checkout", "--detach", published]);
+    await f.save(`result-${i}.txt`, "selected\n");
+    tasks.push({ taskId: `selected-${i}`, baseCommit: f.base, resultCommit: await f.commit() });
+  }
+  const authority = { bases: [published], metadataBases: [published], adoptions: [] };
+  const check = () => assertNativeTaskHistories({ git: f.git, baseCommit: published, tasks, historyAuthority: authority });
+  f.calls.length = 0;
+  await check();
+  assert.equal(f.calls.filter(args => args[0] === "cat-file" && args.includes("--batch")).length, 1);
+  assert.equal(f.calls.filter(args => args.includes("ls-tree") && args.includes(published)).length, 1);
+  assert.equal(f.calls.filter(args => args[0] === "merge-base" && args[2] === f.base && args[3] === published).length, 1);
+  await f.save("nested/package.json", JSON.stringify({ version: "9.0.0" }));
+  tasks[2] = { ...tasks[2], resultCommit: await f.commit() };
+  f.calls.length = 0;
+  await assert.rejects(check(), /selected-2 changes release-owned package-version metadata/u);
+  assert.equal(f.calls.filter(args => args.includes("ls-tree") && args.includes(published)).length, 1);
 });
 
 for (const directory of ["CHANGELOG.md", "package.json", "package-lock.json"]) {

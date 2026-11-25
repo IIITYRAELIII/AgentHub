@@ -1359,6 +1359,35 @@ test("task list keeps unassigned Tasks beside Workspace groups", async () => {
   assert.deepEqual(Array.from(sections.unassignedTasks, (task) => task.id), ["legacy-task", "missing-workspace"]);
 });
 
+test("dialog list previews use canonical content and never infer lifecycle from missing answers", async () => {
+  const { dialogListPresentation: present } = await streamTabsApi();
+  const value = (task, evidence) => JSON.parse(JSON.stringify(present(task, evidence)));
+  const empty = { preview: "", status: "" };
+  assert.deepEqual(value({}), empty);
+  assert.deepEqual(value({ draftStream: true }), empty);
+  assert.deepEqual(value({}, { messages: [] }), empty);
+  assert.deepEqual(value({}, { messages: [{ role: "system", text: "maintenance" }] }), empty);
+  assert.deepEqual(value({}, { messages: [{ role: "user", text: "Первый\nвопрос" }] }),
+    { preview: "Вы: Первый вопрос", status: "" });
+  assert.deepEqual(value({ lastAnswer: { text: "Последний ответ" }, unread: true }),
+    { preview: "Последний ответ", status: "" });
+  assert.deepEqual(value({ lastAnswer: "Snapshot final" }, { messages: [{ role: "user", text: "Old user" }] }),
+    { preview: "Snapshot final", status: "" });
+  assert.deepEqual(value({ running: true }), { preview: "", status: "Готовит ответ" });
+  const task = { provider: "codex", threadId: "thread-1", running: true, lastAnswer: "Previous answer" };
+  const live = { provider: "codex", threadId: "thread-1", turnId: "turn-2",
+    operationKind: "user-turn", projectionState: "active", text: "New content" };
+  const messages = [{ role: "user", turnId: "turn-2", text: "Current prompt" }];
+  assert.deepEqual(value(task, { live, messages }), { preview: "Вы: Current prompt", status: "Отвечает" });
+  assert.deepEqual(value(task, { live: { ...live, threadId: "old-thread" } }),
+    { preview: "Previous answer", status: "Готовит ответ" });
+  assert.deepEqual(value(task, { messages: [{ role: "user", text: "Old prompt" }, { role: "agent", text: "Old final" }] }),
+    { preview: "Previous answer", status: "Готовит ответ" });
+  assert.deepEqual(value({ status: "unknown" }), { preview: "", status: "Статус неизвестен" });
+  assert.deepEqual(value({ status: "failed" }), { preview: "Ответ не получен", status: "Ошибка" });
+  assert.deepEqual(value({ status: "cancelled" }), { preview: "Ответ не получен", status: "Отменено" });
+});
+
 test("an active Stream preserves its answer-ready state", async () => {
   const { streamStatusPresentation } = await streamTabsApi();
   assert.deepEqual(
@@ -1393,8 +1422,8 @@ test("right panel visibility defaults on and its header switch preserves hidden 
       const group = page.getByRole("region", { name: "Правая панель", exact: true });
       const toggle = group.getByRole("switch", { name: "Отображать правую панель", exact: true });
       const options = group.locator("[data-activity-rail-settings]");
-      const recent = group.getByRole("spinbutton", { name: "Часы для недавних Streams" });
-      const detailed = group.getByRole("switch", { name: "Подробные карточки Streams" });
+      const recent = group.getByRole("spinbutton", { name: "Часы для недавних потоков" });
+      const detailed = group.getByRole("switch", { name: "Подробные карточки потоков" });
       assert.equal(await toggle.getAttribute("aria-checked"), "true");
       assert.equal(await page.locator("[data-activity-rail]").isVisible(), true);
       assert.equal(await options.isVisible(), true);
@@ -1605,8 +1634,8 @@ test("background status changes rerender visible top Stream tabs", async () => {
       const releaseManagerTab = document.querySelector(
         '.stream-tabs-track .stream-tab[data-stream-name="Release Manager"]',
       );
-      const effect = topS2?.querySelector(".stream-tab-status-layer")
-        ? getComputedStyle(topS2.querySelector(".stream-tab-status-layer"), "::after")
+      const effect = topS2?.querySelector(".stream-run-track")
+        ? getComputedStyle(topS2.querySelector(".stream-run-track"))
         : null;
       const setTasksAfter = {
         topRunning: topS2?.hasAttribute("data-running") ?? null,
@@ -1652,8 +1681,8 @@ test("background status changes rerender visible top Stream tabs", async () => {
         rightRunning: true,
         rightCurrent: false,
         releaseManagerCurrent: true,
-        effectAnimation: "stream-running-wave",
-        effectDisplay: "block",
+        effectAnimation: "stream-track-clockwise",
+        effectDisplay: "inline",
       },
       patchTaskAfter: {
         topRunning: true,
@@ -1789,8 +1818,8 @@ test("Workspace and Stream cards expose behavioral editing and quick reply contr
     await codexTab.focus();
     await codexTab.dblclick();
     assert.equal(await page.locator("[data-dialog-settings]").evaluate((node) => node.open), true);
-    assert.equal(await page.locator("[data-dialog-settings]").getAttribute("aria-label"), "Карточка Stream");
-    assert.equal(await page.getByText("Карточка Stream", { exact: true }).count(), 0);
+    assert.equal(await page.locator("[data-dialog-settings]").getAttribute("aria-label"), "Карточка потока");
+    assert.equal(await page.getByText("Карточка потока", { exact: true }).count(), 0);
     assert.equal(await page.locator("[data-dialog-settings] input").first().getAttribute("data-dialog-stream-name"), "");
     assert.equal(await page.locator("[data-dialog-stream-name]").inputValue(), "Codex Stream");
     await page.locator("[data-dialog-stream-name]").fill("Renamed Stream");
@@ -2496,6 +2525,16 @@ test("prompt template drafts stay isolated by owner across rejected and pending 
         const editor = page.locator(editorSelector);
         const title = () => editor.locator("[data-quick-message-title]");
         const openWorkspace = async (workspaceId) => {
+          if (viewport.width < 860) {
+            if (await page.locator("[data-workspace-card-modal]").evaluate((n) => n.open)) {
+              await page.locator("[data-workspace-card-close]").click();
+            }
+            if (!await page.locator("[data-mobile-workspace-drawer]").evaluate((n) => n.open)) {
+              await page.locator("[data-mobile-workspaces-open]").click();
+            }
+            await page.locator(`[data-workspace-select="${workspaceId}"] [data-mobile-workspace-edit]`).click();
+            return;
+          }
           await page.locator(`[data-workspace-select="${workspaceId}"]`).evaluate((node) => {
             node.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
             node.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
@@ -2652,8 +2691,10 @@ test("prompt template action setting stays compact on Web, narrow WebView and Mo
           streams: {},
         },
       }));
-      await page.locator(surface === "mobile-web"
-        ? '.mobile-dialogs-top [aria-label="Настройки AgentHub"]' : '[data-panel-open="settings"]').click();
+      if (surface === "mobile-web") {
+        await page.locator('[data-mobile-dialogs-tab="more"]').click();
+        await page.locator('[data-mobile-more-sheet]').getByRole("button", { name: "Настройки AgentHub", exact: true }).click();
+      } else await page.locator('[data-panel-open="settings"]').click();
       await openPromptTemplatesForm(page, "global");
       const layout = await page.locator(".prompt-template-action-row").evaluate((row) => {
         const panel = row.closest("[data-prompt-templates-modal]");
@@ -2784,8 +2825,10 @@ test("shared prompt template editor stays responsive across every scope and surf
         }
       };
 
-      await page.locator(surface === "mobile-web"
-        ? '.mobile-dialogs-top [aria-label="Настройки AgentHub"]' : '[data-panel-open="settings"]').click();
+      if (surface === "mobile-web") {
+        await page.locator('[data-mobile-dialogs-tab="more"]').click();
+        await page.locator('[data-mobile-more-sheet]').getByRole("button", { name: "Настройки AgentHub", exact: true }).click();
+      } else await page.locator('[data-panel-open="settings"]').click();
       await verifyEditor("global", await openPromptTemplatesForm(page, "global"));
       await closePromptTemplatesForm(page);
       await page.locator("[data-panel-close]").click();
@@ -2804,7 +2847,6 @@ test("shared prompt template editor stays responsive across every scope and surf
 
       const streamTab = page.locator('.stream-tabs-track [data-stream-tab-id="stream-1"]');
       if (surface === "mobile-web") {
-        await page.locator('[data-mobile-stream-list] [data-mobile-stream-id="stream-1"]').first().click();
         await page.locator("[data-dialog-settings-toggle]").click();
       } else {
         await streamTab.dispatchEvent("click", { detail: 1 });
@@ -3032,7 +3074,7 @@ test("mobile drawer selection and explicit Workspace settings preserve identity 
       cardOpen: document.querySelector("[data-workspace-card-modal]")?.open,
     })), {
       surface: "mobile",
-      pane: "tasks",
+      pane: "chat",
       selected: "true",
       cardOpen: false,
     });
@@ -3420,7 +3462,7 @@ test("Stream card opens on 20 repeated native dblclicks per viewport without con
       page.on("pageerror", (error) => problems.push(`pageerror: ${error.message}`));
       await openStreamTabsDomFixture(page);
       await installFixture(page);
-      if (surface.startsWith("mobile")) await page.locator('[data-mobile-button="chat"]').click();
+      if (surface.startsWith("mobile")) await page.locator('[data-mobile-dialogs-tab="chat"]').click();
       for (let attempt = 0; attempt < 20; attempt += 1) {
         const tab = page.locator('.stream-tabs-track .stream-tab[data-stream-tab-id="stream-one"]');
         await tab.dblclick();
@@ -3862,8 +3904,8 @@ test("Workspace and Stream cards survive logical-identity rerenders while stale 
 test("Stream display identity never exposes a blank name", async () => {
   const { streamDisplayName } = await streamTabsApi();
   assert.equal(streamDisplayName({ name: " Release Manager ", ordinal: 2 }, 3), "Release Manager");
-  assert.equal(streamDisplayName({ name: "", ordinal: 2 }, 3), "Stream 2");
-  assert.equal(streamDisplayName({ name: "", ordinal: 7 }, 1), "Stream");
+  assert.equal(streamDisplayName({ name: "", ordinal: 2 }, 3), "Поток 2");
+  assert.equal(streamDisplayName({ name: "", ordinal: 7 }, 1), "Поток");
 });
 
 test("overflow visibility mutations do not rebuild Stream settings", async () => {

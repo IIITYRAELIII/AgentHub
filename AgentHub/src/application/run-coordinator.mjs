@@ -147,7 +147,7 @@ export class RunCoordinator {
     return this.maintenanceBarrier(target, options);
   }
 
-  async deferredOccupancy(target) {
+  async deferredOccupancy(target, admissionTrace = null) {
     const identity = taskOccupancyIdentity(target);
     const run = this.activeRun(target);
     if (run) {
@@ -176,7 +176,8 @@ export class RunCoordinator {
         run: null,
       };
     }
-    const external = await this.externalActivity(target);
+    const external = await this.externalActivity(target, { admissionTrace });
+    if (this.activeRun(target)) return this.deferredOccupancy(target, admissionTrace);
     return {
       key: identity.key,
       binding: identity.binding,
@@ -184,7 +185,7 @@ export class RunCoordinator {
       state: external.state,
       waitReason: external.state === "active"
         ? "provider-thread-active"
-        : external.state === "unknown" ? "provider-temporarily-unavailable" : null,
+        : external.state === "unknown" ? external.waitReason ?? "provider-temporarily-unavailable" : null,
       run: null,
       executionOwner: external.executionOwner ?? null,
     };
@@ -928,7 +929,4 @@ export class RunCoordinator {
     return this.providers.call(run.provider, "completeObservedRun", run, snapshot);
   }
 
-  recoverProviderRun(run, context = {}) {
-    return this.providers.call(run.provider, "recoverRun", run, context);
-  }
 }

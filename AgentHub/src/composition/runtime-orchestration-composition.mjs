@@ -7,7 +7,6 @@ import { createRuntimeRestartWiring } from "./runtime-restart-wiring-composition
 import { taskDisplayTitle } from "../domain/task-display-title.mjs";
 import { TestContourJournalSyncService } from "../application/test-contour-journal-sync-service.mjs";
 import { testContourRuntimeAlive } from "../runtime/test-contour-manager.mjs";
-import { readMissingTestContourJournalRecords } from "../infrastructure/persistence/test-contour-journal-source.mjs";
 
 export function createRuntimeOrchestrationComposition({
   config,
@@ -22,7 +21,6 @@ export function createRuntimeOrchestrationComposition({
   ports,
 }) {
   const {
-    selectedTaskWatchIntervalMs,
     terminalAuditIntervalMs,
     externalPollIntervalMs,
     managedPollIntervalMs,
@@ -138,6 +136,7 @@ export function createRuntimeOrchestrationComposition({
     workLogUsageStore,
     rateLimitHistoryStore,
     providerTurnTelemetryStore,
+    githubAccount,
     fileTransferService,
     taskReadStateStore,
     runtimeStateStore,
@@ -161,7 +160,9 @@ export function createRuntimeOrchestrationComposition({
     sourceDatabaseFile: testContourJournalDatabaseFile,
     targetDatabaseFile: journalDatabaseFile,
     projectionProjectRoots: globalWorkLogProjectRoots,
-    readRecords: readMissingTestContourJournalRecords,
+    readRecords: (options) => workLogUsageStore.readTestContourJournalPage(options),
+    acknowledgePage: (options) => workLogUsageStore.acknowledgeTestContourJournalPage(options),
+    commandTrace: commandTrace?.service,
     sourceRuntimeAlive: () => testContourRuntimeAlive(),
     enabled: config.components?.testContour === true
       && process.env.AGENT_HUB_TEST_CONTOUR !== "1",
@@ -228,7 +229,6 @@ export function createRuntimeOrchestrationComposition({
       dismissedExternalTasks,
       lastSeenTaskTurnIds,
       runtimeTimers,
-      selectedTaskWatchIntervalMs,
       selectedTask,
       selectedTasks: selectedTaskCandidates,
       chatId: () => hostState.chatId,
@@ -246,7 +246,6 @@ export function createRuntimeOrchestrationComposition({
     saveState,
     isStopping: () => hostState.stopping,
     runtimeTimers,
-    selectedTaskWatchIntervalMs,
     attachmentImporter: importCodexDesktopAttachments,
     terminalAuditIntervalMs,
     logger: taskObserverLogger,
@@ -254,8 +253,6 @@ export function createRuntimeOrchestrationComposition({
   const {
     claudeRunController,
     taskObserver,
-    runRecovery,
-    selectedTaskWatch,
   } = providerRuntimeWiring;
 
   const timers = createRuntimeTimersComposition({
@@ -273,7 +270,6 @@ export function createRuntimeOrchestrationComposition({
     scheduleQueuedInput,
     scheduleDeliveryOutboxFlush,
     turnEndDelivery,
-    selectedTaskWatch,
     scheduleCodexTerminalAudit,
     scheduleBugReportScan,
     rateLimitTelemetry,
@@ -281,6 +277,7 @@ export function createRuntimeOrchestrationComposition({
     storageRetention,
     testContourJournalSync,
     providerLogin,
+    githubAccount,
   });
 
   ports.taskInteraction.bind(createTaskInteractionWiring({
@@ -385,6 +382,7 @@ export function createRuntimeOrchestrationComposition({
       failedUpdateStore,
       stopCodexAppServerTree,
       providerLogin,
+      githubAccount,
       miniAppLifecycle,
       desktopAttachments,
       desktopControlServer,
@@ -408,7 +406,6 @@ export function createRuntimeOrchestrationComposition({
       taskRuns,
       startCodexAppServer,
       initializeCodex,
-      runRecovery,
       updateRestartMessage: (message) => restartWiring.updateRestartMessage(message),
       startRuntimeTimers: timers.startRuntimeTimers,
       delay: runtime.delay,
@@ -419,7 +416,6 @@ export function createRuntimeOrchestrationComposition({
     ...timers,
     claudeRunController,
     taskObserver,
-    runRecovery,
     runtimeResources: restartWiring.runtimeResources,
   };
 }

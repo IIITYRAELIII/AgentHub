@@ -6,6 +6,7 @@ import { MaintenanceOperationStore } from "../persistence/maintenance-operation-
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { unlinkOwnedNativeObjectAlias, retireSealedNativeCapture } from "./sealed-native-capture.mjs";
 import { inventoryNativeCapture } from "./native-capture-inventory.mjs";
+import { hasExactGitCommitObjects } from "./selected-git-bundle.mjs";
 
 export const NATIVE_OBJECT_STORAGE = "owned-immutable-git-objects-v1";
 const digest = value => createHash("sha256").update(value).digest("hex");
@@ -17,12 +18,49 @@ const absent = async file => lstat(file).then(() => false, e => { if (e.code ===
 const physical = s => ({ dev: String(s.dev), ino: String(s.ino), birthtimeNs: String(s.birthtimeNs) });
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
+export function ownedPackIndexContains(bytes, packChecksum, required) {
+  // gitformat-pack: a v2 SHA-1 index puts its object names in one contiguous
+  // table. Older formats continue through Git's own parser.
+  if (bytes.length < 8 || bytes.readUInt32BE(0) !== 0xff744f63 || bytes.readUInt32BE(4) !== 2) return null;
+  const hashSize = 20;
+  const objectNames = 8 + 256 * 4;
+  const trailer = bytes.length - 2 * hashSize;
+  const invalid = () => fail("Owned pack index inventory is malformed");
+  if (trailer < objectNames) throw invalid();
+  const count = bytes.readUInt32BE(objectNames - 4);
+  const offsets = objectNames + (hashSize + 4) * count;
+  const extendedOffsets = offsets + 4 * count;
+  const extendedBytes = trailer - extendedOffsets;
+  if (!count || extendedBytes < 0 || extendedBytes % 8 !== 0 || extendedBytes / 8 > count) throw invalid();
+  if (bytes.toString("hex", trailer, trailer + hashSize) !== packChecksum
+      || !createHash("sha1").update(bytes.subarray(0, bytes.length - hashSize)).digest().equals(bytes.subarray(-hashSize))) {
+    throw invalid();
+  }
+  let index = 0;
+  let previous = null;
+  let found = false;
+  for (let prefix = 0; prefix < 256; prefix++) {
+    const end = bytes.readUInt32BE(8 + prefix * 4);
+    if (end < index || end > count) throw invalid();
+    for (; index < end; index++) {
+      const start = objectNames + index * hashSize;
+      const name = bytes.subarray(start, start + hashSize);
+      if (name[0] !== prefix || (previous && Buffer.compare(previous, name) > 0)) throw invalid();
+      previous = name;
+      const offset = bytes.readUInt32BE(offsets + index * 4);
+      if (offset >= 0x80000000 && offset - 0x80000000 >= extendedBytes / 8) throw invalid();
+      if (!found) found = required.has(name.toString("hex"));
+    }
+  }
+  return found;
+}
+
 async function plain(file, directory = false) {
   const s = await lstat(file, { bigint: true });
   if (s.isSymbolicLink() || (directory ? !s.isDirectory() : !s.isFile())) throw fail("Object storage path is not plain");
   return s;
 }
-async function hashFile(file) {
+async function hashFile(file, observe = null) {
   const h = await open(file, "r");
   try {
     const before = await h.stat({ bigint: true }), hash = createHash("sha256");
@@ -32,19 +70,50 @@ async function hashFile(file) {
     if (!equal(physical(before), physical(after)) || before.size !== after.size || before.mtimeNs !== after.mtimeNs) {
       throw fail("Immutable object file changed during verification");
     }
+    observe?.(after);
     return { ...physical(after), bytes: String(after.size), sha256: hash.digest("hex") };
   } finally { await h.close(); }
 }
-async function immutableLink(source, destination) {
-  const parent = physical(await plain(path.dirname(destination), true));
-  const sourceParent = physical(await plain(path.dirname(source), true));
-  const before = await hashFile(source);
+// Only reads may run concurrently. Join the complete group before reporting an
+// error or entering another Git command or filesystem effect.
+async function readGroup(items, read) {
+  const settled = await Promise.allSettled(items.map(read));
+  const failure = settled.find(result => result.status === "rejected");
+  if (failure) throw failure.reason;
+  return settled.map(result => result.value);
+}
+
+const inventoryBatchSize = 16;
+async function readInventory(items, read) {
+  const output = [];
+  for (let offset = 0; offset < items.length; offset += inventoryBatchSize) {
+    output.push(...await readGroup(items.slice(offset, offset + inventoryBatchSize), read));
+  }
+  return output;
+}
+
+async function immutableLink(source, destination, assertCurrent = null) {
+  const [parent, sourceParent, before] = await readGroup([
+    () => plain(path.dirname(destination), true).then(physical),
+    () => plain(path.dirname(source), true).then(physical),
+    () => hashFile(source),
+  ], read => read());
+  if (assertCurrent) await assertCurrent();
   try { await link(source, destination); }
   catch (e) { if (e.code !== "EEXIST") throw e; }
-  const after = await hashFile(destination);
-  if (!equal(before, after) || !equal(before, await hashFile(source))
-      || !equal(parent, physical(await plain(path.dirname(destination), true)))
-      || !equal(sourceParent, physical(await plain(path.dirname(source), true)))) {
+
+  // The post-link hash belongs to the shared inode. Both names must freshly
+  // resolve to that exact inode, length and timestamps after the hash.
+  let hashed;
+  const after = await hashFile(destination, value => { hashed = value; });
+  const [liveDestination, liveSource, destinationDirectory, sourceDirectory] = await readGroup([
+    () => plain(destination), () => plain(source),
+    () => plain(path.dirname(destination), true), () => plain(path.dirname(source), true),
+  ], read => read());
+  const matchesHash = file => equal(physical(file), physical(hashed))
+    && file.size === hashed.size && file.mtimeNs === hashed.mtimeNs && file.ctimeNs === hashed.ctimeNs;
+  if (!equal(before, after) || !matchesHash(liveDestination) || !matchesHash(liveSource)
+      || !equal(parent, physical(destinationDirectory)) || !equal(sourceParent, physical(sourceDirectory))) {
     throw fail("Immutable object hardlink identity changed");
   }
   return after;
@@ -110,12 +179,13 @@ export class OwnedNativeObjectStore {
     return result.operation;
   }
   async #guard() {
-    await this.assertCurrent();
+    const directories = [];
     let cursor = this.dataDir;
     while (true) {
-      await plain(cursor, true);
+      directories.push(cursor);
       const next = path.dirname(cursor); if (next === cursor) break; cursor = next;
     }
+    await readGroup(directories, directory => plain(directory, true));
     if (!await absent(path.dirname(this.root))) await plain(path.dirname(this.root), true);
     const hooks = path.join(this.root, "empty-hooks");
     if (!await absent(hooks)) {
@@ -127,6 +197,7 @@ export class OwnedNativeObjectStore {
         throw fail("Ambient Git storage or history input is not allowed");
       }
     }
+    await this.assertCurrent();
   }
   async #git(root, args, options) {
     await this.#guard();
@@ -205,7 +276,9 @@ export class OwnedNativeObjectStore {
     }
     const grafts = String(await this.#git(sourceRoot, ["rev-parse", "--path-format=absolute", "--git-path", "info/grafts"]));
     if (!await absent(path.resolve(sourceRoot, grafts))) throw fail("Source contains rewritten graft history");
-    for (const c of inputs) await this.#git(sourceRoot, ["cat-file", "-e", c + "^{commit}"]);
+    if (!await hasExactGitCommitObjects((args, options) => this.#git(sourceRoot, args, options), inputs)) {
+      throw fail("Source is missing an exact object-store input commit");
+    }
     const objects = String(await this.#git(sourceRoot, ["rev-list", "--objects", "--no-object-names", ...inputs])).split(/\r?\n/u).filter(Boolean).sort();
     if (!objects.length || objects.some(x => !oid(x)) || new Set(objects).size !== objects.length) throw fail("Source object closure is malformed");
     const closureSha256 = digest(objects.join("\n") + "\n");
@@ -214,7 +287,9 @@ export class OwnedNativeObjectStore {
     let row = await this.#create(id, binding);
     row = await this.#transfer(sourceRoot, objects, id, row);
     if (row.status !== "succeeded") {
-      for (const c of inputs) await this.#git(this.repository, ["cat-file", "-e", c + "^{commit}"]);
+      if (!await hasExactGitCommitObjects((args, options) => this.#git(this.repository, args, options), inputs)) {
+        throw fail("Object store is missing an exact input commit");
+      }
       await this.#git(this.repository, ["fsck", "--connectivity-only", "--no-dangling", ...inputs]);
       const refRoot = "refs/agent-hub/objects/" + digest(id);
       for (const [i, c] of inputs.entries()) {
@@ -271,60 +346,96 @@ export class OwnedNativeObjectStore {
   }
 
   async #linkObjects(repository, required) {
-    const linked = new Set();
-    const sourceObjects = path.join(this.repository, "objects"), destObjects = path.join(repository, ".git", "objects");
-    for (const directory of await readdir(sourceObjects, { withFileTypes: true })) {
-      if (!/^(?:[a-f0-9]{2}|pack)$/u.test(directory.name)) continue;
-      const from = path.join(sourceObjects, directory.name), to = path.join(destObjects, directory.name);
-      await plain(from, true); await mkdir(to, { recursive: true }); await plain(to, true);
-      const files = await readdir(from), selectedPacks = new Set();
-      if (directory.name === "pack") {
-        for (const file of files.filter(f => /^pack-[a-f0-9]{40}\.idx$/u.test(f))) {
-          await plain(path.join(from, file));
-          const stem = file.slice(0, -4);
-          await plain(path.join(from, stem + ".pack"));
-          // Read only the immutable index to select a pack family. Do not
-          // decompress every unrelated archived pack for each consumer.
-          const indexFile = path.join(from, file), indexIdentity = await hashFile(indexFile);
-          const inventory = String(await this.#git(this.repository, ["show-index"], { input: await readFile(indexFile) }));
-          if (!equal(indexIdentity, await hashFile(indexFile))) throw fail("Owned pack index changed");
-          const packed = inventory.split(/\r?\n/u).filter(Boolean).map(line => {
+    const sourceObjects = path.join(this.repository, "objects");
+    const destObjects = path.join(repository, ".git", "objects");
+    const inventory = await measureTaskOperation("native:object-inventory", async () => {
+      const entries = (await readdir(sourceObjects, { withFileTypes: true }))
+        .filter(entry => /^(?:[a-f0-9]{2}|pack)$/u.test(entry.name));
+      const directories = await readInventory(entries, async ({ name }) => {
+        const from = path.join(sourceObjects, name);
+        await plain(from, true);
+        return { name, from, files: new Set(await readdir(from)) };
+      });
+      const files = directories.flatMap(directory => [...directory.files].flatMap(file => {
+        const pack = directory.name === "pack";
+        if (pack && (file === "multi-pack-index" || /^pack-[a-f0-9]{40}\.keep$/u.test(file))) return [];
+        if (!(pack ? /^pack-[a-f0-9]{40}\.(?:pack|idx|rev|bitmap)$/u : /^[a-f0-9]{38}$/u).test(file)) {
+          throw fail("Foreign object-store entry");
+        }
+        const stem = pack ? file.slice(0, file.lastIndexOf(".")) : null;
+        if (pack && (!directory.files.has(stem + ".idx") || !directory.files.has(stem + ".pack"))) {
+          throw fail("Owned pack pair is incomplete");
+        }
+        return [{ directory, file, stem, source: path.join(directory.from, file) }];
+      }));
+      await readInventory(files, async ({ source }) => { await plain(source); });
+      return files;
+    });
+    const selectedPacks = await measureTaskOperation("native:object-pack-indexes", async () => {
+      const selected = new Set();
+      const indexes = inventory.filter(({ stem, file }) => stem && file.endsWith(".idx"));
+      for (let offset = 0; offset < indexes.length; offset += inventoryBatchSize) {
+        const proof = await readGroup(indexes.slice(offset, offset + inventoryBatchSize), async ({ source, stem }) => {
+          const identity = await hashFile(source);
+          const bytes = await readFile(source);
+          if (digest(bytes) !== identity.sha256) throw fail("Owned pack index changed");
+          const contains = ownedPackIndexContains(bytes, stem.slice(5), required);
+          if (contains !== null && !equal(identity, await hashFile(source))) throw fail("Owned pack index changed");
+          return { source, stem, identity, bytes, contains };
+        });
+        for (const { source, stem, identity, bytes, contains } of proof) {
+          if (contains === true) selected.add(stem);
+          if (contains !== null) continue;
+
+          // Older formats still use the existing guarded, serial Git owner.
+          const rows = String(await this.#git(this.repository, ["show-index"], { input: bytes }));
+          const packed = rows.split(/\r?\n/u).filter(Boolean).map(line => {
             const match = /^\d+ ([a-f0-9]{40})(?: \([a-f0-9]{8}\))?$/u.exec(line);
             if (!match) throw fail("Owned pack index inventory is malformed");
             return match[1];
           });
           if (!packed.length) throw fail("Owned pack inventory is empty");
-          if (packed.some(x => required.has(x))) selectedPacks.add(stem);
+          if (!equal(identity, await hashFile(source))) throw fail("Owned pack index changed");
+          if (packed.some(id => required.has(id))) selected.add(stem);
         }
       }
-      for (const file of files) {
-        if (directory.name === "pack" && (file === "multi-pack-index" || /^pack-[a-f0-9]{40}\.keep$/u.test(file))) continue;
-        if (!(directory.name === "pack" ? /^pack-[a-f0-9]{40}\.(?:pack|idx|rev|bitmap)$/u : /^[a-f0-9]{38}$/u).test(file)) throw fail("Foreign object-store entry");
-        await plain(path.join(from, file));
-        if (directory.name === "pack") {
-          const stem = file.replace(/\.[^.]+$/u, "");
-          if (!files.includes(stem + ".idx") || !files.includes(stem + ".pack")) throw fail("Owned pack pair is incomplete");
-          if (!selectedPacks.has(stem)) continue;
-        } else if (!required.has(directory.name + file)) continue;
-        await immutableLink(path.join(from, file), path.join(to, file));
-        linked.add(path.relative(repository, path.join(to, file)).split(path.sep).join("/"));
+      return selected;
+    });
+    const selected = inventory.filter(({ stem, directory, file }) => stem
+      ? selectedPacks.has(stem) : required.has(directory.name + file));
+    recordTaskOperationTiming("native:object-inventory-size",
+      { files: inventory.length, packs: selectedPacks.size, aliases: selected.length, objects: required.size });
+    return measureTaskOperation("native:object-aliases", async () => {
+      const linked = new Set();
+      let currentDirectory = null;
+      for (const { directory, source, file } of selected) {
+        const to = path.join(destObjects, directory.name);
+        if (currentDirectory !== to) {
+          await plain(directory.from, true);
+          await mkdir(to, { recursive: true }); await plain(to, true);
+          currentDirectory = to;
+        }
+        const destination = path.join(to, file);
+        await immutableLink(source, destination, () => this.#guard());
+        linked.add(path.relative(repository, destination).split(path.sep).join("/"));
       }
-    }
-    return linked;
+      return linked;
+    });
   }
 
   async provision({ sourceRoot, repository, inputs, identityHash }) {
     if (!/^[a-f0-9]{64}$/u.test(identityHash)) throw fail("Exact native consumer identity required");
     return this.withLease(async () => {
-      await this.#pool();
-      const imported = await this.#import(sourceRoot, inputs);
+      await measureTaskOperation("native:object-pool", () => this.#pool());
+      const imported = await measureTaskOperation("native:object-import", () => this.#import(sourceRoot, inputs));
       const binding = { ...this.descriptor(), repository: path.resolve(repository), inputs, identityHash,
         importOperationId: imported.operationId };
       let row = await this.#create("native-object-consumer:" + identityHash, binding);
       if (row.status !== "succeeded") {
         if (!await absent(repository)) throw fail("Unfinished native consumer requires its original recovery");
-        const objects = String(await this.#git(this.repository,
-          ["rev-list", "--objects", "--no-object-names", ...inputs])).split(/\r?\n/u).filter(Boolean).sort();
+        const closure = await measureTaskOperation("native:object-closure", () => this.#git(this.repository,
+          ["rev-list", "--objects", "--no-object-names", ...inputs]));
+        const objects = String(closure).split(/\r?\n/u).filter(Boolean).sort();
         if (objects.some(x => !oid(x)) || new Set(objects).size !== objects.length
             || objects.length !== imported.metadata.objectStorage.objectCount
             || digest(objects.join("\n") + "\n") !== imported.metadata.objectStorage.closureSha256) {
@@ -337,8 +448,12 @@ export class OwnedNativeObjectStore {
         if (process.platform === "win32") await this.#git(repository, ["config", "core.longpaths", "true"]);
         await this.#git(repository, ["config", "gc.auto", "0"]);
         await this.#linkObjects(repository, required);
-        for (const c of inputs) await this.#git(repository, ["cat-file", "-e", c + "^{commit}"]);
-        await this.#git(repository, ["fsck", "--connectivity-only", "--no-dangling", ...inputs]);
+        await measureTaskOperation("native:object-connectivity", async () => {
+          if (!await hasExactGitCommitObjects((args, options) => this.#git(repository, args, options), inputs)) {
+            throw fail("Object consumer is missing an exact input commit");
+          }
+          await this.#git(repository, ["fsck", "--connectivity-only", "--no-dangling", ...inputs]);
+        });
         row = await this.#patch(row, "linked", { physicalRepository: physical(await plain(repository, true)),
           physicalGit: physical(await plain(path.join(repository, ".git"), true)) }, true);
       }
@@ -359,6 +474,15 @@ export class OwnedNativeObjectStore {
         const stored = await this.readArchive(row.metadata.archive);
         await this.#retireTransferAliases(row);
         return stored;
+      }
+      if (!row.metadata.gitIdentity) {
+        // Bind new synthetic anchor authorship once to this original archive.
+        // Captured original commit objects are imported byte-for-byte below.
+        const identity = String(await this.#git(this.repository, ["-c", "user.name=Agent Hub Storage",
+          "-c", "user.email=storage@invalid", "var", "GIT_AUTHOR_IDENT"]));
+        const match = /^(.*) <([^<>\r\n]+)> \d+ [+-]\d{4}$/u.exec(identity);
+        if (!match || /[\r\n<>]/u.test(match[1])) throw fail("Archive Git identity is invalid");
+        row = await this.#patch(row, "git-identity-bound", { gitIdentity: { name: match[1], email: match[2] } });
       }
       const grafts = String(await this.#git(sourceRoot, ["rev-parse", "--path-format=absolute", "--git-path", "info/grafts"]));
       if (!await absent(path.resolve(sourceRoot, grafts))) throw fail("Archive source has rewritten history");
@@ -406,8 +530,8 @@ export class OwnedNativeObjectStore {
       const commitTree = async (tree, ancestors, message) => String(await this.#git(this.repository,
         ["hash-object", "-t", "commit", "-w", "--stdin"], { input: "tree " + tree + "\n"
           + ancestors.map(c => "parent " + c + "\n").join("")
-          + "author Agent Hub Storage <storage@invalid> " + timestamp + " +0000\n"
-          + "committer Agent Hub Storage <storage@invalid> " + timestamp + " +0000\n\n" + message + "\n" }));
+          + "author " + row.metadata.gitIdentity.name + " <" + row.metadata.gitIdentity.email + "> " + timestamp + " +0000\n"
+          + "committer " + row.metadata.gitIdentity.name + " <" + row.metadata.gitIdentity.email + "> " + timestamp + " +0000\n\n" + message + "\n" }));
       while (roots.length > 32) {
         const next = [];
         for (let i = 0; i < roots.length; i += 32) next.push(await commitTree(originalTree, roots.slice(i, i + 32), "Preserved original Git DAG"));
@@ -646,12 +770,17 @@ export class OwnedNativeObjectStore {
     }));
   }
 
-  async withInputMath({ sourceRoot, inputs }, verify) {
+  async withInputMath({ sourceRoot, inputs, sources = [{ sourceRoot, inputs }] }, verify) {
     return this.withLease(async () => {
       await this.#pool();
-      const imported = await this.#import(sourceRoot, [...new Set(inputs)]);
-      await this.#retireTransferAliases(imported);
-      return this.#withMath({ inputs }, verify);
+      const allInputs = [];
+      for (const source of sources) {
+        const selected = [...new Set(source.inputs)];
+        const imported = await this.#import(source.sourceRoot, selected);
+        await this.#retireTransferAliases(imported);
+        allInputs.push(...selected);
+      }
+      return this.#withMath({ inputs: inputs ?? [...new Set(allInputs)] }, verify);
     });
   }
 

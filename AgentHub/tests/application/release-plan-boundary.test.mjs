@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { TaskReleasePlanService } from "../../src/application/task-release-plan-service.mjs";
-import { WorkspaceReleasePreflightService } from "../../src/application/workspace-release-preflight-service.mjs";
+import { TaskCompositionPlanService } from "../../src/application/task-composition-plan-service.mjs";
+import { TaskIntegrationService } from "../../src/application/task-integration-service.mjs";
 import { measureTaskOperation, withTaskOperationTiming } from "../../src/infrastructure/process/task-operation-timing.mjs";
 
 const projectRoot = path.resolve("planner-boundary-fixture");
@@ -31,10 +31,10 @@ function fixture() {
     releaseIntegrationEvidence: async ({ tasks }) => ({ tasks: tasks.map(task => ({ ...task, baseCommit: base })) }),
   };
   const spans = [];
-  const planner = new TaskReleasePlanService({ taskBoard: board, taskGitWorkspaces: taskGit,
+  const planner = new TaskCompositionPlanService({ taskBoard: board, taskGitWorkspaces: taskGit,
     measureOperation: async (stage, run) => { spans.push(stage); return run(); } });
   let mutate = async () => {};
-  const service = new WorkspaceReleasePreflightService({
+  const service = new TaskIntegrationService({
     releasePlanner: planner, taskGitWorkspaces: taskGit,
     releaseGitWorkspaces: {
       withAwaitTransition: (_workspace, run) => run(),
@@ -54,7 +54,6 @@ function fixture() {
       },
     },
     readPublicationState: async () => ({ repositories: [{ root: projectRoot, revision: base }] }),
-    resolveReleaseValidationSource: () => assert.fail("No validation child"),
   });
   const run = () => service.prepareAwaitAcceptance({ workspaceId: "workspace", projectRoot,
     acceptingTask: { id: rows[19].id, revision: 5 }, operationId: "same-original",
@@ -86,7 +85,7 @@ function selectedProof(task, proofTree = base) {
   return { selectedCompositionRequired: true, selectedComposition: value };
 }
 
-for (const mutation of ["releaseRevision", "result", "branch", "targetRevision", "membership", "selectedProof"]) {
+for (const mutation of ["releaseRevision", "result", "branch", "taskNumber", "targetRevision", "membership", "selectedProof"]) {
   test(`union pass rereads canonical ${mutation} after awaiting Git`, async () => {
     const f = fixture();
     let proofTree = base, changed = false;
@@ -99,6 +98,7 @@ for (const mutation of ["releaseRevision", "result", "branch", "targetRevision",
         if (mutation === "releaseRevision") f.rows[0].releaseRevision++;
         if (mutation === "result") f.rows[0].gitReferences[0].resultCommit = "d".repeat(40);
         if (mutation === "branch") f.rows[0].gitReferences[0].branch = "agenthub/task/foreign/fixture";
+        if (mutation === "taskNumber") f.rows[0].taskNumber = "HUB-111";
         if (mutation === "targetRevision") f.rows[19].revision++;
         if (mutation === "membership") f.rows[0].workflowStatus = "testing";
         if (mutation === "selectedProof") proofTree = "e".repeat(40);

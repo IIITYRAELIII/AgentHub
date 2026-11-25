@@ -10,13 +10,14 @@
   // Smoothed highlight segments in the original 1672 x 941 image coordinates.
   // Curved ridges omit pixel jitter; crystal segments keep their sharp corners.
   // Each visible segment owns its light: no travel through masked-out gaps.
+  const upperRibbon = "M500.20 637.20 C509.84 640.55 541.02 651.90 558.03 657.27 C575.05 662.65 587.91 666.55 602.28 669.46 C616.65 672.38 632.36 673.64 644.26 674.76 C656.16 675.88 668.79 675.96 673.70 676.20 C677.70 676.40 681.70 676.30 685.70 676.20 C691.32 676.05 703.22 676.73 719.40 675.33 C735.57 673.93 763.36 671.18 782.73 667.78 C802.09 664.38 822.70 658.28 835.56 654.95 C848.42 651.62 848.59 651.50 859.88 647.79 C871.16 644.08 879.18 641.87 903.25 632.69 C927.32 623.51 980.16 601.79 1004.30 592.71 C1028.45 583.63 1035.52 582.07 1048.14 578.21 C1060.76 574.35 1069.65 571.88 1080.03 569.56 C1090.42 567.24 1101.36 565.59 1110.44 564.28 C1119.51 562.98 1125.67 562.37 1134.46 561.71 C1143.26 561.04 1155.41 560.49 1163.20 560.31 C1170.99 560.13 1171.14 560.06 1181.22 560.63 C1191.30 561.20 1208.85 562.17 1223.66 563.74 C1238.48 565.30 1256.35 567.81 1270.11 570.04 C1283.88 572.27 1294.32 574.49 1306.25 577.12 C1318.18 579.76 1330.07 582.66 1341.72 585.87 C1353.36 589.08 1365.76 592.95 1376.10 596.37 C1386.44 599.79 1391.14 601.11 1403.76 606.38 C1416.39 611.65 1436.92 620.52 1451.87 627.98 C1466.83 635.45 1478.39 641.32 1493.48 651.17 C1508.58 661.03 1527.69 675.84 1542.43 687.12 C1557.17 698.41 1575.32 713.60 1581.90 718.90";
+
   const contours = {
   "nexus": [
     "M248.80 55.50 C247.85 59.70 244.54 73.28 243.07 80.72 C241.60 88.16 240.78 92.52 239.97 100.12 C239.17 107.72 238.49 118.67 238.25 126.32 C238.01 133.96 238.14 138.75 238.52 145.98 C238.90 153.22 239.43 160.85 240.53 169.73 C241.63 178.62 243.55 191.02 245.13 199.29 C246.70 207.56 247.91 212.17 249.97 219.34 C252.04 226.51 253.91 233.18 257.51 242.33 C261.11 251.47 266.28 263.75 271.59 274.22 C276.91 284.68 282.30 294.12 289.41 305.12 C296.52 316.11 302.94 325.27 314.25 340.18 C325.57 355.08 345.43 377.79 357.32 394.55 C369.22 411.31 378.22 427.64 385.63 440.72 C393.04 453.79 396.35 461.20 401.80 473.00 C407.25 484.80 413.63 499.80 418.32 511.51 C423.01 523.22 423.50 526.80 429.96 543.24 C436.42 559.69 448.73 591.78 457.07 610.18 C465.42 628.59 476.03 645.96 480.04 653.69 C484.06 661.41 481.00 655.29 481.18 656.52 C481.36 657.76 481.11 660.34 481.10 661.10",
     "M477.50 672.20 C477.70 672.85 470.56 670.22 478.68 676.07 C486.80 681.92 511.15 698.35 526.20 707.30 C541.24 716.25 555.77 723.62 568.95 729.77 C582.13 735.93 592.12 740.05 605.28 744.25 C618.44 748.46 635.79 752.28 647.90 754.99 C660.00 757.69 666.63 758.86 677.92 760.49 C689.20 762.12 702.21 763.70 715.62 764.76 C729.02 765.82 746.24 766.62 758.35 766.87 C770.46 767.13 776.40 766.92 788.27 766.27 C800.14 765.62 815.72 764.53 829.58 762.97 C843.44 761.41 858.74 759.06 871.43 756.92 C884.12 754.77 892.68 753.15 905.70 750.12 C918.72 747.09 924.14 746.72 949.54 738.72 C974.95 730.73 1033.93 710.06 1058.11 702.17 C1082.29 694.29 1080.25 694.91 1094.64 691.42 C1109.03 687.93 1131.45 683.38 1144.44 681.24 C1157.44 679.09 1162.21 679.05 1172.59 678.55 C1182.97 678.04 1196.05 677.94 1206.72 678.19 C1217.40 678.44 1227.41 679.15 1236.63 680.04 C1245.85 680.92 1248.42 680.38 1262.04 683.51 C1275.67 686.64 1304.02 694.50 1318.36 698.83 C1332.70 703.16 1337.06 705.03 1348.07 709.47 C1359.08 713.90 1371.88 719.43 1384.43 725.44 C1396.99 731.45 1409.88 738.09 1423.42 745.54 C1436.95 752.98 1439.26 753.07 1465.65 770.11 C1492.05 787.14 1559.47 833.42 1581.78 847.73 C1604.08 862.04 1593.45 852.69 1599.47 855.97 C1605.49 859.25 1611.76 863.96 1617.89 867.40 C1624.03 870.83 1628.22 873.44 1636.29 876.58 C1644.36 879.72 1660.21 884.48 1666.30 886.23 C1672.38 887.99 1671.72 886.96 1672.80 887.10",
     "M1.60 573.20 C2.58 571.36 1.53 570.94 7.50 562.18 C13.46 553.43 27.34 533.11 37.37 520.67 C47.40 508.23 56.95 497.65 67.67 487.54 C78.40 477.43 90.75 467.87 101.71 460.01 C112.67 452.16 125.95 444.79 133.43 440.41 C140.90 436.02 140.21 436.55 146.58 433.70 C152.94 430.85 161.35 426.65 171.62 423.31 C181.90 419.98 198.14 415.71 208.25 413.69 C218.36 411.66 225.54 411.65 232.26 411.15 C238.98 410.65 243.06 410.51 248.56 410.69 C254.07 410.86 260.97 411.31 265.30 412.20 C269.62 413.08 272.97 415.37 274.50 416.00",
-    "M500.20 637.20 C509.84 640.55 541.02 651.90 558.03 657.27 C575.05 662.65 587.91 666.55 602.28 669.46 C616.65 672.38 632.36 673.64 644.26 674.76 C656.16 675.88 668.79 675.96 673.70 676.20",
-    "M685.70 676.20 C691.32 676.05 703.22 676.73 719.40 675.33 C735.57 673.93 763.36 671.18 782.73 667.78 C802.09 664.38 822.70 658.28 835.56 654.95 C848.42 651.62 848.59 651.50 859.88 647.79 C871.16 644.08 879.18 641.87 903.25 632.69 C927.32 623.51 980.16 601.79 1004.30 592.71 C1028.45 583.63 1035.52 582.07 1048.14 578.21 C1060.76 574.35 1069.65 571.88 1080.03 569.56 C1090.42 567.24 1101.36 565.59 1110.44 564.28 C1119.51 562.98 1125.67 562.37 1134.46 561.71 C1143.26 561.04 1155.41 560.49 1163.20 560.31 C1170.99 560.13 1171.14 560.06 1181.22 560.63 C1191.30 561.20 1208.85 562.17 1223.66 563.74 C1238.48 565.30 1256.35 567.81 1270.11 570.04 C1283.88 572.27 1294.32 574.49 1306.25 577.12 C1318.18 579.76 1330.07 582.66 1341.72 585.87 C1353.36 589.08 1365.76 592.95 1376.10 596.37 C1386.44 599.79 1391.14 601.11 1403.76 606.38 C1416.39 611.65 1436.92 620.52 1451.87 627.98 C1466.83 635.45 1478.39 641.32 1493.48 651.17 C1508.58 661.03 1527.69 675.84 1542.43 687.12 C1557.17 698.41 1575.32 713.60 1581.90 718.90",
+    upperRibbon,
     "M1004.80 1.00 C1005.40 0.97 999.56 -0.95 1008.37 0.83 C1017.18 2.61 1043.24 8.84 1057.66 11.69 C1072.08 14.54 1079.95 15.87 1094.91 17.93 C1109.86 19.98 1125.81 21.93 1147.39 24.03 C1168.97 26.13 1202.88 28.49 1224.39 30.53 C1245.90 32.57 1260.39 34.10 1276.46 36.25 C1292.53 38.40 1308.34 40.98 1320.81 43.41 C1333.28 45.84 1338.33 46.58 1351.28 50.82 C1364.22 55.05 1382.23 61.68 1398.48 68.82 C1414.73 75.96 1437.61 87.16 1448.80 93.65 C1459.98 100.14 1460.54 103.17 1465.60 107.78 C1470.66 112.39 1474.36 115.91 1479.14 121.30 C1483.92 126.70 1489.65 133.87 1494.29 140.15 C1498.93 146.43 1502.24 150.34 1506.98 158.99 C1511.72 167.64 1519.01 183.53 1522.71 192.05 C1526.41 200.57 1526.90 202.95 1529.17 210.11 C1531.44 217.27 1534.05 224.63 1536.31 235.02 C1538.57 245.41 1541.03 260.30 1542.74 272.46 C1544.45 284.62 1545.91 297.24 1546.57 307.98 C1547.24 318.72 1547.23 326.38 1546.76 336.90 C1546.29 347.43 1544.79 362.25 1543.75 371.11 C1542.70 379.97 1542.75 380.01 1540.48 390.07 C1538.20 400.14 1533.90 419.58 1530.10 431.51 C1526.31 443.44 1520.75 454.76 1517.70 461.64 C1514.65 468.52 1514.43 468.62 1511.80 472.78 C1509.17 476.94 1506.30 481.44 1501.93 486.61 C1497.57 491.77 1491.30 498.36 1485.59 503.77 C1479.89 509.18 1474.77 513.51 1467.71 519.04 C1460.64 524.57 1454.30 529.51 1443.18 536.94 C1432.06 544.38 1411.70 557.32 1401.00 563.67 C1390.29 570.01 1385.11 571.38 1378.96 575.00 C1372.80 578.62 1366.80 582.79 1364.06 585.41 C1361.33 588.04 1363.41 589.85 1362.55 590.75 C1361.69 591.65 1359.51 590.79 1358.90 590.80"
   ],
   "nexus-refraction": [
@@ -64,41 +65,79 @@
   ]
 };
 
+  function edgeMask(paths, viewBox) {
+    const strokes = paths.map(edge => `<path d="${edge}"/>`).join("");
+    const mask = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}"><defs><filter id="soft" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation=".65"/></filter></defs><g fill="none" stroke="white" stroke-linecap="round" stroke-linejoin="round" filter="url(#soft)"><g stroke-width="10" opacity=".12">${strokes}</g><g stroke-width="4" opacity=".4">${strokes}</g><g stroke-width="2.2">${strokes}</g></g></svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(mask)}")`;
+  }
+
+  function appendRibbonGlint(scene, glint, route, points) {
+    // A shared mask lets a passing glint light up the next ribbon at a crossing.
+    // Clip each light to its own edge. Bound the mask to the sampled route,
+    // allowing for half a sampling step and the soft outer stroke.
+    const padding = 14;
+    const xs = points.map(point => point.x);
+    const ys = points.map(point => point.y);
+    const left = Math.floor(Math.min(...xs)) - padding;
+    const top = Math.floor(Math.min(...ys)) - padding;
+    const width = Math.ceil(Math.max(...xs)) + padding - left;
+    const height = Math.ceil(Math.max(...ys)) + padding - top;
+    const track = document.createElement("span");
+    track.className = "nexus-ribbon-track";
+    Object.assign(track.style, {
+      left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px`,
+      maskImage: edgeMask([route], `${left} ${top} ${width} ${height}`),
+    });
+    glint.style.left = `${-left}px`;
+    glint.style.top = `${-top}px`;
+    track.append(glint);
+    scene.append(track);
+  }
+
   function createScene(scene) {
     const node = document.createElement("span");
     node.className = "nexus-contour-scene";
     const paths = contours[scene];
-    const strokes = paths.map(edge => `<path d="${edge}"/>`).join("");
-    const mask = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1672 941"><defs><filter id="soft" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation=".65"/></filter></defs><g fill="none" stroke="white" stroke-linecap="round" stroke-linejoin="round" filter="url(#soft)"><g stroke-width="10" opacity=".12">${strokes}</g><g stroke-width="4" opacity=".4">${strokes}</g><g stroke-width="2.2">${strokes}</g></g></svg>`;
-    node.style.maskImage = `url("data:image/svg+xml,${encodeURIComponent(mask)}")`;
-    if (scene === "nexus-field") {
-      // Fine filaments cannot be represented by one wider vector stroke.
-      // The original image clips the travelling light to its actual threads.
+    if (scene === "nexus-refraction") {
+      node.style.maskImage = edgeMask(paths, "0 0 1672 941");
+    } else if (scene === "nexus-field") {
       node.style.maskImage = "var(--nexus-panel-image)";
       node.style.maskMode = "luminance";
     }
-    paths.forEach((route, index) => {
+    let lightIndex = 0;
+    for (const route of paths) {
       const glint = document.createElement("span");
       glint.className = "nexus-edge-glint";
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       path.setAttribute("d", route);
       const length = path.getTotalLength();
       const steps = Math.ceil(length / 12);
-      const keyframes = Array.from({ length: steps + 1 }, (_, step) => {
+      const points = Array.from({ length: steps + 1 }, (_, step) => path.getPointAtLength(step / steps * length));
+      const keyframes = points.map((point, step) => {
         const progress = step / steps;
-        const point = path.getPointAtLength(progress * length);
         return {
           transform: `translate3d(${point.x - 120}px, ${point.y - 120}px, 0)`,
           opacity: Math.min(1, progress / .08, (1 - progress) / .12),
         };
       });
       const duration = Math.max(6000, Math.min(18000, length / 65 * 1000));
-      node.append(glint);
-      glint.animate(keyframes, {
+      if (scene === "nexus") appendRibbonGlint(node, glint, route, points);
+      else node.append(glint);
+      const phase = performance.now() + lightIndex * 4100;
+      const animate = (light, offset) => light.animate(keyframes, {
         duration, iterations: Infinity,
-        delay: -((performance.now() + index * 4100) % duration),
+        delay: -((phase + offset) % duration),
       });
-    });
+      animate(glint, 0);
+      lightIndex++;
+      if (route === upperRibbon) {
+        // The two lights share one uninterrupted edge and fade only at its ends.
+        const second = glint.cloneNode(false);
+        glint.after(second);
+        animate(second, duration / 2);
+        lightIndex++;
+      }
+    }
     return node;
   }
 

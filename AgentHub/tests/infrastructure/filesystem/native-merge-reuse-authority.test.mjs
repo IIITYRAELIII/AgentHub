@@ -36,7 +36,7 @@ const jsonRead = file => readFile(file, "utf8").then(JSON.parse, error => {
   throw error;
 });
 const jsonWrite = (file, value) => writeFile(file, JSON.stringify(value));
-const conflictStages = state => state.conflict.stages.filter(([, entry]) => !entry.endsWith(" 0"));
+
 const treeEntries = async (repository, tree) => new Map((await gitAt(repository,
   ["ls-tree", "-r", "-z", tree], { rawOutput: true })).split("\0").filter(Boolean).map(row => {
   const i = row.indexOf("\t"); return [row.slice(i + 1), row.slice(0, i)];

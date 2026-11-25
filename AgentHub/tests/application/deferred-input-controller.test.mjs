@@ -1218,3 +1218,65 @@ test("DeferredInputController does not serialize unrelated tasks", async () => {
 
   assert.deepEqual(started.sort(), ["a", "b"]);
 });
+
+test("deferred rollout failure retains only bounded numeric worker timings", async () => {
+  let observed;
+  const owner = Object.create(DeferredInputController.prototype);
+  owner.commandTrace = {
+    startBestEffortSpan: (input) => ({
+      finish(output) { observed = { ...input, ...output }; },
+    }),
+  };
+  const badRead = Object.assign(new Error("contents must not enter telemetry"), {
+    code: "ERR_IO_FIXTURE",
+    timing: { queueWaitMs: 17, readMs: 42, source: "internal path" },
+  });
+  await assert.rejects(owner.traceAdmissionStep({ clientUserMessageId: "original" },
+    "deferred-rollout-read", async () => { throw badRead; }), badRead);
+  assert.equal(observed.commandId, "original");
+  assert.equal(observed.outcome, "failed");
+  assert.deepEqual(observed.metadata, { errorCode: "ERR_IO_FIXTURE", queueWaitMs: 17, readMs: 42 });
+});
+
+test("a confirmed rollout failure pauses the same saved command without scheduling a repeat", async () => {
+  let reads = 0, starts = 0;
+  const state = fixture({
+    isBlocked: async (item) => { item.waitReason = "codex-rollout-corrupt"; return ++reads === 1; },
+    start: async (item) => { assert.equal(item.clientUserMessageId, "original"); ++starts; },
+  });
+  const item = { id: "one", clientUserMessageId: "original", attempts: 0, temporaryFiles: ["fixture.png"] };
+  state.queuedInputs.set(item.id, item);
+  await state.controller.process(item.id);
+  assert.equal(item.paused, true);
+  assert.equal(item.lastErrorCode, "ERR_CODEX_ROLLOUT_CORRUPT");
+  assert.equal(item.waitReason, undefined);
+  assert.equal(item.attempts, 0);
+  assert.deepEqual(item.temporaryFiles, ["fixture.png"]);
+  assert.equal(state.timers.length, 0);
+  await state.controller.process(item.id);
+  assert.equal(reads, 1);
+  assert.equal(starts, 0);
+  assert.equal(state.queuedInputs.get(item.id), item);
+});
+
+test("a cancelled command cannot receive a late archive-failure pause", async () => {
+  let release;
+  const state = fixture({
+    isBlocked: async (item) => {
+      await new Promise((resolve) => { release = resolve; });
+      item.waitReason = "codex-rollout-missing";
+      return true;
+    },
+    start: () => assert.fail("cancelled input started"),
+  });
+  const item = { id: "one", clientUserMessageId: "original" };
+  state.queuedInputs.set(item.id, item);
+  const processing = state.controller.process(item.id);
+  await new Promise((resolve) => setImmediate(resolve));
+  state.queuedInputs.delete(item.id);
+  release();
+  await processing;
+  assert.equal(item.paused, undefined);
+  assert.deepEqual(state.transitions, []);
+  assert.equal(state.timers.length, 0);
+});

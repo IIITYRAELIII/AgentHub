@@ -65,6 +65,20 @@ test('real durable ACK keeps both rendered ready markers clear after final time 
       const respond = (m, result) => queueMicrotask(() => window.dispatchEvent(new MessageEvent('message', {
         data: { type: 'agenthub:control-result', id: m.id, ok: true, result },
       })));
+      window.__heldHistory318 = [];
+      const replyHistory = m => {
+        const value = window.__agentHubFixture.snapshot;
+        const final = value.tasks.find(t => t.streamId === 'stream-b').latestFinal;
+        const history = { streamId: 'stream-b', provider: 'codex', threadId: 'thread-b',
+          items: [{ id: final.turnId, completed: true, status: 'completed', terminalRevision: final.revision,
+            answer: `Final revision ${final.revision}`, completedAt: final.completedAt }],
+          start: 0, end: 1, total: 1, nextBefore: null, version: `history-${final.revision}` };
+        respond(m, m.action === 'open-task' ? { history, snapshot: value } : history);
+      };
+      window.__resumeHistory318 = () => {
+        window.__holdHistory318 = false;
+        for (const message of window.__heldHistory318.splice(0)) replyHistory(message);
+      };
       window.__agentHubVscode.postMessage = m => {
         if (m.action === 'mark-task-read') {
           window.__reads318.push(m.params);
@@ -72,14 +86,8 @@ test('real durable ACK keeps both rendered ready markers clear after final time 
           return;
         }
         if (['open-task', 'task-history'].includes(m.action) && (m.params?.streamId === 'stream-b' || m.params?.threadId === 'thread-b')) {
-          if (window.__holdHistory318) return;
-          const value = window.__agentHubFixture.snapshot;
-          const final = value.tasks.find(t => t.streamId === 'stream-b').latestFinal;
-          const history = { streamId: 'stream-b', provider: 'codex', threadId: 'thread-b',
-            items: [{ id: final.turnId, completed: true, status: 'completed', terminalRevision: final.revision,
-              answer: `Final revision ${final.revision}`, completedAt: final.completedAt }],
-            start: 0, end: 1, total: 1, nextBefore: null, version: `history-${final.revision}` };
-          respond(m, m.action === 'open-task' ? { history, snapshot: value } : history);
+          if (window.__holdHistory318) { window.__heldHistory318.push(m); return; }
+          replyHistory(m);
           return;
         }
         original(m);
@@ -118,7 +126,7 @@ test('real durable ACK keeps both rendered ready markers clear after final time 
     }
     assert.equal((await service.markTaskRead({ final: old })).reason, 'stale-final');
     assert.deepEqual(await markers(page), { tab: true, card: true });
-    await page.evaluate(() => { window.__holdHistory318 = false; });
+    await page.evaluate(() => window.__resumeHistory318());
     await page.locator('[data-stream-task-id="stream-a"]:visible').first().click();
     await page.locator('[data-stream-task-id="stream-b"]:visible').first().click();
     await page.getByText('Final revision 2', { exact: true }).waitFor();

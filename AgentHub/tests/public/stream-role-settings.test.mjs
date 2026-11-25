@@ -13,18 +13,18 @@ async function roleSettingsApi() {
   return window.AgentHubStreamRoleSettings;
 }
 
-test("Stream Release Manager is an independent persisted boolean", async () => {
+test("Stream Task acceptance is an independent persisted boolean", async () => {
   const settings = await roleSettingsApi();
 
-  assert.equal(settings.releaseManagerEnabled({ releaseManager: true }), true);
-  assert.equal(settings.releaseManagerEnabled({ releaseManager: false }), false);
-  assert.equal(settings.releaseManagerEnabled({ releaseRole: "releaseManager" }), false);
+  assert.equal(settings.taskAcceptanceEnabled({ releaseManager: true }), true);
+  assert.equal(settings.taskAcceptanceEnabled({ releaseManager: false }), false);
+  assert.equal(settings.taskAcceptanceEnabled({ releaseRole: "releaseManager" }), false);
   assert.deepEqual(
-    { ...settings.withReleaseManager({ provider: "codex", model: "gpt-5.6" }, true) },
+    { ...settings.withTaskAcceptance({ provider: "codex", model: "gpt-5.6" }, true) },
     { provider: "codex", model: "gpt-5.6", releaseManager: true },
   );
   assert.deepEqual(
-    { ...settings.withReleaseManager({ provider: "claude", releaseManager: true }, false) },
+    { ...settings.withTaskAcceptance({ provider: "claude", releaseManager: true }, false) },
     { provider: "claude", releaseManager: false },
   );
 });

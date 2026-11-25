@@ -7,7 +7,7 @@ const commandTrace = window.AgentHubCommandTrace;
 const traceIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u;
 // This marker identifies the executing client code path, not a file hash or
 // the release currently served by the Hub.
-const clientAssetRevision = "hub283.client.4";
+const clientAssetRevision = "hub489.client.1";
 const documentInstanceId = commandTrace.newId();
 let previousDocumentInstanceId = "";
 try {
@@ -186,7 +186,9 @@ const liveProbeByTask = new Map();
 const liveUserMessagesByTask = new Map();
 const liveCardsByTask = new Map();
 const completionOverlaysByTask = new Map();
+const completionBoundariesByTask = new Map();
 const queueActionsInFlight = new Set();
+const acknowledgedQueueCancels = new Set();
 const optimisticQueueSteerIds = new Set();
 const optimisticDeferredClientUserMessageIds = new Set();
 const requestedContextCompactions = new Set();
@@ -220,7 +222,7 @@ function retainReadMarker(map, key, value) {
   map.delete(key);
   map.set(key, value);
 }
-const { isUserRunningProjection, projectCanonicalMessages, projectionState: canonicalProjectionState } = window.AgentHubMessageProjection;
+const { isUserRunningProjection, projectCanonicalMessages, prependOlderHistory, projectionState: canonicalProjectionState } = window.AgentHubMessageProjection;
 const {
   activeRunSubmissionTiming,
   activeRunMessageReceipts,
@@ -758,6 +760,16 @@ function nonEmptyAttachmentPatch(values) {
   return attachments.length ? { attachments } : {};
 }
 
+function retireAcceptedOutgoingQueue(message) {
+  if (message?.providerAccepted !== true || !String(message.turnId ?? "").trim()) return;
+  const clientId = String(message.clientUserMessageId ?? "").trim();
+  const optimistic = optimisticDeferredClientUserMessageIds.delete(clientId);
+  const deferred = deferredClientUserMessageIds.delete(clientId);
+  if (optimistic || deferred) commandTrace.record("ui-snapshot", "accepted-queue-retired", 0, clientId, {
+    provider: message.provider, threadId: message.threadId, streamId: message.streamId, turnId: message.turnId,
+  });
+}
+
 function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   const resolvedTaskId = outgoingTaskId(outgoingByTask, clientUserMessageId, taskIdValue);
   if (!resolvedTaskId) return "";
@@ -768,6 +780,7 @@ function updateOutgoing(taskIdValue, clientUserMessageId, patch) {
   Object.assign(message, patch.projectionState && absorbingProjection
     ? window.AgentHubMessageProjection.reduceProjectionEntity(message, { ...message, ...patch })
     : patch);
+  retireAcceptedOutgoingQueue(message);
   if (patch.projectionAuthority === "canonical" || ["accepted", "rejected"].includes(patch.deliveryState)) {
     queueMicrotask(() => window.AgentHubPruneComposerFiles?.());
   }
@@ -864,7 +877,7 @@ function reconciledMessages(taskIdValue) {
   });
   // Live snapshots, durable history and the optimistic receipt can arrive in
   // either order. Re-run idempotent deduplication after all three were merged.
-  return chronologicalMessages(projectCanonicalMessages(visible));
+  return chronologicalMessages(projectCanonicalMessages(visible), completionBoundariesByTask.get(taskIdValue));
 }
 
 function deferredEntriesForTask(snapshot, taskIdValue) {
@@ -889,6 +902,7 @@ function optimisticDeferredEntries(taskIdValue, serverEntries = []) {
   return [...outgoingMessages(taskIdValue).values()]
     .filter((message) => (
       !acceptedHistoryIds.has(String(message?.clientUserMessageId ?? "").trim())
+      && !acknowledgedQueueCancels.has(String(message.itemId ?? "").trim())
       && (
         optimisticDeferredClientUserMessageIds.has(message.clientUserMessageId)
         || serverClientIds.has(message.clientUserMessageId)
@@ -956,7 +970,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
   const deferredOrigin = confirmedCardOrigin(deferred.origin, projection.clientUserMessageId);
   const existing = messages.get(projection.clientUserMessageId);
   if (existing) {
-    Object.assign(existing, {
+    const patch = {
       projectionAuthority: "canonical",
       projectionState: projection.projectionState,
       providerAccepted: projection.providerAccepted,
@@ -971,7 +985,14 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
         ? { submittedAt: projection.submittedAt }
         : {}),
       ...(!existing.time && projection.submittedAt ? { time: projection.submittedAt } : {}),
-    });
+    };
+    const changed = Object.entries(patch).some(([key, value]) => (
+      value && typeof value === "object"
+        ? JSON.stringify(existing[key]) !== JSON.stringify(value)
+        : existing[key] !== value
+    ));
+    Object.assign(existing, patch);
+    if (changed) renderTaskMessages(stableTaskId, { preserveScroll: true });
   } else {
     rememberOutgoing(stableTaskId, {
       id: `local:${projection.clientUserMessageId}`,
@@ -998,6 +1019,7 @@ function restoreImmediateIntakeMessage(deferred, messageReceipts = []) {
       attachments,
       ...deliveryPatch(projection.deliveryState, projection),
     });
+    renderTaskMessages(stableTaskId, { preserveScroll: true });
   }
   return true;
 }
@@ -1040,20 +1062,42 @@ function canonicalAcceptedEvidence(snapshot) {
   return true;
 }
 
-function applyMessageReceipts(snapshot) {
+function applyMessageReceipts(snapshot, onAcceptedQueue = null) {
   for (const receipt of snapshot?.messageReceipts ?? []) {
     const clientUserMessageId = String(receipt?.clientUserMessageId ?? "").trim();
     const provider = String(receipt?.provider ?? "").trim();
     const threadId = String(receipt?.threadId ?? "").trim();
-    const stableTaskId = exactSnapshotTaskId(receipt, snapshot?.tasks);
+    let stableTaskId = exactSnapshotTaskId(receipt, snapshot?.tasks);
+    const receiptStreamId = String(receipt?.streamId ?? "").trim();
+    if (!stableTaskId && receiptStreamId) {
+      // A rotated source Thread may leave the bounded snapshot. Its receipt
+      // can reconcile an already-owned occurrence, not restore a guessed one.
+      const local = outgoingByTask.get(receiptStreamId)?.get(clientUserMessageId);
+      const streamExists = (snapshot?.tasks ?? []).some((task) => (
+        String(task.streamId ?? "").trim() === receiptStreamId
+      ));
+      if (streamExists && local?.provider === provider && local?.threadId === threadId
+        && (!local.streamId || local.streamId === receiptStreamId)) stableTaskId = receiptStreamId;
+    }
     if (!clientUserMessageId || !stableTaskId) continue;
     const matchedTask = snapshot.tasks.find((task) => (
       conversationTaskId(task, snapshot.tasks) === stableTaskId
       && task.provider === provider && task.threadId === threadId
     ));
-    const streamId = String(matchedTask?.streamId ?? "").trim();
+    const streamId = String(matchedTask?.streamId ?? receiptStreamId).trim();
+    const localTaskId = outgoingTaskId(outgoingByTask, clientUserMessageId, stableTaskId);
+    const local = outgoingByTask.get(localTaskId)?.get(clientUserMessageId);
+    if (local && (localTaskId !== stableTaskId || local.provider !== provider
+      || (local.streamId && local.streamId !== streamId))) continue;
     const projection = queueHistoryReceiptProjection(receipt);
     if (!projection.ownsDeferredQueue) {
+      if (projection.providerAccepted && String(receipt.turnId ?? "").trim()
+        && (optimisticDeferredClientUserMessageIds.has(clientUserMessageId)
+          || deferredClientUserMessageIds.has(clientUserMessageId))) {
+        onAcceptedQueue?.(stableTaskId, clientUserMessageId, receipt.id);
+      }
+      retireAcceptedOutgoingQueue({ clientUserMessageId, provider, threadId, streamId,
+        providerAccepted: projection.providerAccepted, turnId: receipt.turnId });
       optimisticDeferredClientUserMessageIds.delete(clientUserMessageId);
       deferredClientUserMessageIds.delete(clientUserMessageId);
     }
@@ -1136,24 +1180,71 @@ function applyMessageReceipts(snapshot) {
   }
 }
 
+function observeCompletionBoundary(taskIdValue, completion, durableMessages) {
+  const { provider, threadId, turnId } = completion;
+  const time = Date.parse(completion.time ?? "");
+  if (!Number.isFinite(time)) return false;
+  let boundaries = completionBoundariesByTask.get(taskIdValue) ?? [];
+  const previous = boundaries.at(-1);
+  if (previous?.provider !== provider || previous.threadId !== threadId) boundaries = [];
+  if (boundaries.length) {
+    if (previous.time > time) return false;
+    if (previous.time === time) {
+      if (previous.turnIds.includes(turnId)) return false;
+      previous.turnIds = [...previous.turnIds, turnId].slice(-20);
+      return true;
+    }
+  }
+  // An exact latest final can follow already confirmed history at the same tick.
+  // Keep just the identities, so page absorption cannot reverse the observed pair.
+  const durableAtBoundary = durableMessages.filter((message) => (
+    message.provider === provider && message.threadId === threadId && message.turnId
+    && message.role === "agent" && message.kind !== "subagent"
+    && Number.isFinite(message.historyOrder) && Date.parse(message.turnCompletedAt ?? "") === time
+  )).sort((left, right) => left.historyOrder - right.historyOrder);
+  const rank = durableAtBoundary.find((message) => message.turnId === turnId)?.historyOrder ?? Infinity;
+  const priorTurnIds = durableAtBoundary.filter((message) => message.historyOrder < rank).map((message) => message.turnId);
+  const turnIds = [...new Set([...priorTurnIds, turnId])].slice(-20);
+  const tiedBoundaries = boundaries.filter((boundary) => boundary.turnIds.length > 1);
+  completionBoundariesByTask.set(taskIdValue, [...tiedBoundaries, { provider, threadId, time, turnIds }].slice(-20));
+  return turnIds.length > 1;
+}
+
+function exactSnapshotFinal(selected, incomingTurnId) {
+  const final = selected?.latestFinal;
+  if (!readMarker.finalIdentity(final)) return null;
+  const provider = String(selected.provider ?? "").trim().toLowerCase();
+  const threadId = String(selected.threadId ?? "").trim();
+  const turnId = String(final.turnId).trim();
+  const answerTurnId = String(selected.lastAnswerTurnId ?? "").trim();
+  if (String(final.provider).trim().toLowerCase() !== provider || String(final.threadId).trim() !== threadId
+    || turnId === String(incomingTurnId ?? "").trim() || (answerTurnId && answerTurnId !== turnId)) return null;
+  return { provider, threadId, turnId, time: final.completedAt };
+}
+
 function rememberSnapshotCompletion(taskIdValue, selected, incomingTurnId = "") {
   const completion = snapshotCompletionCandidate(selected, incomingTurnId);
-  if (!completion) return false;
+  // Compact snapshots still carry exact final identity. The body is needed only
+  // when creating or refreshing an overlay, which remains a separate decision.
+  const terminal = selected?.latestFinal == null ? completion : exactSnapshotFinal(selected, incomingTurnId);
+  if (!completion && !terminal) return false;
   const durableMessages = historyByTask.get(taskIdValue) ?? [];
+  const boundaryChanged = terminal ? observeCompletionBoundary(taskIdValue, terminal, durableMessages) : false;
+  if (!completion) return boundaryChanged;
   if (completedConversationTurnVisible(durableMessages, {
     turnId: completion.turnId,
     answer: completion.answer,
     requireAgent: true,
   })) {
     const overlays = completionOverlaysByTask.get(taskIdValue);
-    if (!overlays?.delete(completion.turnId)) return false;
+    if (!overlays?.delete(completion.turnId)) return boundaryChanged;
     if (!overlays.size) completionOverlaysByTask.delete(taskIdValue);
     return true;
   }
   const overlays = completionOverlaysByTask.get(taskIdValue) ?? new Map();
   const existing = overlays.get(completion.turnId);
   const replacement = snapshotCompletionReplacement(existing, completion);
-  if (!replacement) return false;
+  if (!replacement) return boundaryChanged;
   const existingAgent = (Array.isArray(existing?.messages) ? existing.messages : [])
     .findLast((message) => message?.role === "agent" && message?.kind !== "subagent");
   overlays.set(replacement.turnId, {
@@ -1197,6 +1288,7 @@ function promoteLiveCompletion(taskIdValue, selected, incomingTurnId = "") {
     liveProbeByTask.delete(taskIdValue);
     liveUserMessagesByTask.delete(taskIdValue);
     completionOverlaysByTask.delete(taskIdValue);
+    completionBoundariesByTask.delete(taskIdValue);
     return true;
   }
   const liveUsers = liveUserMessagesByTask.get(taskIdValue) ?? {};
@@ -1586,6 +1678,10 @@ async function hubFetchWithin(input, init, timeoutMs, traceId) {
 }
 
 window.addEventListener("message", (event) => {
+  const nativeHost = vscode && event.origin?.startsWith("vscode-webview://")
+    && event.origin === window.location.origin;
+  if (event.origin === "null"
+    || (event.source && event.source !== window && event.source !== window.parent && !nativeHost)) return;
   const message = event.data;
   if (message?.type === "agenthub:runtime-published") {
     reloadForPublishedRuntime();
@@ -1771,10 +1867,31 @@ async function prepareSnapshotTransport() {
   if (vscode) await window.__agentHubDirectTransport?.available?.();
 }
 
+async function readHistoryHttpResponse(response, traceId, requestId) {
+  const measure = (action, operation) => commandTrace.measure("ui-control", action, operation, traceId);
+  try {
+    const text = await measure("http-history-body", () => response.text());
+    return measure("http-history-json-parse", () => JSON.parse(text));
+  } finally {
+    const entry = performance.getEntriesByName?.(response.url, "resource")?.findLast(resource =>
+      resource.serverTiming?.some(metric => metric.name === "hub-history" && metric.description === requestId));
+    if (entry?.requestStart > 0 && entry.responseEnd >= entry.responseStart && entry.responseStart >= entry.requestStart) {
+      commandTrace.record("ui-control", "http-history-resource", entry.duration, traceId, {
+        browserBeforeRequestMs: entry.requestStart - entry.startTime,
+        browserRequestToHeadersMs: entry.responseStart - entry.requestStart,
+        browserBodyTransferMs: entry.responseEnd - entry.responseStart,
+        encodedBodyBytes: entry.encodedBodySize,
+        decodedBodyBytes: entry.decodedBodySize,
+      });
+    }
+  }
+}
+
 async function httpControl(action, params = {}) {
   if (action === "snapshot" && !params.messageReceiptIds?.length) return readSnapshot(params);
   await localSessionReady;
   const commandId = crypto.randomUUID();
+  const historyTraceId = action === "task-history" ? params.clientTraceId : "";
   const payload = await retryConnectionFailure(async () => {
     const requestParams = params.clientTiming
       ? {
@@ -1795,7 +1912,9 @@ async function httpControl(action, params = {}) {
       },
       body: JSON.stringify({ action, params: requestParams, commandId }),
     }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS, params.clientTraceId);
-    const result = await response.json().catch(() => ({}));
+    const result = await (historyTraceId
+      ? readHistoryHttpResponse(response, historyTraceId, commandId)
+      : response.json()).catch(() => ({}));
     if (!response.ok || result.ok === false) throw httpControlError(response.status, result);
     return result;
   }, {
@@ -1883,7 +2002,15 @@ async function waitTaskOperationResult(admission, params) {
   if (operation.status !== "succeeded") throw Object.assign(new Error(
     operation.cancellation?.phase === "stopped" ? "Операция прервана. Незавершённая работа сохранена."
       : operation.error || `Операция ${original.requestId} требует восстановления исходного результата`), { taskOperation: operation });
-  return { ...await control("snapshot"), lifecycleResult: receipt.result };
+  let lifecycleResult = receipt.result;
+  if (lifecycleResult?.confirmationRequired && lifecycleResult.archivePreview && lifecycleResult.previewOmitted) {
+    lifecycleResult = await window.AgentHubTaskCleanupConfirmation.readArchivePreview(lifecycleResult, async (archivePreviewPage) => {
+      const value = await control("board-task-read", { id: operation.taskId,
+        operationRequestId: operation.requestId, argumentsHash: operation.argumentsHash, archivePreviewPage });
+      return value.archivePreviewPage;
+    });
+  }
+  return { ...await control("snapshot"), lifecycleResult };
 }
 
 async function control(action, params = {}) {
@@ -1899,7 +2026,7 @@ async function control(action, params = {}) {
     ])] };
   }
   const snapshotBaseline = currentSnapshotBaseline();
-  const commandId = params.clientUserMessageId || params.clientTraceId || commandTrace.currentId() || commandTrace.newId();
+  const commandId = params.clientTraceId || params.clientUserMessageId || commandTrace.currentId() || commandTrace.newId();
   const taskOperationId = ["board-task-create", "board-task-update", "board-task-status", "board-task-complete", "board-task-remove"].includes(action)
     ? params.operationId || commandTrace.newId() : null;
   const started = performance.now();
@@ -2032,7 +2159,10 @@ function modelTask(task, snapshot, effectiveSelectedId, serverSelectedId) {
       : task.lastAnswerAt,
     lastAnswer: task.lastAnswer ?? null,
     startedAt: running ? activeRunSubmissionTiming(task.run).startedAt : null,
-    unread: !running && unread,
+    unread,
+    interstreamRun: task.run?.interstreamOnly === true,
+    openQuestion: window.AgentHubApprovalForm.approvalsForTask(snapshot.pendingApprovals, task, { serverSelected })
+      .some(approval => approval.questions?.length && approval.state !== "dispatching"),
     running,
     selected: id === effectiveSelectedId,
     maintenance: task.maintenance ?? null,
@@ -2214,7 +2344,9 @@ function activeMaintenanceMessage(task) {
   const measurementStatus = String(compaction.measurementStatus ?? "");
   let text = "";
   if (status === "running") {
-    text = compaction.origin === "automatic"
+    text = compaction.dedicatedProviderTurn === true && !String(compaction.turnId ?? "").trim()
+      ? "Запуск обслуживания контекста…"
+      : compaction.origin === "automatic"
       ? "Автосвёртка контекста…"
       : "Свёртка контекста…";
   } else if (status === "completed" && (
@@ -2261,7 +2393,37 @@ function syncActiveMaintenanceMessages(tasks) {
   return changed;
 }
 
-function observeContextCompactions(tasks) {
+function reconcileContextCompactions(tasks) {
+  return (tasks ?? []).map(task => {
+    const incoming = task.context?.compaction;
+    const id = String(incoming?.operationId ?? incoming?.id ?? "");
+    if (!id) return task;
+    const observed = observedContextCompactions.get(id);
+    const sameBinding = observed?.provider === task.provider && observed?.threadId === task.threadId;
+    const previous = sameBinding ? observed.compaction : null;
+    const stableTaskId = taskId(task.provider, task.threadId, task.streamId);
+    const persisted = (maintenanceEventsByTask.get(stableTaskId) ?? []).find(event => (
+      event.id === `maintenance:compaction:${id}` && event.provider === task.provider
+      && event.threadId === task.threadId && event.maintenanceType === "compaction"
+    ));
+    const terminal = value => ["completed", "failed"].includes(value);
+    const priorRevision = Number(previous?.revision) || 0;
+    const incomingRevision = Number(incoming.revision) || 0;
+    let compaction = incoming;
+    if (previous && ((priorRevision > 0 && incomingRevision < priorRevision)
+      || (terminal(previous.status) && (incoming.status === "running"
+        || (priorRevision > 0 && incoming.status !== previous.status))))) {
+      compaction = previous;
+    } else if (persisted && terminal(persisted.maintenanceStatus)
+      && (incoming.status === "running" || (Number(persisted.revision) > incomingRevision))) {
+      compaction = { ...incoming, status: persisted.maintenanceStatus,
+        revision: persisted.revision, completedAt: persisted.time };
+    }
+    return compaction === incoming ? task : { ...task, context: { ...task.context, compaction } };
+  });
+}
+
+function observeContextCompactions(tasks, { notify = true } = {}) {
   const changed = new Set();
   for (const task of tasks ?? []) {
     const context = task.context;
@@ -2279,18 +2441,7 @@ function observeContextCompactions(tasks) {
     const previousStatus = previous.status;
     const status = String(compaction.status ?? "");
     const measurementStatus = String(compaction.measurementStatus ?? "");
-    if (status === "completed" && compaction.rotationStatus === "failed" && task.streamId) {
-      const rotationId = `maintenance:rotation:${task.streamId}:${task.provider}:${task.threadId}:${compactionId}`;
-      const detail = String(compaction.rotationMessage ?? "Новый Thread не подтвердил готовность");
-      if (rememberMaintenanceEvent(stableTaskId, {
-        id: rotationId, itemId: rotationId, provider: task.provider, threadId: task.threadId,
-        streamId: task.streamId, sourceThreadId: task.threadId,
-        maintenanceType: "rotation", maintenanceStatus: "failed",
-        maintenanceLabel: "Ротация не завершена", maintenanceDetail: detail,
-        text: `Ротация не завершена. Исходный Thread сохранён. ${detail}`,
-        time: compaction.completedAt ?? null,
-      })) changed.add(stableTaskId);
-    }
+    const rotationFailed = status === "completed" && compaction.rotationStatus === "failed" && task.streamId;
     const beforePercent = contextPercent(compaction.beforePercent)
       ?? previous.beforePercent
       ?? contextPercent(existingEvent?.beforePercent)
@@ -2303,8 +2454,9 @@ function observeContextCompactions(tasks) {
     const requested = requestedContextCompactions.has(compactionId);
     const eventAtMs = Date.parse(String(compaction.completedAt ?? compaction.startedAt ?? "")) || 0;
     const recent = eventAtMs > 0 && Date.now() - eventAtMs < 90_000;
-    if (status === "running"
-      && previousStatus !== "running"
+    const providerStarted = status === "running" && Boolean(String(compaction.turnId ?? "").trim());
+    if (notify && providerStarted
+      && !previous.started
       && compaction.origin === "automatic"
       && recent) {
       agentHub.toast(`Началась автосвёртка контекста · ${taskDisplayTitle(task)}`);
@@ -2321,6 +2473,8 @@ function observeContextCompactions(tasks) {
       const unknown = status !== "failed";
       if (rememberMaintenanceEvent(stableTaskId, {
         id: eventId,
+        operationId: compactionId,
+        revision: compaction.revision ?? null,
         provider: task.provider,
         threadId: task.threadId,
         itemId: eventId,
@@ -2367,8 +2521,10 @@ function observeContextCompactions(tasks) {
           : beforePercent !== null
             ? `Свёртка завершена; до ${beforePercent}%, оценка после недоступна`
             : "Свёртка завершена; оценка контекста недоступна";
-      if (rememberMaintenanceEvent(stableTaskId, {
+      if (!rotationFailed && rememberMaintenanceEvent(stableTaskId, {
         id: eventId,
+        operationId: compactionId,
+        revision: compaction.revision ?? null,
         provider: task.provider,
         threadId: task.threadId,
         itemId: eventId,
@@ -2384,9 +2540,25 @@ function observeContextCompactions(tasks) {
         time: existingEvent?.time ?? compaction.completedAt ?? new Date().toISOString(),
       })) changed.add(stableTaskId);
     }
+    if (rotationFailed) {
+      const rotationId = `maintenance:rotation:${task.streamId}:${task.provider}:${task.threadId}:${compactionId}`;
+      const detail = String(compaction.rotationMessage ?? "Новый Thread не подтвердил готовность");
+      if (rememberMaintenanceEvent(stableTaskId, {
+        id: rotationId, itemId: rotationId, provider: task.provider, threadId: task.threadId,
+        streamId: task.streamId, sourceThreadId: task.threadId,
+        maintenanceType: "rotation", maintenanceStatus: "failed",
+        maintenanceLabel: "Ротация не завершена", maintenanceDetail: detail,
+        text: `Ротация не завершена. Исходный Thread сохранён. ${detail}`,
+        time: compaction.completedAt ?? null,
+      })) changed.add(stableTaskId);
+    }
     observedContextCompactions.delete(compactionId);
     observedContextCompactions.set(compactionId, {
       status,
+      provider: task.provider,
+      threadId: task.threadId,
+      compaction,
+      started: previous.started || providerStarted || ["completed", "failed"].includes(status),
       measurementStatus,
       beforePercent,
       afterPercent,
@@ -2551,6 +2723,7 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
   if (requestTraceId) commandTrace.associate(snapshot, requestTraceId);
   if (observeServerIdentity(snapshot)) return;
   const priorSnapshotForTrace = lastSnapshot;
+  const acceptedQueuePaints = [];
   let effectiveSelectedId = "";
   let tasks = [];
   runBatchedMessageRenders(() => {
@@ -2564,7 +2737,20 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
       appliedSnapshotGeneration += 1;
     }
     lastSnapshot = snapshot;
+    if (acknowledgedQueueCancels.size && Array.isArray(snapshot.deferredInputs)) {
+      const currentQueueIds = new Set(snapshot.deferredInputs.map((item) => String(item.id ?? "").trim()));
+      for (const receipt of snapshot.messageReceipts ?? []) {
+        const id = String(receipt?.id ?? "").trim();
+        if (acknowledgedQueueCancels.has(id) && queueHistoryReceiptProjection(receipt).ownsDeferredQueue) {
+          currentQueueIds.add(id);
+        }
+      }
+      for (const id of acknowledgedQueueCancels) {
+        if (!currentQueueIds.has(id)) acknowledgedQueueCancels.delete(id);
+      }
+    }
     const representativeTasks = representativeSnapshotTasks(snapshot.tasks);
+    const maintenanceTasks = reconcileContextCompactions(snapshot.tasks);
     // Pending/retry identities belong to the current canonical final. Capacity
     // pressure must never create a second operation for that same read.
     const currentReadTasks = new Map(representativeTasks.map((task) => [
@@ -2607,11 +2793,17 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     agentHub.setMessagePins(snapshot.messagePins ?? []);
     agentHub.setArchivedWorkspaces(snapshot.archivedWorkspaces ?? []);
     const maintenanceChanged = new Set([
-      ...observeContextCompactions(snapshot.tasks),
+      ...observeContextCompactions(maintenanceTasks, { notify: Boolean(previousSnapshot) }),
       ...observeStreamRotations(previousTasks, snapshot.tasks),
-      ...syncActiveMaintenanceMessages(representativeTasks),
+      ...syncActiveMaintenanceMessages(representativeSnapshotTasks(maintenanceTasks)),
     ]);
-    if (snapshot.messageReceipts !== previousSnapshot?.messageReceipts) applyMessageReceipts(snapshot);
+    if (snapshot.messageReceipts !== previousSnapshot?.messageReceipts
+      || snapshot.tasks !== previousSnapshot?.tasks
+      || optimisticDeferredClientUserMessageIds.size) {
+      applyMessageReceipts(snapshot, (taskId, clientId, intakeId) => {
+        acceptedQueuePaints.push({ taskId, clientId, intakeId, started: commandTrace.now() });
+      });
+    }
     const serverDeferredClientUserMessageIds = new Set(queuedCommandClientUserMessageIds(
       snapshot.deferredInputs,
       snapshot.messageReceipts,
@@ -2622,6 +2814,10 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
     );
     activeRunClientUserMessageIds = nextActiveRunClientUserMessageIds;
     for (const clientUserMessageId of optimisticDeferredClientUserMessageIds) {
+      for (const messages of outgoingByTask.values()) {
+        const message = messages.get(clientUserMessageId);
+        if (message) retireAcceptedOutgoingQueue(message);
+      }
       if (
         serverDeferredClientUserMessageIds.has(clientUserMessageId)
         || activeRunClientUserMessageIds.has(clientUserMessageId)
@@ -2746,6 +2942,16 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
       ));
     }
   });
+  for (const { taskId, clientId, intakeId, started } of acceptedQueuePaints) {
+    const showingQueue = () => selectedTaskId === taskId && document.documentElement.dataset.view === "chat";
+    if (!showingQueue()) continue;
+    commandTrace.afterPaint("ui-render", "message-receipt-queue-paint", started, clientId,
+      { clientAssetRevision, documentInstanceId }, () => {
+        const retained = [...document.querySelectorAll(".queue-item[data-queue-id]")]
+          .some(row => row.dataset.queueId === `local:${clientId}` || row.dataset.queueId === intakeId);
+        return { outcome: retained ? "failed" : "succeeded", metadata: { retained } };
+      }, showingQueue);
+  }
   traceSnapshotGate(snapshot, {
     decision: "applied", id: effectiveSelectedId, before: priorSnapshotForTrace,
   });
@@ -2835,196 +3041,17 @@ function recordTransientConnectionFailure() {
 }
 
 function historyMessages(history, focusedTurn = null) {
-  const messages = [];
-  const userSubmittedAt = (message, turn, isRoot) => message.submittedAt ?? message.time
-    ?? (isRoot ? turn.submittedAt ?? turn.startedAt : null) ?? null;
-  const normalizedResponseAnnotationReferences = (references) => {
+  return projectHistoryMessages(history, focusedTurn);
+}
+
+const projectHistoryMessages = window.AgentHubMessageLifecycle.createHistoryMessageProjection({
+  historicalMessagesForDisplay, canonicalProjectionState, conversationMessageAuthor,
+  attachmentViews, focusedTurnTaskThreadId, focusedTurnAlreadyVisible,
+  normalizedResponseAnnotationReferences: (references) => {
     const normalize = globalThis.AgentHubMessageView?.normalizedResponseAnnotationReferences;
     return typeof normalize === "function" ? normalize(references) : [];
-  };
-  const historyStart = Number.isSafeInteger(Number(history?.start))
-    ? Number(history.start)
-    : 0;
-  for (const [itemIndex, item] of (history?.items ?? []).entries()) {
-    const itemProvider = String(item?.provider ?? history.provider ?? "");
-    const itemThreadId = String(item?.threadId ?? history.threadId ?? "");
-    const visible = historicalMessagesForDisplay(item);
-    const rootUserIndex = visible.findIndex((message) => message.role === "user");
-    const traceMessageIndex = visible.findLastIndex((message) => (
-      message?.role === "agent" && message?.kind !== "subagent"
-    ));
-    for (const [messageIndex, message] of visible.entries()) messages.push({
-      id: `${itemProvider}:${itemThreadId}:${item.id}:${message.itemId}:${message.role}`,
-      provider: itemProvider,
-      threadId: itemThreadId,
-      turnId: item.id,
-      itemId: String(message.itemId ?? ""),
-      messageKey: String(message.messageKey ?? ""),
-      sourceAlias: String(message.sourceAlias ?? ""),
-      semanticSlot: String(message.semanticSlot ?? ""),
-      pinEligible: message.pinEligible === true,
-      clientUserMessageId: String(message.clientUserMessageId ?? ""),
-      turnUserSlot: String(message.turnUserSlot ?? ""),
-      role: message.role,
-      operationKind: String(item.operationKind ?? "user-turn"),
-      ...(item.operationKindMigrationGuard
-        ? { operationKindMigrationGuard: String(item.operationKindMigrationGuard) }
-        : {}),
-      projectionAuthority: "canonical",
-      projectionState: canonicalProjectionState({
-        status: item.status,
-        terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
-        running: item.active === true,
-        operationKind: "user-turn",
-      }),
-      terminalRevision: item.completed === true ? Number(item.terminalRevision) || 1 : 0,
-      ...(item.completed === true && !Number(item.terminalRevision)
-        ? { terminalRevisionMigrationGuard: "legacy-terminal-revision" }
-        : {}),
-      ...(message.kind ? { kind: message.kind } : {}),
-      ...(message.origin ? { origin: message.origin } : {}),
-      ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
-      ...(message.model ? { model: message.model } : {}),
-      author: conversationMessageAuthor(message, itemProvider),
-      text: message.text,
-      ...(message.role === "user" ? {
-        responseAnnotations: message.responseAnnotations,
-        responseAnnotationRequest: message.responseAnnotationRequest,
-      } : message.role === "agent" ? {
-        responseAnnotationReferences: normalizedResponseAnnotationReferences(
-          message.responseAnnotationReferences,
-        ),
-      } : {}),
-      activities: messageIndex === traceMessageIndex && Array.isArray(item.activities)
-        ? item.activities
-        : [],
-      activityGroups: messageIndex === traceMessageIndex && Array.isArray(item.activityGroups)
-        ? item.activityGroups
-        : [],
-      ...(message.role === "user" ? {
-        submittedAt: userSubmittedAt(message, item, message.turnUserSlot === "root"
-          || (!message.turnUserSlot && messageIndex === rootUserIndex)),
-        startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? item.startedAt ?? null : null),
-      } : {}),
-      time: message.role === "user"
-        ? userSubmittedAt(message, item, message.turnUserSlot === "root"
-          || (!message.turnUserSlot && messageIndex === rootUserIndex))
-        : message.time ?? item.completedAt ?? null,
-      ...(messageIndex === traceMessageIndex ? {
-        turnStartedAt: item.startedAt ?? null,
-        turnCompletedAt: item.completedAt ?? null,
-      } : {}),
-      historyOrder: (historyStart + itemIndex) * 1_000 + messageIndex,
-      attachments: attachmentViews(message.attachments),
-    });
-  }
-  if (focusedTurn && Array.isArray(focusedTurn.messages)) {
-    const focusedThreadId = focusedTurnTaskThreadId(focusedTurn);
-    const focusedTraceItemId = String(focusedTurn.messages.findLast((message) => (
-      message?.role === "agent" && message?.kind !== "subagent"
-    ))?.itemId ?? "");
-    const parentAgentAlreadyVisible = messages.some((message) => (
-      message.provider === focusedTurn.provider
-      && message.threadId === focusedThreadId
-      && message.turnId === focusedTurn.turnId
-      && message.role === "agent"
-      && message.kind !== "subagent"
-    ));
-    for (const [index, message] of focusedTurn.messages.entries()) {
-      const itemId = String(message?.itemId ?? "").trim();
-      if (!itemId || messages.some((candidate) => (
-        candidate.provider === focusedTurn.provider
-        && candidate.threadId === focusedThreadId
-        && candidate.turnId === focusedTurn.turnId
-        && candidate.itemId === itemId
-      )) || (parentAgentAlreadyVisible
-        && message.role === "agent"
-        && message.kind !== "subagent")) continue;
-      messages.push({
-        id: `${focusedTurn.provider}:${focusedThreadId}:${focusedTurn.turnId}:${itemId}:${message.role}`,
-        provider: focusedTurn.provider,
-        threadId: focusedThreadId,
-        turnId: focusedTurn.turnId,
-        itemId,
-        messageKey: String(message.messageKey ?? ""),
-        sourceAlias: String(message.sourceAlias ?? ""),
-        semanticSlot: String(message.semanticSlot ?? ""),
-        pinEligible: message.pinEligible === true,
-        role: message.role,
-        ...(message.kind ? { kind: message.kind } : {}),
-        ...(message.origin ? { origin: message.origin } : {}),
-        ...(message.agentThreadId ? { agentThreadId: message.agentThreadId } : {}),
-        ...(message.model ? { model: message.model } : {}),
-        author: conversationMessageAuthor(message, focusedTurn.provider),
-        text: message.text,
-        ...(message.role === "agent" ? {
-          responseAnnotationReferences: normalizedResponseAnnotationReferences(
-            message.responseAnnotationReferences,
-          ),
-        } : {}),
-        activities: itemId === focusedTraceItemId && Array.isArray(focusedTurn.activities)
-          ? focusedTurn.activities
-          : [],
-        activityGroups: itemId === focusedTraceItemId && Array.isArray(focusedTurn.activityGroups)
-          ? focusedTurn.activityGroups
-          : [],
-        ...(message.role === "user" ? {
-          submittedAt: userSubmittedAt(message, focusedTurn, message.turnUserSlot === "root"
-            || (!message.turnUserSlot && index === focusedTurn.messages.findIndex((entry) => entry.role === "user"))),
-          startedAt: message.startedAt ?? (message.turnUserSlot === "root" ? focusedTurn.startedAt ?? null : null),
-        } : {}),
-        time: message.role === "user"
-          ? userSubmittedAt(message, focusedTurn, message.turnUserSlot === "root"
-            || (!message.turnUserSlot && index === focusedTurn.messages.findIndex((entry) => entry.role === "user")))
-          : message.time ?? focusedTurn.completedAt ?? focusedTurn.startedAt ?? null,
-        ...(itemId === focusedTraceItemId ? {
-          turnStartedAt: focusedTurn.startedAt ?? null,
-          turnCompletedAt: focusedTurn.completedAt ?? null,
-        } : {}),
-        attachments: attachmentViews(message.attachments),
-      });
-    }
-  }
-  if (focusedTurn && !focusedTurnAlreadyVisible(history, messages, focusedTurn)) {
-    const focusedThreadId = focusedTurnTaskThreadId(focusedTurn);
-    if (focusedTurn.prompt) messages.push({
-      id: `${focusedTurn.turnId}:prompt`,
-      provider: focusedTurn.provider,
-      threadId: focusedThreadId,
-      turnId: focusedTurn.turnId,
-      itemId: `${focusedTurn.turnId}:focused:user`,
-      role: "user",
-      turnUserSlot: "root",
-      ...(focusedTurn.promptOrigin ? { kind: "interstream", origin: focusedTurn.promptOrigin } : {}),
-      author: focusedTurn.promptAuthor || "Вы",
-      text: focusedTurn.prompt,
-      responseAnnotations: focusedTurn.promptAnnotations,
-      responseAnnotationRequest: focusedTurn.promptRequest,
-      submittedAt: focusedTurn.submittedAt ?? focusedTurn.startedAt,
-      startedAt: focusedTurn.startedAt,
-      time: focusedTurn.submittedAt ?? focusedTurn.startedAt,
-    });
-    messages.push({
-      id: `${focusedTurn.turnId}:answer`,
-      provider: focusedTurn.provider,
-      threadId: focusedThreadId,
-      turnId: focusedTurn.turnId,
-      itemId: `${focusedTurn.turnId}:focused:agent`,
-      role: "agent",
-      author: focusedTurn.provider === "claude" ? "Claude" : "Codex",
-      text: focusedTurn.answer || focusedTurn.title || "Ход завершён",
-      responseAnnotationReferences: normalizedResponseAnnotationReferences(
-        focusedTurn.responseAnnotationReferences,
-      ),
-      activities: Array.isArray(focusedTurn.activities) ? focusedTurn.activities : [],
-      activityGroups: Array.isArray(focusedTurn.activityGroups) ? focusedTurn.activityGroups : [],
-      time: focusedTurn.completedAt,
-      turnStartedAt: focusedTurn.startedAt ?? null,
-      turnCompletedAt: focusedTurn.completedAt ?? null,
-    });
-  }
-  return messages;
-}
+  },
+});
 
 function mergeNewestHistory(previous, newest) {
   const newestById = new Map(newest.map((message) => [message.id, message]));
@@ -3033,17 +3060,6 @@ function mergeNewestHistory(previous, newest) {
     ...previous.map((message) => newestById.get(message.id) ?? message),
     ...newest.filter((message) => !previousIds.has(message.id)),
   ]);
-}
-
-function prependOlderHistory(previous, older) {
-  const seen = new Set(previous.map((message) => message.id));
-  const uniqueOlder = [];
-  for (const message of older) {
-    if (seen.has(message.id)) continue;
-    seen.add(message.id);
-    uniqueOlder.push(message);
-  }
-  return projectCanonicalMessages([...uniqueOlder, ...previous]);
 }
 
 function focusedHistoryMessages(focusedTurn) {
@@ -3190,6 +3206,7 @@ function applyOpened(result, {
   skipSnapshot = false,
   selectTask = true,
   exactNavigation = null,
+  settleHistory = true,
 } = {}) {
   const historyReceivedAtMs = Date.now();
   const historyProjectionStarted = commandTrace.now();
@@ -3260,7 +3277,7 @@ function applyOpened(result, {
       total: history.total,
       messageTotal: history.messageTotal,
       nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
-      loading: false,
+      loading: !settleHistory && history.nextBefore != null,
       version: history.version ?? "",
     });
   }
@@ -3277,6 +3294,12 @@ function applyOpened(result, {
   if (selectTask) agentHub.selectTask(id);
   syncHistoryPagination(id);
   const renderedMessages = renderTaskMessages(id, { preserveScroll, exactNavigation });
+  const historyTraceId = commandTrace.objectId(result) || commandTrace.objectId(history);
+  if (historyTraceId) commandTrace.record("ui-render", "history-page-apply",
+    commandTrace.now() - historyProjectionStarted, historyTraceId, {
+      streamId: history.streamId, provider: history.provider, threadId: history.threadId,
+      count: newest.length, clientAssetRevision: "hub436.history.1",
+    });
   traceHistoryCard(id, history, {
     liveBefore,
     cleared: liveCleared,
@@ -3321,7 +3344,7 @@ function applyOpened(result, {
       itemId: result.focusedMessage.itemId,
     }));
   }
-  if (selectTask && !result.focusedTurn) {
+  if (settleHistory && selectTask && !result.focusedTurn) {
     void settleOpenedTaskHistory(id, {
       ...(history.streamId ? { streamId: history.streamId } : {}),
       provider: history.provider,
@@ -3379,6 +3402,40 @@ function projectReadReceipt(id, entry) {
     });
 }
 
+async function acknowledgeTaskFinal(id, entry) {
+  const final = entry.final;
+  const result = await control("mark-task-read", { final, streamId: id, clientTraceId: entry.commandId });
+  const confirmed = result?.marked === true
+    && readMarker.finalIdentity(result.final) === entry.identity
+    && readMarker.cursorCovers(entry.final, result);
+  commandTrace.record("ui-render", "read-marker-receipt", commandTrace.now() - entry.viewedAt,
+    entry.commandId, { ...readMarkerMetadata(id, final), render: confirmed ? "confirmed" : "unconfirmed" });
+  entry.phase = confirmed ? "confirmed" : "retry";
+  if (confirmed) {
+    const key = readMarker.threadIdentity(final);
+    if ((lastSnapshot?.tasks ?? []).some((task) => task.provider === final.provider && task.threadId === final.threadId)) {
+      retainReadMarker(confirmedReadCursorByThread, key,
+        readMarker.newerReceipt(confirmedReadCursorByThread.get(key), { final: result.final, cursor: result.cursor }));
+    }
+    projectReadReceipt(id, entry);
+  } else if (result?.reason === "stale-final") void refresh();
+  return result;
+}
+
+agentHub.on("activity:clear-ready", ({ interstreamOnly }) => runAction(async () => {
+  const targets = (lastSnapshot?.tasks ?? []).filter(task => task.unread && task.latestFinal
+    && (!interstreamOnly || task.latestFinal.interstreamOnly)
+    && !readMarker.cursorCovers(task.latestFinal, confirmedReadCursorByThread.get(readMarker.threadIdentity(task.latestFinal))));
+  const results = await Promise.allSettled(targets.map(task => {
+    const final = task.latestFinal;
+    return acknowledgeTaskFinal(taskId(task.provider, task.threadId, task.streamId), {
+      final, identity: readMarker.finalIdentity(final), commandId: commandTrace.newId(), viewedAt: commandTrace.now(),
+    });
+  }));
+  const failed = results.find(result => result.status === "rejected");
+  if (failed) throw failed.reason;
+}));
+
 function considerDisplayedFinal(id) {
   const task = snapshotTask(lastSnapshot, id);
   const final = task?.latestFinal;
@@ -3407,22 +3464,7 @@ function considerDisplayedFinal(id) {
       entry.phase = "pending";
       entry.viewedAt = commandTrace.now();
       const rect = card.getBoundingClientRect();
-      void control("mark-task-read", { final: entry.final, streamId: id, clientTraceId: entry.commandId }).then((result) => {
-        const confirmed = result?.marked === true
-          && readMarker.finalIdentity(result.final) === entry.identity
-          && readMarker.cursorCovers(entry.final, result);
-        commandTrace.record("ui-render", "read-marker-receipt", commandTrace.now() - entry.viewedAt,
-          entry.commandId, { ...readMarkerMetadata(id, final), render: confirmed ? "confirmed" : "unconfirmed" });
-        entry.phase = confirmed ? "confirmed" : "retry";
-        if (confirmed) {
-          const key = readMarker.threadIdentity(final);
-          if ((lastSnapshot?.tasks ?? []).some((task) => task.provider === final.provider && task.threadId === final.threadId)) {
-            retainReadMarker(confirmedReadCursorByThread, key,
-              readMarker.newerReceipt(confirmedReadCursorByThread.get(key), { final: result.final, cursor: result.cursor }));
-          }
-          projectReadReceipt(id, entry);
-        } else if (result?.reason === "stale-final") void refresh();
-      }).catch(() => { entry.phase = "retry"; });
+      void acknowledgeTaskFinal(id, entry).catch(() => { entry.phase = "retry"; });
       commandTrace.record("ui-render", "read-marker-view", commandTrace.now() - entry.paintStarted,
         entry.commandId, { ...readMarkerMetadata(id, final), render: "viewed",
           viewport: rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth });
@@ -3564,22 +3606,44 @@ agentHub.on("task:select", ({ id }) => {
       const generation = navigationIntents.capture();
       // A cold local page can paint and acknowledge its exact final while the
       // independently ordered selection is still waiting for persistence.
+      const stillOpening = () => navigationIntents.current(generation) && sameIdentity(taskIdentity(id), identity);
       const [selection, history] = await Promise.allSettled([
         control("select-task", taskOpenParams(identity, { clientTraceId: traceId, deferSnapshot: true })),
-        control("task-history", { ...identity, limit: 20, clientTraceId: traceId }).then((history) => {
+        control("task-history", { ...identity, limit: 2, coldHistory: true, clientTraceId: traceId }).then(async (history) => {
           verifiedTaskHistory(history, identity);
-          if (navigationIntents.current(generation) && sameIdentity(taskIdentity(id), identity)) {
+          const current = snapshotTask(lastSnapshot, id);
+          if (stillOpening() && history.nextBefore != null && (history.transportTruncated === true
+            || !historyContainsLatestAnswer(history, current, { expectedTurnId: current?.latestFinal?.turnId }))) {
+            history = verifiedTaskHistory(await control("task-history", {
+              ...identity, limit: 20, coldHistory: true, clientTraceId: traceId,
+            }), identity);
+          }
+          if (stillOpening()) {
             const opened = bindSnapshotBaseline(commandTrace.associate({ history, snapshot: null }, traceId),
               responseSnapshotBaselines.get(history));
-            applyOpened(opened, { skipSnapshot: true });
+            applyOpened(opened, { skipSnapshot: true, settleHistory: false });
             replaceRoute(`#/chat/stream/${encodeURIComponent(id)}`);
             const paintedPage = historyPageByTask.get(id);
             commandTrace.afterPaint("ui-render", "history-page-paint", started, traceId,
-              { ...identity, clientAssetRevision: "hub427.history.1", trigger: "cold-page",
+              { ...identity, clientAssetRevision: "hub517.history.1", trigger: "cold-page",
                 count: historyWindowByTask.get(id)?.length ?? 0 }, null,
-              () => navigationIntents.current(generation) && selectedTaskId === id
+              () => stillOpening() && selectedTaskId === id
                 && historyPageByTask.get(id) === paintedPage && paintedPage?.version === history.version
                 && !document.hidden && document.documentElement.dataset.view === "chat");
+            const settle = () => {
+              if (historyPageByTask.get(id) !== paintedPage || paintedPage?.version !== history.version) return;
+              // Automatic older-page loading must not start during the first
+              // paint just because a two-turn viewport is underfilled.
+              if (paintedPage.loading) {
+                paintedPage.loading = false;
+                syncHistoryPagination(id);
+              }
+              if (stillOpening() && selectedTaskId === id) {
+                void settleOpenedTaskHistory(id, identity, { preserveScroll: true });
+              }
+            };
+            if (document.hidden) settle();
+            else window.requestAnimationFrame(() => window.requestAnimationFrame(settle));
           }
           return history;
         }),
@@ -3605,10 +3669,11 @@ agentHub.on("task:select", ({ id }) => {
   return selectionTail;
 });
 
-async function settleOpenedTaskHistory(id, identity) {
+async function settleOpenedTaskHistory(id, identity, { preserveScroll = false } = {}) {
   await enqueueTaskHistoryLoad(id, identity, {
     refreshSource: true,
     onlyWhenSelected: true,
+    preserveScroll,
   });
 }
 
@@ -3802,15 +3867,27 @@ agentHub.on("bug-report:submit", ({ text, attachments, reportId }) => void (asyn
   }
 })());
 
-agentHub.on("history:trace-page", ({ identity, tracePage, resolve, reject }) => {
+agentHub.on("history:trace-page", ({ identity, tracePage, commandId, resolve, reject }) => {
   void control("task-history", {
     provider: identity.provider, threadId: identity.threadId,
     ...(identity.streamId ? { streamId: identity.streamId } : {}), tracePage,
+    ...(commandId ? { clientTraceId: commandId } : {}),
   }).then((result) => {
     if (result.provider !== identity.provider || result.threadId !== identity.threadId
       || result.tracePage?.turnId !== tracePage.turnId) throw new Error("Trace identity mismatch");
     resolve(result.tracePage);
   }).catch(reject);
+});
+
+agentHub.on("history:visualization", ({ provider, threadId, streamId, turnId, itemId, markerHash, resolve, reject }) => {
+  void control("task-history", { provider, threadId, streamId, visualization: { turnId, itemId, markerHash } })
+    .then((result) => {
+      if (result?.provider !== provider || result.threadId !== threadId || result.streamId !== streamId
+        || result.turnId !== turnId || result.itemId !== itemId || result.markerHash !== markerHash) {
+        throw new Error("Visualization identity mismatch");
+      }
+      resolve(result.html);
+    }).catch(reject);
 });
 
 agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
@@ -4087,13 +4164,6 @@ function sendUserMessage(request, frozenParams = null) {
     receive: (result) => {
       const projection = queueHistoryReceiptProjection(result);
       const projectionStarted = commandTrace.now();
-      if (projection.ownsDeferredQueue) {
-        optimisticDeferredClientUserMessageIds.add(request.requestId);
-        deferredClientUserMessageIds.add(request.requestId);
-      } else {
-        optimisticDeferredClientUserMessageIds.delete(request.requestId);
-        deferredClientUserMessageIds.delete(request.requestId);
-      }
       agentHub.completeSend(request.requestId, { outcome: "accepted", taskId: request.taskId });
       updateOutgoing(request.taskId, request.requestId, {
         provider: identity?.provider ?? "",
@@ -4117,8 +4187,23 @@ function sendUserMessage(request, frozenParams = null) {
           ? deliveryPatch("relaying")
           : deliveryPatch(projection.deliveryState ?? "rejected", projection)),
       });
+      // Snapshot/history may confirm this exact command before its original
+      // intake ACK arrives. Queue membership follows the reduced entity too:
+      // a late ACK cannot revive a wait already absorbed by provider acceptance.
+      const ownsDeferredQueue = projection.ownsDeferredQueue && messageAwaitsProviderAcceptance(
+        outgoingMessages(request.taskId).get(request.requestId),
+      );
+      if (ownsDeferredQueue) {
+        optimisticDeferredClientUserMessageIds.add(request.requestId);
+        deferredClientUserMessageIds.add(request.requestId);
+      } else {
+        optimisticDeferredClientUserMessageIds.delete(request.requestId);
+        deferredClientUserMessageIds.delete(request.requestId);
+      }
       renderOutgoingWithoutBlockingSend(request.taskId, { queue: true });
-      commandTrace.afterPaint("ui-render", "message-ack-projection", projectionStarted, request.requestId);
+      commandTrace.afterPaint("ui-render", "message-ack-projection", projectionStarted, request.requestId, {
+        render: ownsDeferredQueue ? "queued" : "conversation",
+      });
     },
     synchronize: async (result) => {
       if (result?.snapshot) applySnapshot(result.snapshot);
@@ -4444,6 +4529,8 @@ document.addEventListener("agenthub:board-action", (event) => {
     return;
   }
   let succeeded = false;
+  let actionError = "";
+  let cancelled = false;
   void runAction(async () => {
     if (!lastSnapshot?.boardLayout && ["move-column", "update-comment"].includes(detail.type)) {
       agentHub.toast("Agent Hub завершает обновление runtime. Повторите действие через минуту.");
@@ -4458,7 +4545,6 @@ document.addEventListener("agenthub:board-action", (event) => {
       move: "board-task-move",
       complete: "board-task-complete",
       remove: "board-task-remove",
-      "retry-triage": "board-task-retry-triage",
       start: "board-task-start",
       "move-column": "board-column-move",
       "update-comment": "board-column-comment",
@@ -4476,15 +4562,16 @@ document.addEventListener("agenthub:board-action", (event) => {
     if (!action) return;
     const { type: _type, ...params } = detail;
     if (lastSnapshot && ["move", "status"].includes(detail.type)) params.responseView = "task-board";
+    if (detail.type === "complete") params.completionMode = "archive";
     let result = await control(action, params);
-    if (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
+    while (["complete", "remove"].includes(detail.type) && result.lifecycleResult?.confirmationRequired) {
       const decision = await window.AgentHubTaskCleanupConfirmation.confirm({
         confirmation: result.lifecycleResult,
         action,
         params,
         request: control,
       });
-      if (!decision.confirmed) return;
+      if (!decision.confirmed) { cancelled = true; return; }
       result = decision.result;
     }
     succeeded = true;
@@ -4493,11 +4580,13 @@ document.addEventListener("agenthub:board-action", (event) => {
     if (detail.type === "update") agentHub.toast("Изменения сохранены");
     if (detail.type === "status") agentHub.toast("Статус задачи изменён");
     if (detail.type === "remove") agentHub.toast("Задача удалена");
-  }).finally(() => {
+  }, error => { actionError = String(error?.message ?? error); }).finally(() => {
     window.AgentHubTaskBoard?.finishAction?.({
       type: detail.type,
       id: detail.id,
       succeeded,
+      error: actionError,
+      cancelled,
       requestId: detail.requestId,
       operation: detail.operation,
       itemId: detail.itemId,
@@ -4849,20 +4938,60 @@ agentHub.on("approval:respond", ({ id, decision, answers }) => runAction(async (
   await control("resolve-approval", { key: id, decision, ...(answers ? { answers } : {}) });
   applySnapshot(await control("snapshot"));
 }));
-agentHub.on("queue:remove", ({ id }) => runAction(async () => {
-  const deferred = (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id)
-    ?? [...outgoingByTask.values()].flatMap(messages => [...messages.values()])
-      .find(item => item.itemId === id || item.id === id);
-  const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
-  const result = await control("deferred-input", { id: deferred?.itemId ?? deferred?.id ?? id, action: "cancel",
-    ...(clientUserMessageId ? { clientUserMessageId } : {}) });
-  if (clientUserMessageId) {
-    const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
-    outgoingMessages(deferredTaskId).delete(clientUserMessageId);
-    renderTaskMessages(deferredTaskId);
+agentHub.on("queue:remove", ({ id, taskId: taskIdValue }) => runAction(async () => {
+  const displayId = String(id ?? "");
+  const localAlias = displayId.startsWith("local:");
+  const localMessages = outgoingByTask.get(taskIdValue);
+  const matchesItem = (item) => item.itemId === id || item.id === id;
+  const deferred = localAlias
+    ? localMessages?.get(displayId.slice("local:".length))
+    : (lastSnapshot?.deferredInputs ?? []).find((item) => item.id === id)
+      ?? [...(localMessages?.values() ?? [])].find(matchesItem)
+      ?? [...outgoingByTask.values()].flatMap(messages => [...messages.values()]).find(matchesItem);
+  const cancellationTaskId = deferred
+    ? taskId(deferred.provider, deferred.threadId, deferred.streamId) : taskIdValue;
+  const cancellationClientId = String(deferred?.clientUserMessageId ?? "");
+  const messages = outgoingByTask.get(cancellationTaskId);
+  if (messages?.has(cancellationClientId)) {
+    // An old queue projection may outlive its canonical transfer/cancellation.
+    // Let the existing receipt owner settle it before another server command.
+    applyMessageReceipts(lastSnapshot);
+    if (!messages.has(cancellationClientId)) {
+      renderTaskQueue(cancellationTaskId);
+      renderTaskMessages(cancellationTaskId);
+      agentHub.toast("Сообщение уже отменено");
+      return;
+    }
   }
-  applySnapshot(await control("snapshot"));
-  agentHub.toast(result?.message ?? "Отложенное сообщение удалено");
+  // A receipt-only card displays a local alias, which is never an RPC address.
+  const addressedId = localAlias ? deferred?.itemId : deferred?.itemId ?? deferred?.id ?? id;
+  const key = String(addressedId ?? "").trim();
+  if (!key || key.startsWith("local:") || queueActionsInFlight.has(key) || acknowledgedQueueCancels.has(key)) return;
+  queueActionsInFlight.add(key);
+  try {
+    const clientUserMessageId = String(deferred?.clientUserMessageId ?? "");
+    // Keep this intent's diagnostic UUID through transport/ACK, independently
+    // of the addressed message's opaque business idempotency identity.
+    const result = await control("deferred-input", { id: addressedId, action: "cancel",
+      clientTraceId: commandTrace.currentId(),
+      ...(clientUserMessageId ? { clientUserMessageId } : {}) });
+    const cancelled = result?.accepted === true && result?.cancelled === true && result.id === addressedId
+      && (!clientUserMessageId || result.clientUserMessageId === clientUserMessageId);
+    if (cancelled) {
+      // A failed readback does not undo an exact positive acknowledgement.
+      acknowledgedQueueCancels.add(key);
+    }
+    if (clientUserMessageId) {
+      const deferredTaskId = taskId(deferred.provider, deferred.threadId, deferred.streamId);
+      outgoingMessages(deferredTaskId).delete(clientUserMessageId);
+      renderTaskMessages(deferredTaskId);
+    }
+    if (cancelled && localAlias) renderTaskQueue(cancellationTaskId);
+    applySnapshot(await control("snapshot"));
+    agentHub.toast(result?.message ?? "Отложенное сообщение удалено");
+  } finally {
+    queueActionsInFlight.delete(key);
+  }
 }));
 async function runQueueAction(id, taskIdValue, operation) {
   const key = String(id ?? "").trim();
@@ -5153,7 +5282,7 @@ async function loadAttachmentImage(attachment, index, generation) {
           : null;
     if (!ownsAttachmentViewerResource(viewerResource)) return false;
     const resourceUrl = directDataUrl || String(access?.url ?? directResourceUrl).trim();
-    const authenticatedFetch = Boolean(telegramInitData)
+    const authenticatedFetch = Boolean(telegramInitData || (vscode && attachment?.workspaceImagePreview))
       && (!resourceUrl || sameOriginResource(resourceUrl));
     if (!resourceUrl && !String(access?.id ?? "").trim()) {
       throw new Error("Файл изображения недоступен");
@@ -5200,7 +5329,9 @@ async function loadAttachmentImage(attachment, index, generation) {
     if (!ownsAttachmentViewerResource(viewerResource)) return false;
     const message = viewerResource?.timedOut
       ? "Изображение не загрузилось вовремя"
-      : hubErrorMessage(error);
+      : attachment?.workspaceImagePreview
+        ? "Не удалось открыть изображение: файл недоступен или формат не поддерживается"
+        : hubErrorMessage(error);
     agentHub.failAttachmentViewer({
       message,
       index,
@@ -5210,6 +5341,28 @@ async function loadAttachmentImage(attachment, index, generation) {
     throw error;
   }
 }
+
+agentHub.on("resource:image-preview", ({ localPath, name, generation }) => void (async () => {
+  const index = 0;
+  try {
+    await localSessionReady;
+    if (!attachmentViewerAuthority(generation, index)) return;
+    const url = `/api/workspace-file?path=${encodeURIComponent(localPath)}&preview=image`;
+    if (vscode && await window.__agentHubDirectTransport?.available()) {
+      await loadAttachmentImage({ url, name, workspaceImagePreview: true }, index, generation);
+      return;
+    }
+    if (!vscode && localWorkspaceFilesAvailable) {
+      agentHub.showAttachmentViewer({ dataUrl: url, name, generation, index });
+      return;
+    }
+    agentHub.failAttachmentViewer({
+      generation, index, message: "Для предпросмотра файла нужно локальное подключение к Hub",
+    });
+  } catch {
+    agentHub.failAttachmentViewer({ generation, index, message: "Файл изображения недоступен" });
+  }
+})());
 
 agentHub.on("attachment:open", ({ attachment, gallery = [], index = 0 }) => runAction(async () => {
   const image = String(attachment?.type ?? "").toLowerCase().startsWith("image/") || attachment?.isImage;
@@ -5467,7 +5620,7 @@ agentHub.on("hub:restart", () => runAction(async () => {
 }));
 // Same authenticated control/IPC owner as recovery; the public /health probe
 // intentionally strips local provider errors and is only a liveness fallback.
-window.__agentHubStartupRuntimeHealth = () => control("runtime-health");
+window.__agentHubStartupRuntimeHealth = (clientTraceId) => control("runtime-health", { clientTraceId });
 document.addEventListener("agenthub:startup-recovery", (event) => {
   const { action, startedAtMs } = event.detail ?? {};
   if (!["retry-startup", "restart-server"].includes(action)) return;
@@ -5524,6 +5677,88 @@ agentHub.on("server:provider-login-cancel", ({ provider }) => runAction(async ()
   const result = await control("cancel-provider-login", { provider });
   applyProviderLoginReply(result);
   agentHub.toast(result?.message ?? "Вход отменён");
+}));
+// Local control only, no durable command receipt or draft persistence for PATs.
+// Reuse the existing protected-local-session owner before collecting/submitting
+// a credential; remote command relays must never receive a token-bearing body.
+let githubLocalAccess = false;
+void localSessionReady.then(() => hasLocalWorkspaceFileAccess()).then(
+  allowed => { githubLocalAccess = allowed; agentHub.setGitHubLocalAccess(allowed); },
+  () => agentHub.setGitHubLocalAccess(false),
+);
+let githubLoginEpoch = 0;
+let githubLogin = null;
+let githubLoginTimer = null;
+function clearGitHubLogin() {
+  ++githubLoginEpoch;
+  clearTimeout(githubLoginTimer);
+  githubLogin = null;
+  agentHub.setGitHubLogin(null);
+}
+function pollGitHubLogin(epoch, waitMs) {
+  githubLoginTimer = setTimeout(async () => {
+    if (epoch !== githubLoginEpoch || !githubLogin) return;
+    try {
+      if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+      const result = await control("poll-github-account-login", { attemptId: githubLogin.attemptId });
+      if (epoch !== githubLoginEpoch) return;
+      if (result.login?.status === "pending") return pollGitHubLogin(epoch, result.login.waitMs);
+      clearGitHubLogin();
+      agentHub.setGitHubAccount(result.githubAccount, result.login?.message ?? "");
+    } catch (error) {
+      if (epoch !== githubLoginEpoch) return;
+      clearGitHubLogin();
+      agentHub.setGitHubAccount(null, error.message);
+    }
+  }, waitMs);
+}
+agentHub.on("server:github-connect", () => runAction(async () => {
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
+  // Reserve a tab during the local click so delayed start cannot trip popup blocking.
+  const tab = githubLocalAccess && !vscode ? window.open("about:blank", "_blank") : null;
+  if (tab) tab.opener = null;
+  let opened = false;
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("connect-github-account", {});
+    if (epoch !== githubLoginEpoch) return;
+    const url = new URL(result.login.authorizationUrl);
+    if (url.origin !== "https://github.com" || url.pathname !== "/login/oauth/authorize" || url.username || url.password) {
+      throw new Error("Сервис вернул неверный адрес входа GitHub");
+    }
+    agentHub.setGitHubAccount(result?.githubAccount);
+    githubLogin = result.login;
+    agentHub.setGitHubLogin(githubLogin);
+    pollGitHubLogin(epoch, result.login.waitMs);
+    if (tab && !tab.closed) { tab.location.replace(url.href); opened = true; }
+    if (vscode) await openProviderLoginPage(url.href).catch(() => {
+      if (epoch === githubLoginEpoch) agentHub.toast("Открой GitHub по ссылке рядом с кнопкой отмены");
+    });
+  } catch (error) {
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message);
+  } finally { if (tab && !opened) tab.close(); }
+}));
+agentHub.on("server:github-cancel", () => runAction(async () => {
+  const previous = githubLogin;
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("cancel-github-account-login", { attemptId: previous?.attemptId });
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(result?.githubAccount);
+  } catch (error) { if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message); }
+}));
+agentHub.on("server:github-disconnect", () => runAction(async () => {
+  clearGitHubLogin();
+  const epoch = githubLoginEpoch;
+  try {
+    if (!await hasLocalWorkspaceFileAccess()) throw new Error("Подключение GitHub доступно только локально на компьютере Hub");
+    const result = await control("disconnect-github-account", {});
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(result?.githubAccount);
+  } catch (error) {
+    if (epoch === githubLoginEpoch) agentHub.setGitHubAccount(null, error.message);
+  }
 }));
 agentHub.on("server:config-update", ({ key, value, changes }) => runAction(async () => {
   /* Страница сохраняет всю карточку разом, поэтому принимаем и набор правок,

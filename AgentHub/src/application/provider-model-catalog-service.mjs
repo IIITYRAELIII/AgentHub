@@ -1,4 +1,4 @@
-import { validClaudeModel } from "../domain/agent-runtime-settings.mjs";
+import { validClaudeModel, isRetiredCodexModel } from "../domain/agent-runtime-settings.mjs";
 import { orderCodexModels } from "../domain/codex-model-order.mjs";
 
 const MODEL_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
@@ -15,7 +15,7 @@ function codexOptions(data) {
   return data.flatMap((item) => {
     const value = String(item?.model ?? item?.slug ?? item?.id ?? "").trim();
     if (item?.hidden || item?.visibility === "hide" || item?.visibility === "hidden"
-      || !MODEL_ID.test(value) || seen.has(value)) return [];
+      || !MODEL_ID.test(value) || isRetiredCodexModel(value) || seen.has(value)) return [];
     seen.add(value);
     return [{ value, label: String(item?.displayName ?? item?.display_name ?? value).trim() || value }];
   });

@@ -88,31 +88,35 @@ export async function readDesktopControlEndpoint(runtimeRoot = defaultRuntimeRoo
   return validateDesktopControlEndpoint(JSON.parse(raw));
 }
 
-async function publishEndpoint(runtimeRoot, descriptor, protectFile) {
+async function publishEndpoint(runtimeRoot, descriptor, protectFile, measure) {
   const file = desktopControlEndpointFile(runtimeRoot);
   const temporary = `${file}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
-  await mkdir(path.dirname(file), { recursive: true });
+  await measure("endpoint-directory", () => mkdir(path.dirname(file), { recursive: true }));
   try {
-    await writeFile(temporary, `${JSON.stringify(descriptor)}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
+    await measure("endpoint-write", async () => {
+      await writeFile(temporary, `${JSON.stringify(descriptor)}\n`, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      await chmod(temporary, 0o600).catch(() => {});
     });
-    await chmod(temporary, 0o600).catch(() => {});
-    await protectFile(temporary);
-    for (const delayMs of [0, 10, 25, 50, 100, 200, 400]) {
-      if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
-      try {
-        await rename(temporary, file);
-        break;
-      } catch (error) {
-        const retryable = ["EPERM", "EACCES", "EBUSY"].includes(error?.code);
-        if (!retryable || delayMs === 400) throw error;
+    await measure("endpoint-temp-acl", () => protectFile(temporary));
+    await measure("endpoint-rename", async () => {
+      for (const delayMs of [0, 10, 25, 50, 100, 200, 400]) {
+        if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        try {
+          await rename(temporary, file);
+          return;
+        } catch (error) {
+          const retryable = ["EPERM", "EACCES", "EBUSY"].includes(error?.code);
+          if (!retryable || delayMs === 400) throw error;
+        }
       }
-    }
-    await protectFile(file);
+    });
+    await measure("endpoint-acl", () => protectFile(file));
   } finally {
-    await rm(temporary, { force: true }).catch(() => {});
+    await measure("endpoint-cleanup", () => rm(temporary, { force: true })).catch(() => {});
   }
 }
 
@@ -130,26 +134,35 @@ async function removePublishedEndpoint(runtimeRoot, descriptor) {
   }
 }
 
-async function readOrCreateSecret(runtimeRoot, protectSecret = protectRuntimeConfig) {
+async function readOrCreateSecret(runtimeRoot, protectSecret, measure) {
   const file = desktopControlSecretFile(runtimeRoot);
   try {
-    const existing = (await readFile(file, "utf8")).trim();
+    const existing = await measure("secret-read", async () => {
+      try {
+        return (await readFile(file, "utf8")).trim();
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+        return "";
+      }
+    });
     if (existing.length >= 32) {
-      await protectSecret(file);
+      await measure("secret-acl", () => protectSecret(file));
       return existing;
     }
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
   const secret = randomBytes(32).toString("hex");
-  await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, `${secret}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 })
-    .catch(async (error) => {
-      if (error?.code !== "EEXIST") throw error;
-    });
-  await chmod(file, 0o600).catch(() => {});
-  await protectSecret(file);
-  return (await readFile(file, "utf8")).trim();
+  await measure("secret-write", async () => {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, `${secret}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 })
+      .catch((error) => {
+        if (error?.code !== "EEXIST") throw error;
+      });
+    await chmod(file, 0o600).catch(() => {});
+  });
+  await measure("secret-acl", () => protectSecret(file));
+  return (await measure("secret-readback", () => readFile(file, "utf8"))).trim();
 }
 
 function sameValue(left, right) {
@@ -253,9 +266,9 @@ export class DesktopControlServer {
     this.#reportUnexpectedError = typeof reportUnexpectedError === "function" ? reportUnexpectedError : null;
   }
 
-  async start() {
+  async start(measure = (_phase, operation) => operation()) {
     if (this.#server) return;
-    this.#secret = await readOrCreateSecret(this.#runtimeRoot, this.#protectSecret);
+    this.#secret = await readOrCreateSecret(this.#runtimeRoot, this.#protectSecret, measure);
     const descriptor = createEndpointDescriptor();
     const server = createServer({ allowHalfOpen: false }, (socket) => {
       const transportReceivedAtMs = Date.now();
@@ -421,7 +434,7 @@ export class DesktopControlServer {
     });
     const endpoint = desktopControlEndpoint(this.#runtimeRoot, descriptor);
     try {
-      await new Promise((resolve, reject) => {
+      await measure("pipe-listen", () => new Promise((resolve, reject) => {
         server.once("error", reject);
         server.listen({
           path: endpoint,
@@ -432,11 +445,11 @@ export class DesktopControlServer {
           server.off("error", reject);
           resolve();
         });
-      });
-      await publishEndpoint(this.#runtimeRoot, descriptor, this.#protectSecret);
+      }));
+      await publishEndpoint(this.#runtimeRoot, descriptor, this.#protectSecret, measure);
     } catch (error) {
       if (server.listening) {
-        await new Promise((resolve) => server.close(resolve));
+        await measure("pipe-close-after-failure", () => new Promise((resolve) => server.close(resolve)));
       }
       throw error;
     }
@@ -489,7 +502,10 @@ async function callDesktopControlOnce(action, params, {
       socket.destroy();
       operation(value);
     };
-    const timer = setTimeout(() => finish(reject, new Error("Desktop control request timed out")), timeoutMs);
+    const timer = setTimeout(() => {
+      if (state === "retirement") finish(resolve, deliveredResult);
+      else finish(reject, new Error("Desktop control request timed out"));
+    }, timeoutMs);
     timer.unref?.();
     socket.setEncoding("utf8");
     socket.on("connect", () => {
@@ -565,7 +581,9 @@ async function callDesktopControlOnce(action, params, {
           deliveredResult = value.result;
           state = "retirement";
           socket.write(`${JSON.stringify({ type: "result-ack", commandId })}\n`, () => {
-            finish(resolve, deliveredResult);
+            // Business completion must not wait for receipt housekeeping, but
+            // keep the existing exchange alive until retirement or close.
+            resolve(deliveredResult);
           });
         } else finish(resolve, value.result);
       } catch (error) {

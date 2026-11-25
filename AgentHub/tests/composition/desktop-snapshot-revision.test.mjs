@@ -8,6 +8,9 @@ import { createRecentRestartFailure } from "../../src/application/restart-failur
 import { createDesktopSnapshotRevision } from "../../src/composition/desktop-snapshot-revision.mjs";
 import { RESTART_FAILURE_NOTICE_WINDOW_MS } from "../../src/domain/maintenance-operation.mjs";
 import { MaintenanceOperationStore } from "../../src/infrastructure/persistence/maintenance-operation-store.mjs";
+import { TaskBoardStore } from "../../src/infrastructure/persistence/task-board-store.mjs";
+import { WorkspaceCatalogStore } from "../../src/infrastructure/persistence/workspace-catalog-store.mjs";
+import { TaskBoardService } from "../../src/application/task-board-service.mjs";
 
 function dependencies(overrides = {}) {
   return {
@@ -91,4 +94,28 @@ test("a completed model catalog refresh invalidates the Desktop notModified revi
   const before = await revision();
   catalogRevision += 1;
   assert.notEqual(await revision(), before);
+});
+
+test("canonical Task CRUD and Workspace mutations invalidate the real Desktop revision", async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "desktop-task-revision-"));
+  const databaseFile = path.join(directory, "journal.sqlite");
+  const catalog = new WorkspaceCatalogStore({ databaseFile });
+  await catalog.load();
+  const store = new TaskBoardStore({ databaseFile });
+  const board = new TaskBoardService({ store, workspaceCatalog: catalog });
+  t.after(async () => { board.close(); catalog.close(); await rm(directory, { recursive: true, force: true }); });
+  const revision = createDesktopSnapshotRevision(dependencies({ taskBoard: board }));
+  const before = await revision();
+  assert.equal(await revision(), before, "read-only polling stays stable");
+  const task = await board.create({ text: "New visible Task" });
+  const created = await revision();
+  assert.notEqual(created, before, "a new Task must not reuse the Desktop cache identity");
+  assert.equal(JSON.parse(created).board, board.snapshotRevision);
+  await board.update({ id: task.id, title: "Edited visible Task", description: "Preserved details" });
+  const edited = await revision();
+  assert.notEqual(edited, created, "Task presentation changes must reach Desktop");
+  assert.equal(board.card(task.id).title, "Edited visible Task");
+  catalog.createWorkspace({ name: "New Task column" });
+  assert.notEqual(await revision(), edited, "Task column changes remain part of the canonical revision");
+  assert.equal(await revision(), await revision());
 });

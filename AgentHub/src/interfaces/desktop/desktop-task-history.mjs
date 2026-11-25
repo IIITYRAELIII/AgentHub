@@ -11,7 +11,7 @@ import {
   withoutMisclassifiedSubagentUsers,
 } from "../../application/task-history.mjs";
 import { normalizedResponseAnnotations } from "../../domain/response-annotation-source.mjs";
-import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
+import { assistantTraceAnnotationPresentation, normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
 import {
   canonicalizeUserMessages,
   mergedUserMessageSnapshotAuthority,
@@ -35,6 +35,7 @@ import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 import { isLegacyCodexContextProbeTurn } from "../../domain/legacy-codex-context-probe.mjs";
 import { withDurableMessageMetadata } from "../../domain/stream-message-pin.mjs";
+import { codexVisualizationIdentity } from "../../domain/codex-visualization-reference.mjs";
 
 const MAX_CACHED_HISTORIES = 12;
 const MAX_CACHED_TURNS_PER_HISTORY = 40;
@@ -225,14 +226,13 @@ function mergeDurableMessages(hydratedMessages, durableMessages, turnId, hydrate
     const author = String(durable?.author ?? "").trim()
       || String(current?.author ?? "").trim();
     const responseAnnotationReferences = Array.isArray(durable?.responseAnnotationReferences)
-      && durable.responseAnnotationReferences.length
       ? durable.responseAnnotationReferences
       : current.responseAnnotationReferences;
     values[index] = {
       ...current,
       ...structuredClone(durable),
       ...(author ? { author } : {}),
-      ...(Array.isArray(responseAnnotationReferences) && responseAnnotationReferences.length
+      ...(Array.isArray(responseAnnotationReferences)
         ? { responseAnnotationReferences: structuredClone(responseAnnotationReferences) }
         : {}),
       time: current.time ?? durable?.time ?? null,
@@ -382,6 +382,7 @@ export function createDesktopTaskHistoryFactory({
   interstreamOriginForClientMessage = () => null,
   attachmentImporter = async () => [],
   responseBudget,
+  commandTrace,
   warn = () => {},
 }) {
   const refreshes = new Map();
@@ -511,7 +512,11 @@ export function createDesktopTaskHistoryFactory({
       .finally(() => { catalogRefresh = null; });
   }
 
-  return async function desktopTaskHistory(params) {
+  return async function desktopTaskHistory(params, context) {
+    const exactTraceStarted = params.tracePage?.groupId ? performance.now() : null;
+    const timing = context?.historyTiming;
+    const sync = (stage, operation) => timing ? timing.sync(stage, operation) : operation();
+    const measure = (stage, operation) => timing ? timing.measure(stage, operation) : operation();
     const provider = String(params.provider ?? selection.activeProvider()).trim();
     const selectedStreamId = String(params.streamId ?? "").trim();
     const selectedThreadId = String(params.threadId ?? selection.threadId() ?? "").trim();
@@ -526,7 +531,7 @@ export function createDesktopTaskHistoryFactory({
     const entries = typeof catalog.entries === "function"
       ? catalog.entries()
       : await catalog.refresh();
-    scheduleCatalogRefresh();
+    if (!params.visualization) scheduleCatalogRefresh();
     const hasStreamLineage = selectedStreamId && typeof catalog.threadsForStream === "function";
     const selectedStreamThreads = hasStreamLineage
       ? catalog.threadsForStream(selectedStreamId)
@@ -562,15 +567,43 @@ export function createDesktopTaskHistoryFactory({
       taskTitle: binding.taskTitle,
       chatId: binding.chatId,
     })) : [binding];
+    if (params.visualization) {
+      const identity = codexVisualizationIdentity({ ...params.visualization, threadId: selectedThreadId });
+      const source = threadBindings.find((thread) => thread.provider === provider && thread.threadId === selectedThreadId);
+      if (!identity) return { html: null };
+      const response = { ...identity, provider, streamId: binding.streamId };
+      if (provider !== "codex" || !selectedStreamId || !source
+        || typeof historyReader.readVisualization !== "function") return { ...response, html: null };
+      const turn = await historyReader.readTurn?.({ provider, threadId: selectedThreadId, turnId: identity.turnId });
+      const html = await historyReader.readVisualization(identity, turn?.startedAt);
+      const result = { ...response, html };
+      return Buffer.byteLength(JSON.stringify(result)) <= (params.maxResponseBytes ?? 3_500_000)
+        ? result : { ...response, html: null };
+    }
     const historySources = new Map();
     if (params.tracePage) {
       const source = threadBindings.find((thread) => thread.provider === provider
         && thread.threadId === selectedThreadId);
       if (!source) throw new Error("Trace Thread does not belong to the Stream");
-      return { provider, threadId: selectedThreadId,
-        tracePage: await historyReader.refresh(source, { tracePage: params.tracePage }) };
+      const commandId = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u.test(params.clientTraceId ?? "")
+        ? params.clientTraceId : context?.commandId;
+      const traceTiming = exactTraceStarted !== null && commandId && commandTrace
+        ? (stage, outcome, monotonicDurationMs) => commandTrace.recordBestEffort({
+          commandId, transport: context?.source ?? "desktop-control",
+          stage, outcome, monotonicDurationMs, metadata: { action: "task-history" },
+        })
+        : undefined;
+      traceTiming?.("trace-history-binding", "succeeded", performance.now() - exactTraceStarted);
+      const tracePage = await historyReader.refresh(source, {
+        tracePage: params.tracePage, ...(traceTiming ? { traceTiming } : {}),
+      });
+      const presentationStarted = performance.now();
+      const groups = tracePage.groups.map(assistantTraceAnnotationPresentation);
+      traceTiming?.("trace-history-presentation", "succeeded", performance.now() - presentationStarted);
+      return { provider, threadId: selectedThreadId, tracePage: { ...tracePage, groups } };
     }
     const history = [];
+    const deferProviderRefresh = params.coldHistory === true && params.before == null;
     let sourceRefreshFailed = false;
     const currentThreadBinding = threadBindings.find((threadBinding) => (
       threadBinding.provider === binding.provider && threadBinding.threadId === binding.threadId
@@ -581,16 +614,18 @@ export function createDesktopTaskHistoryFactory({
       throw new Error("Invalid subagent recovery turn IDs");
     }
     if (params.refreshSource === true || repairSubagentTurnIds.length) {
-      sourceRefreshFailed = await scheduleRefresh(currentThreadBinding, { force: true, repairSubagentTurnIds }) === false;
+      sourceRefreshFailed = await measure("history-provider-refresh",
+        () => scheduleRefresh(currentThreadBinding, { force: true, repairSubagentTurnIds })) === false;
     }
     const pagedHistory = typeof historyReader.readPage === "function"
-      ? await historyReader.readPage(threadBindings, {
+      ? await measure("history-local-read", () => historyReader.readPage(threadBindings, {
+        timing,
         before: params.before,
         limit,
         hiddenProvider: "codex",
         hiddenTurnIdPrefixes: [CODEX_AUTO_COMPACTION_TURN_ID_PREFIX],
         emptyCompletionText: EMPTY_TURN_COMPLETION_TEXT,
-      })
+      }))
       : null;
     if (pagedHistory) {
       for (const source of pagedHistory.items) {
@@ -611,7 +646,7 @@ export function createDesktopTaskHistoryFactory({
         history.push(item);
         historySources.set(item, { key, provider: source.provider, threadId: source.threadId });
       }
-      scheduleRefresh(currentThreadBinding);
+      if (!deferProviderRefresh) scheduleRefresh(currentThreadBinding);
     } else for (const threadBinding of threadBindings) {
       const key = `${threadBinding.provider}:${threadBinding.threadId}`;
       const currentThread = threadBinding.provider === binding.provider
@@ -630,7 +665,7 @@ export function createDesktopTaskHistoryFactory({
       );
       threadHistory = await visibleProviderHistory(threadBinding.provider, threadHistory,
         (turn) => noteLegacyProbe(threadBinding, turn));
-      if (currentThread) scheduleRefresh(threadBinding);
+      if (currentThread && !deferProviderRefresh) scheduleRefresh(threadBinding);
       for (const item of threadHistory) {
         history.push(item);
         historySources.set(item, {
@@ -768,12 +803,12 @@ export function createDesktopTaskHistoryFactory({
       rawPage = orderedHistory.slice(start, end);
     }
     const pageSources = rawPage.map((item) => historySources.get(item));
-    const page = await hydrateHistory(rawPage);
+    const page = await measure("history-attachment-hydration", () => hydrateHistory(rawPage));
     for (let index = 0; index < page.length; index += 1) {
       const source = pageSources[index];
       if (source?.key) cacheHistory(hydratedHistories, source.key, [page[index]]);
     }
-    const payload = {
+    const payload = sync("history-project-page", () => ({
       ...(binding.streamId ? { streamId: binding.streamId } : {}),
       // A Stream reference is authoritative.  The caller may still carry the
       // provider/thread pair that was current before a rebirth, so expose the
@@ -862,7 +897,7 @@ export function createDesktopTaskHistoryFactory({
           completedAt: item.completedAt ?? null,
           activities: Array.isArray(item.activities) ? item.activities : [],
           ...(Array.isArray(item.activityGroups) && item.activityGroups.length
-            ? { activityGroups: item.activityGroups }
+            ? { activityGroups: item.activityGroups.map(assistantTraceAnnotationPresentation) }
             : {}),
           messages: (() => {
             const sourceMessages = coalesceInterstreamRootAlias(
@@ -1068,17 +1103,17 @@ export function createDesktopTaskHistoryFactory({
           threadId: itemThreadId,
         });
       }),
-    };
-    const fitted = responseBudget.fit(payload, {
+    }));
+    const fitted = sync("history-fit-page", () => responseBudget.fit(payload, {
       maxBytes: Math.min(
         Math.max(Number(params.maxResponseBytes) || 3_500_000, 64 * 1_024),
         3_500_000,
       ),
-    });
-    const version = createHash("sha256")
+    }));
+    const version = sync("history-version", () => createHash("sha256")
       .update(JSON.stringify(fitted))
       .digest("base64url")
-      .slice(0, 22);
+      .slice(0, 22));
     if (params.knownVersion && String(params.knownVersion) === version) {
       return {
         ...(binding.streamId ? { streamId: binding.streamId } : {}),

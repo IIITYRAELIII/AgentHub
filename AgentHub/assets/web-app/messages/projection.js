@@ -237,6 +237,17 @@
       ...(preparing ? { preparing: true } : {}) };
   }
 
+  function prependOlderHistory(previous, older) {
+    const seen = new Set(previous.map((message) => message.id));
+    const uniqueOlder = [];
+    for (const message of older) {
+      if (seen.has(message.id)) continue;
+      seen.add(message.id);
+      uniqueOlder.push(message);
+    }
+    return projectCanonicalMessages([...uniqueOlder, ...previous]);
+  }
+
   global.AgentHubMessageProjection = Object.freeze({
     userRunActivity,
     canonicalEntityIdentity,
@@ -244,6 +255,7 @@
     legacyOperationKindMigrationGuard,
     operationKind,
     projectCanonicalMessages,
+    prependOlderHistory,
     projectionState,
     providerTurnIdentity,
     reduceProjectionEntity,

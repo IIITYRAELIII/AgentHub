@@ -31,8 +31,8 @@
   });
 
   function cleanupValue(value, fallback = "<нет>") {
-    const text = String(value ?? "").trim();
-    return text || fallback;
+    const text = String(value ?? "");
+    return text.trim() ? text : fallback;
   }
 
   function cleanupPaths(title, values) {
@@ -42,64 +42,104 @@
 
   function taskCleanupConfirmationText(confirmation = {}) {
     const preview = confirmation.preview ?? {};
-    const lines = [cleanupValue(confirmation.warning, "Подтвердите удаление артефактов Task."), "", "Состояние Task Git:"];
+    if (preview.archive && preview.remainingArtifacts?.length) {
+      return ["Останутся файлы и ветки:", ...preview.remainingArtifacts.map(item => {
+        if (item.kind === "worktree_registration") return "Запись worktree: " + item.path;
+        if (item.kind === "unverified_repository") return ["Репозиторий не проверен", item.path, item.name].filter(Boolean).join(" · ");
+        return item.path ?? [item.name, item.repositoryRoot].filter(Boolean).join(" · ");
+      })].join("\n");
+    }
+    const lines = ["Состояние Git задачи:"];
     const workspaces = Array.isArray(preview.workspaces) ? preview.workspaces : [];
-    if (!workspaces.length) lines.push("  <managed worktree отсутствует>");
+    if (!workspaces.length) lines.push("  Управляемая рабочая копия отсутствует");
     for (const [index, workspace] of workspaces.entries()) {
       lines.push(
-        `  Checkout ${index + 1}:`,
+        `  Рабочая копия ${index + 1}:`,
         `    Ветка: ${cleanupValue(workspace.branch)}`,
-        `    Worktree: ${cleanupValue(workspace.projectRoot)}`,
-        `    HEAD: ${cleanupValue(workspace.headCommit)}`,
-        `    Состояние: ${workspace.dirty === true ? "dirty" : "clean"}`,
+        `    Путь рабочей копии: ${cleanupValue(workspace.projectRoot)}`,
+        `    Коммит HEAD: ${cleanupValue(workspace.headCommit)}`,
+        `    Состояние: ${workspace.dirty === true ? "есть изменения" : "без изменений"}`,
         ...cleanupPaths("    Изменённые пути", workspace.changedPaths),
-        ...cleanupPaths("    Untracked пути", workspace.untrackedPaths),
-        ...cleanupPaths("    Игнорируемые данные (сохранить)", workspace.ignoredPaths),
+        ...cleanupPaths("    Неотслеживаемые пути", workspace.untrackedPaths),
+        ...cleanupPaths("    Игнорируемые данные (будут сохранены)", workspace.ignoredPaths),
       );
     }
-    lines.push("", `Общее dirty-состояние: ${preview.dirty === true ? "dirty" : "clean"}`, "", "Результат и публикация:");
+    lines.push("", `Общее состояние Git: ${preview.dirty === true ? "есть изменения" : "без изменений"}`, "", "Результат и публикация:");
     const references = Array.isArray(preview.gitReferences) ? preview.gitReferences : [];
-    if (!references.length) lines.push("  <result commit отсутствует>");
+    if (!references.length) lines.push("  Результирующий коммит отсутствует");
     for (const [index, reference] of references.entries()) {
       lines.push(
         `  Результат ${index + 1}:`,
         `    Репозиторий: ${cleanupValue(reference.projectRoot)}`,
         `    Ветка: ${cleanupValue(reference.branch)}`,
-        `    Result commit: ${cleanupValue(reference.resultCommit)}`,
-        `    Publication state: ${reference.published === true ? "published" : "unpublished"}`,
-        `    Publication revision: ${cleanupValue(reference.publishedRevision)}`,
-        `    Publication generation: ${cleanupValue(reference.publicationGeneration)}`,
+        `    Результирующий коммит: ${cleanupValue(reference.resultCommit)}`,
+        `    Состояние публикации: ${reference.published === true ? "опубликован" : "не опубликован"}`,
+        `    Ревизия публикации: ${cleanupValue(reference.publishedRevision)}`,
+        `    Поколение публикации: ${cleanupValue(reference.publicationGeneration)}`,
       );
     }
     lines.push("", "Будет удалено:");
     const deleting = Array.isArray(preview.deleting) ? preview.deleting : [];
-    if (!deleting.length) lines.push("  - <ничего>");
+    if (!deleting.length) lines.push("  ничего");
     for (const item of deleting) {
       const target = cleanupValue(item.path ?? item.name);
       const repository = cleanupValue(item.repositoryRoot, "");
-      lines.push(`  - [${cleanupValue(item.kind, "artifact")}] ${target}${repository ? ` (repo: ${repository})` : ""}`);
+      lines.push(`  Тип: ${cleanupValue(item.kind, "неизвестно")}`,
+        `  ${item.path != null ? "Путь" : "Имя"}: ${target}`);
+      if (repository) lines.push(`  Репозиторий: ${repository}`);
     }
+    if (confirmation.warning) lines.push("", "Сообщение сервера:", String(confirmation.warning));
     return lines.join("\n");
   }
 
   let dismissCleanupConfirmation = null;
 
-  function showTaskCleanupConfirmation(text, { action, task } = {}) {
-    dismissCleanupConfirmation?.();
+  function showTaskCleanupConfirmation(text, { action, task, deletingCount, remaining, submit } = {}) {
+    if (dismissCleanupConfirmation?.() === false) throw new Error("Дождитесь завершения текущего подтверждения.");
     return new Promise((resolve, reject) => {
+      const removing = action === "board-task-remove";
+      const opener = document.activeElement;
       const dialog = document.createElement("dialog");
       dialog.className = "task-delete-modal";
       dialog.setAttribute("data-task-cleanup-modal", "");
+      dialog.setAttribute("data-task-cleanup-action", removing ? "remove" : "complete");
       dialog.setAttribute("aria-labelledby", "task-cleanup-title");
+      dialog.setAttribute("aria-describedby", "task-cleanup-summary task-cleanup-helper");
+      dialog.tabIndex = -1;
       const section = document.createElement("section");
+      const eyebrow = document.createElement("p");
+      eyebrow.className = "eyebrow";
+      eyebrow.textContent = removing ? "Удаление задачи" : "Закрытие задачи";
       const title = document.createElement("h2");
       title.id = "task-cleanup-title";
-      const label = action === "board-task-remove" ? "Удалить задачу" : "Закрыть задачу";
-      title.textContent = `${label}${task?.taskNumber ? ` ${task.taskNumber}` : ""}?`;
+      const label = removing ? "Удалить задачу" : "Закрыть задачу";
+      const confirmLabel = remaining ? "Да" : label;
+      title.textContent = remaining ? "Всё равно закрыть?"
+        : `${label}${task?.taskNumber ? ` ${task.taskNumber}` : ""}${removing ? " безвозвратно" : ""}?`;
+      const summary = document.createElement("p");
+      summary.id = "task-cleanup-summary";
+      summary.textContent = removing
+        ? "Задача и её карточка будут удалены без возможности восстановления."
+        : "Задача будет закрыта и останется доступной в архиве.";
+      const helper = document.createElement("p");
+      helper.id = "task-cleanup-helper";
+      helper.textContent = deletingCount > 0
+        ? "Будут удалены только Git-артефакты, перечисленные в предпросмотре."
+        : "Git-артефакты не будут удалены.";
+      const technical = document.createElement("details");
+      technical.className = "task-cleanup-technical";
+      technical.open = remaining;
+      const technicalHeading = document.createElement("summary");
+      technicalHeading.textContent = "Технические сведения";
       const preview = document.createElement("pre");
       preview.className = "task-cleanup-preview";
       preview.textContent = text;
-      section.append(title, preview);
+      technical.append(technicalHeading, preview);
+      const errorMessage = document.createElement("p");
+      errorMessage.className = "task-cleanup-error";
+      errorMessage.setAttribute("role", "alert");
+      errorMessage.hidden = true;
+      section.append(eyebrow, title, summary, helper, technical, errorMessage);
       const footer = document.createElement("footer");
       const cancel = document.createElement("button");
       cancel.type = "button";
@@ -108,12 +148,14 @@
       cancel.setAttribute("data-task-cleanup-cancel", "");
       const accept = document.createElement("button");
       accept.type = "button";
-      accept.className = "task-delete-confirm";
-      accept.textContent = label;
+      accept.className = removing ? "task-delete-confirm" : "board-task-primary";
+      accept.textContent = confirmLabel;
       accept.setAttribute("data-task-cleanup-confirm", "");
       footer.append(cancel, accept);
       dialog.append(section, footer);
       let settled = false;
+      let busy = false;
+      let failed = false;
       let uninstall = () => {};
       const settle = (confirmed) => {
         if (settled) return;
@@ -122,14 +164,55 @@
         if (dismissCleanupConfirmation === dismiss) dismissCleanupConfirmation = null;
         if (dialog.open) dialog.close();
         dialog.remove();
+        if (opener?.isConnected && !opener.disabled) opener.focus();
         resolve(confirmed);
+        return true;
       };
-      const dismiss = () => settle(false);
+      const dismiss = () => {
+        if (busy) { modalOverlays.activateOverlay(dialog); return false; }
+        return settle(false);
+      };
       dismissCleanupConfirmation = dismiss;
       cancel.addEventListener("click", dismiss);
-      accept.addEventListener("click", () => settle(true));
+      accept.addEventListener("click", async () => {
+        if (busy || failed || settled) return;
+        busy = true;
+        dialog.setAttribute("aria-busy", "true");
+        cancel.disabled = accept.disabled = true;
+        technical.inert = true;
+        accept.textContent = removing ? "Удаляю…" : "Закрываю…";
+        dialog.focus();
+        try {
+          await submit();
+          busy = false;
+          settle(true);
+        } catch (error) {
+          busy = false;
+          failed = true;
+          dialog.setAttribute("aria-busy", "false");
+          cancel.disabled = false;
+          technical.inert = false;
+          accept.textContent = confirmLabel;
+          errorMessage.textContent = "Не удалось выполнить действие. Отмените подтверждение и откройте его заново.";
+          preview.textContent += `\n\nОшибка сервера:\n${String(error?.message ?? error)}`;
+          errorMessage.hidden = false;
+          cancel.focus();
+          // The original command has settled as an error. Keep its explanation
+          // visible, but never create an implicit retry with a fresh identity.
+          reject(error);
+        }
+      });
+      dialog.addEventListener("keydown", event => {
+        if (event.key !== "Tab") return;
+        const controls = [technicalHeading, cancel, accept].filter(n => !n.disabled && !n.closest("[inert]"));
+        if (busy || (event.shiftKey && document.activeElement === controls[0])) {
+          event.preventDefault(); (controls.at(-1) ?? dialog).focus();
+        } else if (!event.shiftKey && document.activeElement === controls.at(-1)) {
+          event.preventDefault(); controls[0]?.focus();
+        }
+      });
       dialog.addEventListener("close", dismiss);
-      uninstall = modalOverlays.installDismissibleOverlay({ dialog, close: dismiss });
+      uninstall = modalOverlays.installDismissibleOverlay({ dialog, close: dismiss, returnFocus: () => opener });
       document.body.append(dialog);
       try {
         dialog.showModal();
@@ -147,19 +230,57 @@
   async function confirmTaskCleanup({ confirmation, action, params = {}, request, confirm = showTaskCleanupConfirmation } = {}) {
     if (typeof request !== "function") throw new TypeError("Task cleanup request is required");
     if (typeof confirm !== "function") throw new TypeError("Task cleanup confirmation UI is required");
+    if (confirmation?.previewOmitted) throw new Error("Список артефактов слишком велик для подтверждения");
     const text = taskCleanupConfirmationText(confirmation);
     const confirmedParams = structuredClone({
       ...params,
       confirmCleanup: true,
       expectedCleanupToken: confirmation?.cleanupToken,
+      ...(confirmation?.preview?.archive ? {
+        completionMode: "archive", retainArtifacts: confirmation.preview.retainArtifacts,
+      } : {}),
     });
-    if (!await confirm(text, { action, task: confirmation?.task })) return { confirmed: false, text, result: null };
-    const result = await request(action, confirmedParams);
+    const remaining = Boolean(confirmation?.preview?.archive && confirmation.preview.remainingArtifacts?.length);
+    let submission;
+    const submit = () => submission ??= Promise.resolve().then(() => request(action, confirmedParams));
+    if (!await confirm(text, { action, task: structuredClone(confirmation?.task), remaining,
+      deletingCount: Array.isArray(confirmation?.preview?.deleting) ? confirmation.preview.deleting.length : 0,
+      submit })) return { confirmed: false, text, result: null };
+    const result = await submit();
     return { confirmed: true, text, result };
+  }
+
+  async function readArchiveCleanupPreview(capsule, readPage) {
+    const { cleanupToken, previewIdentity } = capsule;
+    if (!capsule.archivePreview || !capsule.previewOmitted || !previewIdentity?.sha256) {
+      throw new Error("Не удалось прочитать список артефактов задачи");
+    }
+    const chunks = [];
+    let offset = 0;
+    do {
+      const page = await readPage({ cleanupToken, previewSha256: previewIdentity.sha256, offset });
+      if (page?.offset !== offset || typeof page.chunk !== "string" || !page.chunk.length
+          || (page.nextOffset !== null && page.nextOffset !== offset + page.chunk.length)) {
+        throw new Error("Страница списка артефактов не соответствует исходному предпросмотру");
+      }
+      chunks.push(page.chunk);
+      offset = page.nextOffset;
+    } while (offset !== null);
+    const raw = chunks.join("");
+    const bytes = new TextEncoder().encode(raw);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    const hash = Array.from(digest, value => value.toString(16).padStart(2, "0")).join("");
+    if (bytes.length !== previewIdentity.bytes || hash !== previewIdentity.sha256) {
+      throw new Error("Список артефактов не соответствует исходному предпросмотру");
+    }
+    const preview = JSON.parse(raw);
+    if (preview.archive !== true) throw new Error("Ответ не является предпросмотром архивации");
+    return { ...capsule, preview, previewOmitted: false };
   }
 
   window.AgentHubTaskCleanupConfirmation = Object.freeze({
     confirm: confirmTaskCleanup,
+    readArchivePreview: readArchiveCleanupPreview,
     format: taskCleanupConfirmationText,
   });
 
@@ -184,32 +305,80 @@
 
   window.AgentHubTaskCardEditor = Object.freeze({ createAutoGrowTextarea });
 
-  function createDeleteDialog({ dialog, cancelButton, confirmButton, onConfirm } = {}) {
+  function createDeleteDialog({ dialog, cancelButton, confirmButton, description, errorMessage, onConfirm,
+    fallbackFocus = () => null } = {}) {
     let pendingTaskId = null;
+    let busy = false;
+    let opener = null;
 
-    function close() {
+    function close({ force = false, restoreFocus = true } = {}) {
+      if (busy && !force) {
+        modalOverlays?.activateOverlay(dialog);
+        return;
+      }
       pendingTaskId = null;
+      busy = false;
       if (dialog?.open) dialog.close?.();
       dialog?.removeAttribute?.("open");
+      if (restoreFocus) (opener?.isConnected ? opener : fallbackFocus())?.focus?.();
     }
 
-    function request(taskId) {
+    function request(taskId, { title = "", returnFocus = dialog?.ownerDocument?.activeElement } = {}) {
+      if (busy) return;
       pendingTaskId = taskId ?? null;
       if (pendingTaskId == null || !dialog) return;
+      opener = returnFocus;
+      if (description) description.textContent = `Карточка «${title}» будет удалена без возможности восстановления. Чтобы сохранить её, отмените удаление и выберите «Закрыть в архив».`;
+      if (errorMessage) { errorMessage.textContent = ""; errorMessage.hidden = true; }
+      setBusy(false);
       dialog.showModal?.();
       if (!dialog.open) dialog.setAttribute?.("open", "");
+      cancelButton?.focus?.();
     }
 
-    cancelButton?.addEventListener("click", close);
+    function setBusy(value) {
+      busy = value;
+      dialog?.setAttribute?.("aria-busy", String(value));
+      if (cancelButton) cancelButton.disabled = value;
+      if (confirmButton) {
+        confirmButton.disabled = value;
+        confirmButton.textContent = value ? "Удаляю…" : "Удалить задачу";
+      }
+    }
+
+    function finish({ succeeded, error = "", cancelled = false } = {}) {
+      if (pendingTaskId == null) return;
+      setBusy(false);
+      if (succeeded) close({ restoreFocus: false });
+      else {
+        if (errorMessage) {
+          errorMessage.textContent = cancelled ? "" : error || "Не удалось удалить задачу. Повторите попытку.";
+          errorMessage.hidden = cancelled;
+        }
+        cancelButton?.focus?.();
+      }
+    }
+
+    cancelButton?.addEventListener("click", () => close());
     confirmButton?.addEventListener("click", () => {
       const taskId = pendingTaskId;
-      if (taskId == null) return;
-      close();
-      onConfirm?.(taskId);
+      if (taskId == null || busy) return;
+      setBusy(true);
+      try { onConfirm?.(taskId); }
+      catch (error) { finish({ succeeded: false, error: String(error?.message ?? error) }); }
     });
-    modalOverlays?.installDismissibleOverlay({ dialog, close });
+    dialog?.addEventListener("keydown", (event) => {
+      if (event.key !== "Tab" || busy) return;
+      if (event.shiftKey && dialog.ownerDocument?.activeElement === cancelButton) {
+        event.preventDefault(); confirmButton?.focus?.();
+      } else if (!event.shiftKey && dialog.ownerDocument?.activeElement === confirmButton) {
+        event.preventDefault(); cancelButton?.focus?.();
+      }
+    });
+    modalOverlays?.installDismissibleOverlay({ dialog, close: () => close(),
+      returnFocus: () => opener, fallbackFocus });
 
-    return Object.freeze({ request, close });
+    return Object.freeze({ request, close, finish });
   }
 
   window.AgentHubTaskDeleteDialog = Object.freeze({ create: createDeleteDialog });
@@ -955,6 +1124,7 @@
     savingStatusTaskId: null,
     attachingTaskId: null,
     removingTaskId: null,
+    completingTaskId: null,
     pendingChecklistActions: new Map(),
     checklistLinkedActionPrompts: new Map(),
     editingChecklistItemId: null,
@@ -964,10 +1134,13 @@
     dialog: taskDeleteModal,
     cancelButton: taskDeleteCancel,
     confirmButton: taskDeleteConfirm,
+    description: document.querySelector("[data-task-delete-description]"),
+    errorMessage: document.querySelector("[data-task-delete-error]"),
+    fallbackFocus: () => taskCardActions.querySelector("[data-task-delete-trigger]"),
     onConfirm: (id) => {
       if (state.removingTaskId != null) return;
+      rememberLifecycleFocus(id);
       state.removingTaskId = id;
-      renderOpenTaskCard();
       emit("remove", { id });
     },
   });
@@ -1120,6 +1293,50 @@
     document.dispatchEvent(new CustomEvent("agenthub:board-action", {
       detail: { type, ...detail },
     }));
+  }
+
+  let lifecycleFocus = null;
+  let taskCardOpener = null;
+
+  function rememberLifecycleFocus(id) {
+    const cards = [...columns.querySelectorAll("[data-board-task-id]")];
+    const card = taskCardOpener?.isConnected && taskCardOpener.dataset.boardTaskId === id
+      ? taskCardOpener : cards.find(element => element.dataset.boardTaskId === id);
+    const column = card?.closest(".task-board-column");
+    const panel = !column ? card?.closest(".workspace-task-list") : null;
+    const siblings = [...((column ?? panel)?.querySelectorAll("[data-board-task-id]") ?? [])];
+    const index = siblings.indexOf(card);
+    lifecycleFocus = {
+      id, opening: taskDetailsOpening, columnId: column?.dataset.boardColumnId, panel,
+      next: siblings.slice(index + 1).map(element => element.dataset.boardTaskId),
+      previous: siblings.slice(0, index).reverse().map(element => element.dataset.boardTaskId),
+    };
+  }
+
+  function takeLifecycleFocus(id) {
+    const frame = lifecycleFocus;
+    if (frame?.id !== id) return null;
+    lifecycleFocus = null;
+    return frame;
+  }
+
+  function finishLifecycleFocus(frame) {
+    if (!frame) return;
+    const column = frame.panel ?? [...columns.querySelectorAll(".task-board-column")]
+      .find(element => element.dataset.boardColumnId === frame.columnId);
+    const cards = [...(column?.querySelectorAll("[data-board-task-id]") ?? [])];
+    const target = [...frame.next, ...frame.previous]
+      .map(taskId => cards.find(element => element.dataset.boardTaskId === taskId)).find(Boolean);
+    const heading = column?.querySelector("h2") ?? frame.panel?.closest("section")?.querySelector("h2, h3, header strong")
+      ?? board.querySelector(".task-board-matrix-head h2")
+      ?? document.querySelector('[data-view="dashboard"] h1');
+    if (!target && heading) heading.setAttribute("tabindex", "-1");
+    (target ?? heading)?.focus({ preventScroll: true });
+  }
+
+  function announceLifecycle(text) {
+    const status = document.querySelector("[data-task-lifecycle-status]");
+    if (status) status.textContent = text;
   }
 
   function openAttachment(event, attachment, gallery, index) {
@@ -1428,7 +1645,7 @@
     taskCardBackdrop?.remove();
     taskCardBackdrop = null;
     const openedTaskId = state.openTaskId;
-    taskDeleteDialog.close();
+    taskDeleteDialog.close({ force: true, restoreFocus: false });
     diffGeneration += 1;
     state.openTaskId = null;
     state.taskCardModalRequested = false;
@@ -1759,7 +1976,8 @@
     if (!taskCardModal) return;
     let task = state.tasks.find((item) => item.id === state.openTaskId);
     if (!task) {
-      if (state.openTaskId) closeTaskCard();
+      if (state.openTaskId && state.removingTaskId !== state.openTaskId
+        && state.completingTaskId !== state.openTaskId) closeTaskCard();
       return;
     }
     const detail = openTaskDetails.get(task.id);
@@ -1840,9 +2058,18 @@
             hub_task_complete: "Закрытие задачи", hub_task_delete: "Удаление задачи" })[operation.toolName] ?? "Операция задачи";
       const phase = operation.cancellation ? "остановка запрошена"
         : operation.status === "unknown" ? "результат неизвестен" : "выполняется или ожидает";
+      const stage = ({ workflow: "подготовка", "lock-native-acquire": "получение блокировки",
+        "lock-local-acquire": "ожидание ресурса", "release:await-owned": "сборка PreRelease",
+        "native:promotion-authority": "проверка состава PreRelease", "prepare-task": "рабочая копия",
+        "prepare-dev": "проверка Git", "sparse-worktree": "состав рабочей копии",
+        "dependency-project": "зависимости проекта", "dependency-inventory": "проверка файлов зависимостей",
+        "dependency-full-proof": "полная проверка установки", "dependency-installed-lock-proof": "проверка lockfile",
+        "dependency-npm": "установка зависимостей", "task-binding": "назначение исполнителя",
+        "mcp:receipt": "сохранение результата" })[operation.progress?.stage];
+      const diagnostic = stage ? `; ${operation.progress.live ? "этап" : "последний известный этап"}: ${stage}` : "";
       actions.push(node("span", { role: "status", text: stopped
         ? "Операция прервана. Уже выполненные действия сохранены."
-        : `${label}: ${phase}` }));
+        : `${label}: ${phase}${diagnostic}` }));
       if (!stopped && operation.canCancel !== false) actions.push(node("button", { type: "button", class: "board-task-quiet",
         text: operation.cancellation ? "Проверить остановку" : "Прервать операцию",
         onclick: () => emit("operation-cancel", { id: task.id,
@@ -1859,31 +2086,44 @@
       }));
     }
     if (task.status !== "done") actions.push(destinationSelect(task));
-    if (task.status !== "done" && task.triageStatus === "failed") {
-      actions.push(node("button", {
-        type: "button", class: "board-task-quiet", text: "Повторить Spark",
-        onclick: () => emit("retry-triage", { id: task.id }),
-      }));
-    }
-    if (task.status !== "done") {
-      actions.push(node("button", {
-        type: "button", class: "board-task-quiet", text: "Закрыть задачу",
-        title: "Скрыть после приёмки заказчиком или когда сдача работ не требуется",
-        onclick: () => { closeTaskCard(); emit("complete", { id: task.id }); },
-      }));
-    }
-    actions.push(node("button", {
-      type: "button",
-      class: "board-task-remove",
-      text: state.removingTaskId === task.id ? "Удаляю…" : "Удалить",
-      disabled: state.removingTaskId === task.id ? "" : null,
-      onclick: () => taskDeleteDialog.request(task.id),
-    }));
-    taskCardActions.replaceChildren(...actions);
+    const lifecycleBusy = state.removingTaskId === task.id || state.completingTaskId === task.id;
+    const lifecycleRows = [];
+    if (task.status !== "done") lifecycleRows.push(node("div", { class: "task-lifecycle-row" }, [
+      node("p", { id: "task-archive-help", text: "Карточка сохранится в архиве и исчезнет с активной доски." }),
+      node("button", {
+        type: "button", class: "task-lifecycle-button", "data-task-archive-trigger": "",
+        text: state.completingTaskId === task.id ? "Закрываю…" : "Закрыть в архив",
+        "aria-describedby": "task-archive-help", disabled: lifecycleBusy ? "" : null,
+        onclick: () => {
+          if (state.completingTaskId || state.removingTaskId) return;
+          rememberLifecycleFocus(task.id);
+          state.completingTaskId = task.id;
+          renderOpenTaskCard();
+          emit("complete", { id: task.id });
+        },
+      }),
+    ]));
+    lifecycleRows.push(node("div", { class: "task-lifecycle-row" }, [
+      node("p", { id: "task-remove-help", text: "Карточка будет удалена без возможности восстановления." }),
+      node("button", {
+        type: "button", class: "task-lifecycle-button is-danger", "data-task-delete-trigger": "",
+        text: "Удалить задачу", "aria-describedby": "task-remove-help", disabled: lifecycleBusy ? "" : null,
+        onclick: event => taskDeleteDialog.request(task.id, {
+          title: task.title || task.text, returnFocus: event.currentTarget,
+        }),
+      }),
+    ]));
+    const lifecycle = node("section", { class: "task-lifecycle-actions", role: "group",
+      "aria-labelledby": "task-lifecycle-title" }, [
+      node("h3", { id: "task-lifecycle-title", text: "Действия с карточкой" }),
+      ...lifecycleRows,
+    ]);
+    taskCardActions.replaceChildren(node("div", { class: "task-primary-actions" }, actions), lifecycle);
     syncTaskCardBackdrop();
   }
 
   function openTaskCard(task, { modal = false } = {}) {
+    taskCardOpener = document.activeElement?.closest?.("[data-board-task-id]") ?? null;
     taskDetailsOpening += 1;
     // Full history belongs only to the open card, never to every card visited.
     pendingTaskDetails.clear();
@@ -2148,6 +2388,7 @@
       "aria-label": laneCell ? title : null,
       "data-board-destination": acceptsTaskDrops ? id : null,
       "data-board-workspace-id": workspace?.id,
+      "data-board-column-id": id,
     });
     column.addEventListener("dragover", (event) => {
       if (!acceptsTaskDrops) return;
@@ -2852,7 +3093,8 @@
         requestOpenTaskDetails();
       }
     },
-    finishAction({ type, id, succeeded, requestId = null, operation = null, itemId = null } = {}) {
+    finishAction({ type, id, succeeded, error = "", cancelled = false,
+      requestId = null, operation = null, itemId = null } = {}) {
       const pendingMove = pendingBoardMoves.get(id);
       if (type === "status" && pendingMove?.phase === "status" && pendingMove.requestId !== requestId) return;
       if (pendingMove?.requestId === requestId && pendingMove.phase === type) {
@@ -2890,8 +3132,27 @@
       }
       if (type === "remove" && state.removingTaskId === id) {
         state.removingTaskId = null;
-        if (succeeded) closeTaskCard();
-        else renderOpenTaskCard();
+        taskDeleteDialog.finish({ succeeded, error, cancelled });
+        if (succeeded) {
+          closeTaskCard();
+          finishLifecycleFocus(takeLifecycleFocus(id));
+          announceLifecycle("Задача удалена.");
+        }
+      }
+      if (type === "complete" && state.completingTaskId === id) {
+        state.completingTaskId = null;
+        const frame = takeLifecycleFocus(id);
+        const sameOpening = state.openTaskId === id && frame?.opening === taskDetailsOpening;
+        if (succeeded) {
+          if (sameOpening) {
+            closeTaskCard();
+            finishLifecycleFocus(frame);
+          }
+          announceLifecycle("Задача закрыта и сохранена в архиве.");
+        } else if (state.openTaskId === id) {
+          renderOpenTaskCard();
+          if (sameOpening) taskCardActions.querySelector("[data-task-archive-trigger]")?.focus();
+        }
       }
       if (type === "status" && state.savingStatusTaskId === id) {
         state.savingStatusTaskId = null;

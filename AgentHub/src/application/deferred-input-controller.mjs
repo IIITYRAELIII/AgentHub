@@ -93,7 +93,18 @@ function autoReleasablePendingConflict(item) {
     || recoverableStreamMessage(item);
 }
 
+const ROLLOUT_WAIT_ERRORS = Object.freeze({
+  "codex-rollout-missing": "ERR_CODEX_ROLLOUT_MISSING",
+  "codex-rollout-corrupt": "ERR_CODEX_ROLLOUT_CORRUPT",
+  "codex-rollout-mismatch": "ERR_CODEX_ROLLOUT_MISMATCH",
+  "codex-rollout-decoder-unavailable": "ERR_CODEX_ROLLOUT_DECODER_UNAVAILABLE",
+});
+
 const DEFERRED_ERROR_MESSAGES = Object.freeze({
+  ERR_CODEX_ROLLOUT_MISSING: 'Журнал диалога Codex отсутствует. Сообщение сохранено. После восстановления журнала нажми "Продолжить".',
+  ERR_CODEX_ROLLOUT_CORRUPT: 'Журнал диалога Codex повреждён. Сообщение сохранено. После восстановления журнала нажми "Продолжить".',
+  ERR_CODEX_ROLLOUT_MISMATCH: 'Сжатый журнал принадлежит другому диалогу Codex. Сообщение сохранено. После восстановления журнала нажми "Продолжить".',
+  ERR_CODEX_ROLLOUT_DECODER_UNAVAILABLE: 'Эта среда Hub не может прочитать сжатый журнал Codex. Сообщение сохранено.',
   ERR_CLAUDE_EXTERNAL_OWNER_ACTIVE: "Внешний процесс Claude всё ещё выполняет этот поток.",
   ERR_CLAUDE_EXTERNAL_OWNER_UNKNOWN: "Не удалось надёжно проверить внешний процесс Claude.",
   ERR_CODEX_TURN_START_UNCONFIRMED: "Codex не подтвердил запуск; автоматический повтор не выполнялся.",
@@ -124,6 +135,7 @@ export class DeferredInputController {
     steer = async () => null,
     start,
     persist,
+    persistDispatch = persist,
     updateMessage,
     pendingKeyboard,
     notifyReturned,
@@ -157,6 +169,7 @@ export class DeferredInputController {
     this.steer = steer;
     this.start = start;
     this.persist = persist;
+    this.persistDispatch = persistDispatch;
     this.updateMessage = updateMessage;
     this.pendingKeyboard = pendingKeyboard;
     this.notifyReturned = notifyReturned;
@@ -362,7 +375,7 @@ export class DeferredInputController {
           }
           if (intentionallyPaused(item)) return;
         }
-        const occupancy = await this.occupancy(item);
+        const occupancy = await this.occupancy(item, this.admissionTrace(item));
         if (intentionallyPaused(item)) return;
         if (streamMessage(item)) {
           const run = occupancy?.run;
@@ -459,29 +472,29 @@ export class DeferredInputController {
         await this.persist();
       }
       const priorWaitReason = item.waitReason;
-      const blocked = await this.traceAdmissionStep(item, "deferred-eligibility", () => this.isBlocked(item));
-      if (intentionallyPaused(item)) return;
+      const trace = this.admissionTrace(item);
+      const blocked = await trace("deferred-eligibility", () => this.isBlocked(item, trace));
+      if (this.queuedInputs.get(id) !== item || intentionallyPaused(item)) return;
       if (blocked) {
+        const rolloutError = ROLLOUT_WAIT_ERRORS[item.waitReason];
+        if (rolloutError) {
+          await this.pauseForDeferredActivity(item, { error: { code: rolloutError }, retry: false });
+          return;
+        }
         if (priorWaitReason !== item.waitReason) {
           this.onStateChange(item, "queued");
           await this.persist();
           if (intentionallyPaused(item)) return;
         }
         if (item.waitReason === "provider-thread-active") {
-          await this.pauseForActiveWriter(item);
+          await this.pauseForDeferredActivity(item);
           return;
         }
         item.blockedChecks = Number(item.blockedChecks ?? 0) + 1;
         this.schedule(item, this.retryDelay(item.blockedChecks));
         return;
       }
-      delete item.blockedChecks;
-      // Keep the input durable while launch is in progress, but expose the
-      // transition so clients no longer render it as waiting in the queue.
-      delete item.laneReleased;
-      item.dispatchingAt = new Date(this.now()).toISOString();
-      this.onStateChange(item, "dispatching");
-      await this.traceAdmissionStep(item, "deferred-dispatch-persist", () => this.persist());
+      await this.reserveDispatch(item);
       // A manual pause may arrive while eligibility or its durable save waits.
       // No provider call has happened yet, so leave the same item cancellable.
       if (intentionallyPaused(item)) {
@@ -516,7 +529,7 @@ export class DeferredInputController {
           : null;
         if (retryable) {
           if (waitReason === "provider-thread-active") {
-            await this.pauseForActiveWriter(item, { error, waitReason, attempted: true });
+            await this.pauseForDeferredActivity(item, { error, waitReason, attempted: true });
             return;
           }
         }
@@ -597,7 +610,26 @@ export class DeferredInputController {
     }
   }
 
-  async traceAdmissionStep(item, stage, operation) {
+  admissionTrace(item) {
+    return (stage, operation, metadata) => this.traceAdmissionStep(item, stage, operation, metadata);
+  }
+
+  async reserveDispatch(item) {
+    const beforeDispatch = Object.getOwnPropertyDescriptors(item);
+    delete item.blockedChecks;
+    delete item.laneReleased;
+    item.dispatchingAt = new Date(this.now()).toISOString();
+    this.onStateChange(item, "dispatching");
+    try {
+      await this.traceAdmissionStep(item, "deferred-dispatch-persist", () => this.persistDispatch(item));
+    } catch (error) {
+      restoreWaitState(item, beforeDispatch);
+      this.onStateChange(item, "queued");
+      throw error;
+    }
+  }
+
+  async traceAdmissionStep(item, stage, operation, metadata) {
     let span;
     try {
       span = this.commandTrace?.startBestEffortSpan?.({
@@ -608,7 +640,7 @@ export class DeferredInputController {
     } catch { /* Diagnostics cannot affect eligibility. */ }
     const finish = (outcome, error, extra = {}) => {
       try { span?.finish({ outcome, metadata: error
-        ? { errorCode: /^[A-Z][A-Z0-9_]{0,63}$/u.test(String(error.code))
+        ? { ...extra, errorCode: /^[A-Z][A-Z0-9_]{0,63}$/u.test(String(error.code))
           ? error.code : "ERR_DEFERRED_ADMISSION" } : extra }); }
       catch { /* Preserve the owning operation's outcome. */ }
     };
@@ -616,14 +648,21 @@ export class DeferredInputController {
       const result = await operation();
       const createdAt = Date.parse(String(item.createdAt ?? ""));
       const waitReason = stage === "deferred-steer-barrier" ? result : item.waitReason;
+      let extra = {};
+      try { extra = metadata?.(result) ?? {}; } catch { /* Telemetry is best-effort. */ }
       finish("succeeded", null, ["deferred-eligibility", "deferred-steer-barrier"].includes(stage) ? {
         blocked: Boolean(result),
         waitReason: /^[a-z][a-z0-9-]{0,63}$/u.test(String(waitReason)) ? waitReason : null,
         queueAgeMs: Number.isFinite(createdAt) ? Math.max(0, this.now() - createdAt) : null,
-      } : {});
+      } : extra);
       return result;
     } catch (error) {
-      finish("failed", error);
+      const timing = {};
+      for (const key of ["queueWaitMs", "readMs"]) {
+        const value = error?.timing?.[key];
+        if (Number.isFinite(value) && value >= 0) timing[key] = value;
+      }
+      finish("failed", error, timing);
       throw error;
     }
   }
@@ -677,16 +716,7 @@ export class DeferredInputController {
       this.schedule(item, this.retryDelay(item.blockedChecks));
       return;
     }
-    delete item.blockedChecks;
-    const beforeDispatch = Object.getOwnPropertyDescriptors(item);
-    item.dispatchingAt = new Date(this.now()).toISOString();
-    this.onStateChange(item, "dispatching");
-    try { await this.traceAdmissionStep(item, "deferred-dispatch-persist", () => this.persist()); }
-    catch (error) {
-      restoreWaitState(item, beforeDispatch);
-      this.onStateChange(item, "queued");
-      throw error;
-    }
+    await this.reserveDispatch(item);
     if (intentionallyPaused(item)) {
       delete item.dispatchingAt;
       await this.persist();
@@ -863,12 +893,18 @@ export class DeferredInputController {
     return true;
   }
 
-  async pauseForActiveWriter(item, options = {}) {
+  async pauseForDeferredActivity(item, options = {}) {
     const previous = Object.getOwnPropertyDescriptors(item);
     item.paused = true;
     delete item.dispatchingAt;
     delete item.recheckRequested;
     if (options.waitReason) item.waitReason = options.waitReason;
+    const detail = options.error ? safeDeferredError(options.error) : null;
+    if (options.retry === false) {
+      delete item.waitReason;
+      item.lastErrorCode = detail.code;
+      item.lastError = detail.message;
+    }
     if (options.attempted) {
       item.lastAttemptAt = new Date(this.now()).toISOString();
       item.attempts = Number(item.attempts ?? 0) + 1;
@@ -882,15 +918,22 @@ export class DeferredInputController {
       this.schedule(item, this.retryDelay(Number(item.blockedChecks ?? 0) + 1));
       throw error;
     }
-    item.blockedChecks = Number(item.blockedChecks ?? 0) + 1;
-    this.onStateChange(item, "paused", options.error ? safeDeferredError(options.error) : null);
-    this.schedule(item, this.retryDelay(item.blockedChecks));
+    this.onStateChange(item, "paused", detail);
+    if (options.retry !== false) {
+      item.blockedChecks = Number(item.blockedChecks ?? 0) + 1;
+      this.schedule(item, this.retryDelay(item.blockedChecks));
+    }
   }
 
   async refreshActiveWriterWait(item) {
-    const current = await this.occupancy(item);
-    if (intentionallyPaused(item)) return true;
+    const current = await this.occupancy(item, this.admissionTrace(item));
+    if (this.queuedInputs.get(item.id) !== item || intentionallyPaused(item)) return true;
     if (current?.occupied) {
+      const rolloutError = ROLLOUT_WAIT_ERRORS[current.waitReason];
+      if (rolloutError) {
+        await this.pauseForDeferredActivity(item, { error: { code: rolloutError }, retry: false });
+        return true;
+      }
       if (normalizeTaskExecutionOwner(current.run?.executionOwner) === TASK_EXECUTION_OWNERS.HUB) {
         // Old releases also used the external-writer pause for Hub's own run.
         // Reclassify only this observed automatic pause; manual pause wins.
@@ -908,7 +951,7 @@ export class DeferredInputController {
         this.schedule(item, this.retryDelay(item.blockedChecks));
         return true;
       }
-      await this.pauseForActiveWriter(item, {
+      await this.pauseForDeferredActivity(item, {
         waitReason: current.waitReason ?? "provider-thread-active",
       });
       return true;

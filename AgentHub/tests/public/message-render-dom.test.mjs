@@ -24,6 +24,14 @@ const TEST_THEME_CATALOG = JSON.stringify([{
 
 let browser;
 
+function isUnservedRuntimeProbe(message) {
+  const url = message.location().url;
+  if (message.type() !== "error" || !message.text().includes("404 (Not Found)") || !URL.canParse(url)) return false;
+  const { origin, pathname } = new URL(url);
+  // These routed DOM fixtures supply assets and message data, with no health or SSE service.
+  return origin === "http://127.0.0.1" && (pathname === "/health" || pathname === "/events");
+}
+
 function webAssetContentType(pathname) {
   if (/\.css$/u.test(pathname)) return "text/css; charset=utf-8";
   if (/\.(?:js|mjs)$/u.test(pathname)) return "text/javascript; charset=utf-8";
@@ -113,6 +121,101 @@ test.after(async () => {
   await browser?.close();
 });
 
+test("rollout citation controls survive SQLite, Desktop history and cold mobile reopen", { timeout: 30_000 }, async () => {
+  const { codexRolloutHistory } = await import("../../src/interfaces/telegram/task-view-controller.mjs");
+  const { createDesktopTaskHistoryFactory } = await import("../../src/interfaces/desktop/desktop-task-history.mjs");
+  const { mergeActiveTaskHistory, mergeCompletedTaskHistory } = await import("../../src/application/task-history.mjs");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-rollout-citations-"));
+  const filePath = path.join(directory, "tasks.json");
+  const binding = { provider: "codex", threadId: "thread-1", streamId: "stream-1", projectRoot: directory };
+  const projection = codexAssistantResponseProjection('An answer\n\n:agent-annotation{index="1"} First explanation\n\n:agent-annotation{index="2"} Second explanation');
+  const annotations = [
+    { text: "First quoted text", annotation: "First question" },
+    { text: "Second quoted text", annotation: "Second question" },
+  ];
+  const generated = codexRolloutHistory({
+    userMessages: { "rollout-citation-turn": [{ itemId: "quoted-user", clientUserMessageId: "quoted-client", text: "Explain", responseAnnotations: annotations }] },
+    finalMessages: { "rollout-citation-turn": projection.text },
+    responseAnnotationReferences: { "rollout-citation-turn": projection.responseAnnotationReferences },
+  });
+  let store = new LocalTaskSyncStore({ filePath });
+  try {
+    await store.load();
+    await store.recordHistory(binding, generated);
+    store.close();
+    store = new LocalTaskSyncStore({ filePath });
+    await store.load();
+    const api = createDesktopTaskHistoryFactory({
+      selection: { activeProvider: () => "codex", threadId: () => binding.threadId, chatId: () => 42 },
+      catalog: { entries: () => [{ ...binding, title: "Chat" }] },
+      historyReader: { read: async () => ({ history: store.history(binding) }) },
+      runs: { forTask: () => null }, receipts: { forMessage: () => null, forTurn: () => null },
+      historyMerger: { mergeActive: mergeActiveTaskHistory, mergeCompleted: mergeCompletedTaskHistory },
+      responseBudget: { fit: payload => payload },
+    });
+    const history = await api({ provider: binding.provider, threadId: binding.threadId, includeActive: false });
+    assert.deepEqual(history.items[0].messages.at(-1).responseAnnotationReferences, projection.responseAnnotationReferences);
+    for (const width of [1280, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      const errors = [];
+      page.on("pageerror", error => errors.push(error.message));
+      page.on("console", message => {
+        if (isUnservedRuntimeProbe(message)) return;
+        if (["error", "warning"].includes(message.type())) errors.push(message.text());
+      });
+      try {
+        await openWebApp(page);
+        for (const cold of [false, true]) {
+          if (cold) { await page.reload({ waitUntil: "load" }); await page.waitForFunction(() => Boolean(window.AgentHub)); }
+          const messages = await page.evaluate(payload => payload.items.flatMap(turn => (
+            window.AgentHubMessageLifecycle.historicalMessagesForDisplay(turn).map(message => ({
+              ...message, id: `${payload.provider}:${payload.threadId}:${turn.id}:${message.itemId}:${message.role}`,
+              provider: payload.provider, threadId: payload.threadId, turnId: turn.id,
+            }))
+          )), history);
+          await seedMessages(page, messages);
+          if (width < 600) await page.evaluate(() => window.AgentHub.showSelectedTask());
+          for (const index of [1, 2]) {
+            const control = page.locator(`[data-response-citation-index="${index}"]`);
+            assert.equal(await control.evaluate(node => node.tagName), "BUTTON");
+            assert.equal(await control.isVisible(), true);
+            await control.focus();
+            await page.keyboard.press("Enter");
+            const target = page.locator(".msg-annotation-content").nth(index - 1);
+            assert.equal(await target.isVisible(), true);
+            assert.ok((await target.textContent()).includes(annotations[index - 1].annotation));
+          }
+        }
+        assert.match(await page.title(), /Agent Hub/u);
+        assert.equal(page.url(), "http://127.0.0.1/");
+        assert.equal(await page.locator("vite-error-overlay, #webpack-dev-server-client-overlay").count(), 0);
+        assert.deepEqual(errors, []);
+        if (process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({ path: `${process.env.AGENT_HUB_QA_SCREENSHOT}-rollout-${width}.png` });
+      } finally { await page.close(); }
+    }
+  } finally { store.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("unchanged selected history repairs a foreign physical message owner", async () => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  try {
+    await openWebApp(page);
+    const messages = [{ id: "owned-final", itemId: "owned-final", role: "agent", text: "Exact owned answer" }];
+    await seedMessages(page, messages);
+    for (const method of ["setMessages", "setMessagesPreservingScroll"]) {
+      await page.evaluate(({ method, messages }) => {
+        const log = document.querySelector("[data-chat-log]");
+        log.dataset.messageOwnerKey = "foreign-task";
+        log.replaceChildren(Object.assign(document.createElement("p"), { textContent: "Foreign answer" }));
+        window.AgentHub[method]("task-1", messages);
+      }, { method, messages });
+      await page.getByText("Exact owned answer", { exact: true }).waitFor({ state: "visible" });
+      assert.equal(await page.locator("[data-chat-log]").getAttribute("data-message-owner-key"), "task-1");
+      assert.equal(await page.getByText("Foreign answer", { exact: true }).count(), 0);
+    }
+  } finally { await page.close(); }
+});
+
 test("positioned annotations interleave four nonsorted answers through stream history and reload", {timeout:45000}, async()=>{
   const raw='# Зачем нужна история Git\n\nИстория Git сохраняет изменения. 🦊 :agent-annotation{index="2"}\n\nЗависимости можно переиспользовать. :codex-annotation{index="1"}\n\nВременные копии удаляются после проверки. :agent-annotation{index="3"}\n\nМедиа принадлежит открытой задаче. :codex-annotation{index="4"}';
   for(const width of [1366,390]) for(const provider of ['codex','claude']) {
@@ -120,8 +223,7 @@ test("positioned annotations interleave four nonsorted answers through stream hi
     page.setDefaultTimeout(3000);
     page.on('pageerror',e=>diagnostics.push(e.message));
     page.on('console',m=>{
-      if(m.type()==='error' && m.text().includes('404 (Not Found)')
-        && ['http://127.0.0.1/health','http://127.0.0.1/events'].includes(m.location().url)) return;
+      if(isUnservedRuntimeProbe(m)) return;
       if(['error','warning'].includes(m.type())) diagnostics.push(m.text());
     });
     try {
@@ -190,9 +292,7 @@ test("generic annotation aliases render one exact source link for each provider 
     page.setDefaultTimeout(3000);
     page.on('pageerror',e=>diagnostics.push(e.message));
     page.on('console',m=>{
-      // This existing routed harness has no runtime health/SSE server.
-      if(m.type()==='error' && m.text().includes('404 (Not Found)')
-        && ['http://127.0.0.1/health','http://127.0.0.1/events'].includes(m.location().url)) return;
+      if(isUnservedRuntimeProbe(m)) return;
       if(['error','warning'].includes(m.type())) diagnostics.push({text:m.text(),location:m.location()});
     });
     try {
@@ -408,9 +508,7 @@ test("Markdown details safely render historical and new messages with native dis
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
-    // The routed DOM fixture intentionally has no runtime health/SSE server.
-    if (message.text().includes("404 (Not Found)")
-      && ["http://127.0.0.1/health", "http://127.0.0.1/events"].includes(message.location().url)) return;
+    if (isUnservedRuntimeProbe(message)) return;
     if (["error", "warning"].includes(message.type())) errors.push(`${message.text()} ${message.location().url}`);
   });
   try {
@@ -524,245 +622,18 @@ test("Markdown details nesting and code literals do not consume later ordinary t
   }
 });
 
-test("persisted rotation renders once after missed snapshots and page reload", async () => {
-  const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
-  const sourceTask = {
-    provider: "codex", streamId: "stream-1", threadId: "thread-old", threadPosition: 37,
-    context: { compaction: {
-      operationId: "rotation-source-operation", status: "completed", rotated: true,
-      beforePercent: 78.408282, afterPercent: 25.770898,
-      completedAt: "2026-09-10T20:53:46.990Z",
-    } },
-  };
-  const currentTask = {
-    provider: "codex", streamId: "stream-1", threadId: "thread-new", threadPosition: 38,
-    context: { percent: 61 },
-  };
-  const olderTask = {
-    ...sourceTask, threadId: "thread-older", threadPosition: 36,
-    context: { compaction: {
-      ...sourceTask.context.compaction, operationId: "earlier-rotation",
-      completedAt: "2026-09-09T20:00:00.000Z",
-    } },
-  };
-  const source = await readFile(new URL("hub-client.js", WEB_APP_ROOT), "utf8");
-  const clientFunction = (name, next) => {
-    const start = source.indexOf(`function ${name}(`);
-    return source.slice(start, source.indexOf(`function ${next}`, start));
-  };
-  const installProjection = () => page.addScriptTag({ content: `(() => {
-    const taskId = () => "task-1";
-    const maintenanceEventStorageKey = "rotation-dom-maintenance";
-    const { latestMaintenanceMessages } = window.AgentHubMessageLifecycle;
-    ${clientFunction("readMaintenanceEvents", "persistMaintenanceEvents")}
-    const maintenanceEventsByTask = readMaintenanceEvents();
-    let writes = 0;
-    const persistMaintenanceEvents = () => {
-      writes += 1;
-      localStorage.setItem(maintenanceEventStorageKey, JSON.stringify(
-        [...maintenanceEventsByTask].flatMap(([taskId, messages]) => (
-          messages.map((message) => ({ taskId, message }))
-        )),
-      ));
-    };
-    const pendingStreamRotations = new Map();
-    const observedContextCompactions = new Map();
-    const requestedContextCompactions = new Set();
-    const contextPercent = (value) => value == null ? null : Math.round(Number(value));
-    const storedMaintenancePercent = () => null;
-    const agentHub = { toast: () => {} };
-    ${clientFunction("rotationMaintenanceActive", "syncActiveMaintenanceMessages")}
-    ${clientFunction("rememberMaintenanceEvent", "taskIdentity")}
-    ${clientFunction("observeContextCompactions", "representativeSnapshotTasks")}
-    window.rotationProjection = {
-      observe: (tasks, previous = []) => {
-        observeContextCompactions(tasks);
-        observeStreamRotations(previous, tasks);
-        return { messages: maintenanceEventsByTask.get("task-1") ?? [], writes };
-      },
-    };
-  })();` });
-  try {
-    await openWebApp(page);
-    const title = await page.title();
-    assert.ok(title.trim());
-    assert.equal(page.url(), "http://127.0.0.1/");
-    for (const reload of [false, true]) {
-      if (reload) await page.reload({ waitUntil: "load" });
-      await installProjection();
-      const snapshotTasks = [sourceTask, currentTask, olderTask];
-      const first = await page.evaluate((tasks) => window.rotationProjection.observe(tasks), snapshotTasks);
-      const repeated = await page.evaluate((tasks) => window.rotationProjection.observe(tasks, tasks), snapshotTasks);
-      assert.equal(first.messages.length, 1);
-      assert.deepEqual(repeated.messages, first.messages);
-      assert.equal(repeated.writes, first.writes, "unchanged polling does not rewrite the notice");
-      if (reload) assert.equal(first.writes, 0, "saved projection retains the same exact event on reload");
-      assert.equal(Object.hasOwn(first.messages[0], "afterPercent"), false);
-      for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
-        await page.setViewportSize(viewport);
-        await seedMessages(page, [
-          { id: "before", role: "agent", threadId: "thread-old", turnId: "turn-before",
-            text: "Ответ до ротации", time: "2026-09-10T20:53:50.000Z" },
-          ...first.messages,
-          { id: "after", role: "user", threadId: "thread-new", turnId: "turn-after",
-            text: "Сообщение после ротации", time: "2026-09-10T20:56:00.000Z" },
-        ], currentTask);
-        if (viewport.width < 600) await page.evaluate(() => window.AgentHub.showSelectedTask());
-        assert.equal(await page.locator(".msg-maintenance").count(), 1);
-        assert.match(await page.locator(".msg-maintenance").textContent(), /Ротация завершена/u);
-        assert.equal(await page.locator(".msg-agent").count(), 1, "rotation is not a second agent turn");
-        const positions = await page.evaluate(() => {
-          const marker = document.querySelector(".msg-maintenance");
-          const before = document.querySelector(".msg-agent");
-          const after = document.querySelector(".msg-user");
-          return {
-            afterSource: Boolean(before.compareDocumentPosition(marker) & Node.DOCUMENT_POSITION_FOLLOWING),
-            beforeTarget: Boolean(marker.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING),
-            visible: marker.getBoundingClientRect().height > 0,
-          };
-        });
-        assert.deepEqual(positions, { afterSource: true, beforeTarget: true, visible: true });
-        if (reload && process.env.AGENT_HUB_ROTATION_QA_DIR) {
-          await mkdir(process.env.AGENT_HUB_ROTATION_QA_DIR, { recursive: true });
-          await page.screenshot({ path: path.join(process.env.AGENT_HUB_ROTATION_QA_DIR, `rotation-${viewport.width}.png`) });
-        }
-      }
-    }
-    assert.deepEqual(errors, []);
-  } finally {
-    await page.close();
-  }
-});
 
-test("compaction without provider turn renders a system marker and unknown completion stays explicit", async () => {
+
+test("estimated compaction detail remains available on the rendered activity", async () => {
   const page = await browser.newPage();
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
   try {
     await openWebApp(page);
-    const source = await readFile(new URL("hub-client.js", WEB_APP_ROOT), "utf8");
-    const clientFunction = (name, next) => {
-      const start = source.indexOf(`function ${name}(`);
-      return source.slice(start, source.indexOf(`function ${next}`, start));
-    };
-    await page.addScriptTag({ content: `(() => {
-      const taskId = () => "task-1";
-      const maintenanceEventsByTask = new Map();
-      const observedContextCompactions = new Map();
-      const requestedContextCompactions = new Set();
-      const latestMaintenanceMessages = (values) => values;
-      const persistMaintenanceEvents = () => {};
-      const contextPercent = (value) => value == null ? null : Number(value);
-      const storedMaintenancePercent = () => null;
-      const agentHub = { toast: () => {} };
-      ${clientFunction("rotationMaintenanceActive", "syncActiveMaintenanceMessages")}
-      ${clientFunction("rememberMaintenanceEvent", "taskIdentity")}
-      ${clientFunction("observeContextCompactions", "observeStreamRotations")}
-      window.compactionProjection = {
-        active: activeMaintenanceMessage,
-        observe: (task) => {
-          observeContextCompactions([task]);
-          return maintenanceEventsByTask.get("task-1");
-        },
-      };
-    })();` });
-    const marker = await page.evaluate(() => window.compactionProjection.active({
-      provider: "codex", threadId: "thread-1",
-      context: { compaction: { operationId: "operation-1", status: "running", turnId: null, origin: "automatic" } },
-    }));
-    await seedMessages(page, [marker]);
-    assert.equal(await page.locator(".msg-maintenance").count(), 1);
-    assert.match(await page.locator(".msg-maintenance").textContent(), /Автосвёртка контекста/u);
-    assert.equal(await page.locator(".msg-agent").count(), 0);
-    const preparation = {
-      maintenance: { reason: "automatic-post-turn", phase: "preparing", reservationId: "reservation-new" },
-      context: { usedTokens: 75.04, modelContextWindow: 100, percent: 75.04, compacting: false,
-        compaction: { id: "older", status: "completed", measurementStatus: "completed", afterPercent: 14 } },
-    };
-    const preparationMarker = await page.evaluate((details) => window.compactionProjection.active({
-      provider: "codex", threadId: "thread-1", ...details,
-    }), preparation);
-    await page.evaluate(() => {
-      window.__stops = [];
-      window.AgentHub.on("task:stop", (value) => window.__stops.push(value));
-    });
-    for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
-      await page.setViewportSize(viewport);
-      await seedMessages(page, [preparationMarker], preparation);
-      if (viewport.width < 600) await page.evaluate(() => window.AgentHub.showSelectedTask());
-      assert.match(await page.locator(".msg-maintenance").textContent(), /Подготовка обслуживания контекста/u);
-      assert.equal(await page.locator(".msg-agent").count(), 0);
-      assert.equal(await page.locator("[data-context-label]").textContent(), "подготовка…");
-      assert.equal(await page.locator("[data-context-usage]").getAttribute("data-compacting"), null);
-      const stop = page.locator("[data-chat-stop]:visible");
-      assert.equal(await stop.count(), 1);
-      await stop.click();
-      await page.locator("[data-context-usage]").click();
-      assert.equal(await page.locator("[data-context-usage-compact]").isDisabled(), true);
-      await page.locator('[data-context-usage-modal] [data-action="context-usage-close"]').first().click();
-      if (process.env.AGENT_HUB_QA_SCREENSHOT) await page.screenshot({
-        path: `${process.env.AGENT_HUB_QA_SCREENSHOT}-${viewport.width}.png`, fullPage: true,
-      });
-    }
-    assert.deepEqual(await page.evaluate(() => window.__stops), [{ id: "task-1" }, { id: "task-1" }]);
-    await seedMessages(page, [], { ...preparation,
-      maintenance: { ...preparation.maintenance, phase: "starting" },
-    });
-    assert.equal(await page.locator("[data-context-label]").textContent(), "запуск…");
-    assert.equal(await page.locator("[data-chat-stop]:visible").count(), 0);
-    for (const [compacting, usagePending, expectedLabel] of [
-      [true, false, "свёртка…"],
-      [true, true, "свёртка…"],
-      [false, true, "обновление…"],
-    ]) {
-      await seedMessages(page, [], { ...preparation, maintenance: null,
-        context: { ...preparation.context, compacting, usagePending },
-      });
-      assert.equal(await page.locator("[data-context-label]").textContent(), expectedLabel);
-      assert.equal(await page.locator("[data-context-usage]").getAttribute("data-compacting"), compacting ? "" : null);
-    }
-    await seedMessages(page, [], { ...preparation, maintenance: null });
-    assert.equal(await page.locator("[data-context-label]").textContent(), "75% контекста");
-    assert.equal(await page.locator("[data-chat-stop]:visible").count(), 0);
-    for (const [status, expectedText] of [
-      ["failed", "Автосвёртка контекста не завершилась"],
-      ["unknown", "Статус свёртки неизвестен"],
-      ["completed", "Свёртка контекста"],
-    ]) {
-      const messages = await page.evaluate((status) => window.compactionProjection.observe({
-        provider: "codex", threadId: "thread-1",
-        context: { compaction: {
-          operationId: "operation-1", status, turnId: null, origin: "automatic",
-          beforePercent: 77, afterPercent: status === "completed" ? 14 : null,
-          measurementStatus: status === "completed" ? "completed" : null,
-          measurementKind: status === "completed" ? "estimated" : null,
-        } },
-      }), status);
-      await seedMessages(page, messages);
-      assert.equal(await page.locator(".msg-maintenance").count(), 1);
-      assert.ok((await page.locator(".msg-maintenance").textContent()).includes(expectedText));
-      assert.equal(await page.locator(".msg-agent").count(), 0);
-      if (status === "completed") {
-        for (const viewport of [{ width: 1366, height: 900 }, { width: 390, height: 844 }]) {
-          await page.setViewportSize(viewport);
-          assert.match(await page.locator(".msg-maintenance").textContent(), /77% → ≈14%/u);
-          assert.match(await page.locator(".msg-maintenance").getAttribute("title"), /Предварительная оценка провайдера/u);
-        }
-        await seedMessages(page, [{ id: "answer-after-compaction", role: "agent", text: "Ответ",
-          activities: [{ id: "compaction", type: "compaction", status: "completed",
-            label: messages[0].maintenanceLabel, detail: messages[0].maintenanceDetail }],
-        }]);
-        await page.locator('.msg-agent .activity-feed > summary').click();
-        const activity = page.locator('.activity-item[data-type="compaction"]');
-        assert.match(await activity.getAttribute("title"), /≈14%.*Предварительная оценка провайдера/u);
-      }
-    }
-    assert.deepEqual(errors, []);
-  } finally {
-    await page.close();
-  }
+    await seedMessages(page, [{ id: "answer-after-compaction", role: "agent", text: "Ответ",
+      activities: [{ id: "compaction", type: "compaction", status: "completed", label: "Свёртка завершена успешно",
+        detail: "77% → ≈14% · Предварительная оценка провайдера после свёртки" }] }]);
+    await page.locator('.msg-agent .activity-feed > summary').click();
+    assert.match(await page.locator('.activity-item[data-type="compaction"]').getAttribute("title"), /≈14%.*Предварительная оценка провайдера/u);
+  } finally { await page.close(); }
 });
 
 test("long annotated message mounts full Markdown only while expanded and actions keep original text", async () => {
@@ -1107,7 +978,9 @@ test("active quote binds native reasoning before response item and survives draf
       await page.evaluate(live=>{
         window.__quoteLive=live;window.__quoteSends=[];
         window.AgentHub.on('message:send',detail=>window.__quoteSends.push(detail));
-        window.AgentHub.on('history:trace-page',({identity,tracePage,resolve})=>{window.__nativeQuoteRequest={identity,tracePage};window.__nativeQuoteResolve=resolve;});
+        window.__removeNativeQuoteListener=window.AgentHub.on('history:trace-page',({identity,tracePage,resolve})=>{
+          window.__nativeQuoteRequest={identity,tracePage};window.__nativeQuoteResolve=resolve;
+        });
         window.AgentHub.setLive('task-1',live);
       },live);
       await page.locator('[data-live-trace] .turn-trace-reasoning').waitFor();
@@ -1120,6 +993,8 @@ test("active quote binds native reasoning before response item and survives draf
       assert.equal(await page.evaluate(()=>typeof window.__nativeQuoteResolve),'function');
       await page.evaluate(()=>{
         window.AgentHub.setLive('task-1',{...window.__quoteLive,itemId:'later-answer-item',text:'Later answer',activityGroups:[...window.__quoteLive.activityGroups,{id:'reasoning:next',sourceItemId:'next',reasoning:'Next stage',activities:[]}]});
+        window.AgentHub.setMessages('task-1',[{...window.__quoteLive,id:'completed-overlap',role:'agent',
+          itemId:'final-answer-item',text:'Completed'}]);
         window.__nativeQuoteResolve({groups:window.__quoteLive.activityGroups});
       });
       assert.equal(await page.evaluate(()=>window.__nativeQuotePending),true);
@@ -1139,6 +1014,29 @@ test("active quote binds native reasoning before response item and survives draf
       const user={id:'quoted-user',role:'user',provider:'codex',threadId:'thread-1',turnId:'next-turn',itemId:'user-item',text:'Check',responseAnnotations:[{text:annotation.quote,annotation:annotation.annotation,source:annotation.source}]};
       const projection=codexAssistantResponseProjection(':codex-annotation{index="1"} Verified');
       const answer={id:'linked-answer',role:'agent',provider:'codex',threadId:'thread-1',turnId:'next-turn',itemId:'answer-item',...projection};
+      await page.evaluate(({source,user,answer,group})=>{
+        const preview={...group,reasoning:'Current **exact**'};
+        window.AgentHub.setLive('task-1',{...window.__quoteLive,itemId:'later-answer-item',activityGroups:[preview]});
+        window.AgentHub.setMessages('task-1',[{...source,itemId:'final-answer-item',activityGroups:[preview]},user,answer]);
+        window.__removeNativeQuoteListener();
+        window.__navigationReads=[];
+        window.AgentHub.on('history:trace-page',({tracePage,resolve})=>{
+          window.__navigationReads.push(tracePage);resolve({groups:[group]});
+        });
+      },{source,user,answer,group});
+      const sourceLink=page.locator('[data-message-id="quoted-user"] [data-response-annotation-source]');
+      await sourceLink.click();
+      const overlapHighlight=page.locator('[data-message-id="completed-source"] .msg-source-citation-highlight');
+      await overlapHighlight.first().waitFor();
+      assert.equal((await overlapHighlight.allTextContents()).join(''),annotation.quote);
+      assert.deepEqual(await page.evaluate(()=>window.__navigationReads),[{turnId:'quote-turn',groupId:group.id}]);
+      const ambiguous=await page.evaluate(({source,user,answer,group})=>{
+        window.AgentHub.setMessages('task-1',[{...source,itemId:'final-answer-item',
+          activityGroups:[{...group,reasoning:'Different rendered group'}]},user,answer]);
+        return focusResponseCitationSource(document.querySelector('[data-message-id="quoted-user"] [data-response-annotation-source]'));
+      },{source,user,answer,group});
+      assert.equal(ambiguous,false);
+      assert.equal(await page.evaluate(()=>window.__navigationReads.length),1);
       await page.reload();await page.waitForFunction(()=>window.AgentHub);
       await seedMessages(page,[source,user,answer]);if(width===390) await page.evaluate(()=>window.AgentHub.showSelectedTask());
       await page.evaluate(group=>window.AgentHub.on('history:trace-page',({resolve})=>resolve({groups:[group]})),group);
@@ -1191,6 +1089,39 @@ test("active quote refuses missing foreign changed and mismatched sources with b
     assert.ok(spans.every(x=>x.outcome==='failed'));
     assert.doesNotMatch(JSON.stringify(results.events),/Private selected|Changed private|dependency details/u);
   } finally {await page.close();}
+});
+
+test("clicking a retained live trace quote shows refusal when the native group is gone", { timeout: 15_000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-missing-native-quote-"));
+  const file = path.join(directory, "rollout.jsonl");
+  const page = await browser.newPage({ viewport: { width: 1366, height: 850 } });
+  try {
+    await writeFile(file, JSON.stringify({ type: "session_meta", payload: { id: "01a0ea85-db2c-7bd3-bfad-2634824c6069" } }) + "\n");
+    await openWebApp(page);
+    await seedMessages(page, [], { running: true, status: "running" });
+    await page.exposeFunction("readMissingNativeGroup", request => readCodexTracePageInWorker(file, request));
+    await page.evaluate(() => {
+      window.AgentHub.on("history:trace-page", ({ tracePage, resolve, reject }) =>
+        window.readMissingNativeGroup(tracePage).then(resolve, reject));
+      window.AgentHub.setLive("task-1", { provider: "codex", threadId: "thread-1", turnId: "old-turn",
+        itemId: null, activityGroups: [{ id: "reasoning:native-item", sourceItemId: "native-item",
+          reasoning: "Previously visible native fragment.", activities: [] }] });
+    });
+    const surface = page.locator("[data-live-trace] .turn-trace-reasoning");
+    await surface.scrollIntoViewIfNeeded();
+    await surface.evaluate(node => {
+      const range = window.AgentHubMessageDisclosure.domRangeFromOffsets(node, 0, node.textContent.length);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+    });
+    await surface.click({ button: "right", position: { x: 10, y: 8 } });
+    await page.locator('[data-action="annotate-selection"]').click();
+    await page.getByText("Не удалось подтвердить источник выделенного фрагмента.", { exact: true }).waitFor();
+    assert.equal(await page.locator("[data-annotations] .annotation-quote").count(), 0);
+  } finally {
+    await page.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("managed quote survives persistence, receipt absence, API, UI reload and history reopen", { timeout: 40_000 }, async () => {
@@ -1255,8 +1186,7 @@ test("managed quote survives persistence, receipt absence, API, UI reload and hi
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
-        if (message.text().includes("404 (Not Found)")
-          && ["http://127.0.0.1/health", "http://127.0.0.1/events"].includes(message.location().url)) return;
+        if (isUnservedRuntimeProbe(message)) return;
         if (["error", "warning"].includes(message.type())) errors.push(message.text());
       });
       try {

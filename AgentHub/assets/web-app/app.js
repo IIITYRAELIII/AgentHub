@@ -119,13 +119,13 @@ const workspaceCardRulesCount = document.querySelector("[data-workspace-card-rul
 const workspaceCardQuickMessagesEntry = document.querySelector("[data-workspace-card-quick-messages-entry]");
 const workspaceCardQuickMessagesCount = document.querySelector("[data-workspace-card-quick-messages-count]");
 const workspaceCardArchive = document.querySelector("[data-workspace-card-archive]");
-const workspaceCardReleaseWorkflow = document.querySelector("[data-workspace-release-workflow]");
-const workspaceCardReleaseWorkflowTooltip = document.querySelector("[data-workspace-release-workflow-tooltip]");
+const workspaceCardTaskWorkflow = document.querySelector("[data-workspace-task-workflow]");
+const workspaceCardTaskWorkflowTooltip = document.querySelector("[data-workspace-task-workflow-tooltip]");
 const workspaceCardAutoReview = document.querySelector("[data-workspace-auto-review]");
 const workspaceCardOrder = document.querySelector("[data-workspace-card-order]");
 const workspaceCardSubmit = document.querySelector("[data-workspace-card-submit]");
-window.AgentHubWorkspaceReleaseWorkflow?.renderTooltip(workspaceCardReleaseWorkflowTooltip);
-window.AgentHubWorkspaceReleaseWorkflow?.renderAutoReviewTooltip(document.querySelector("[data-workspace-auto-review-tooltip]"));
+window.AgentHubWorkspaceTaskWorkflow?.renderTooltip(workspaceCardTaskWorkflowTooltip);
+window.AgentHubWorkspaceTaskWorkflow?.renderAutoReviewTooltip(document.querySelector("[data-workspace-auto-review-tooltip]"));
 
 const chatPane = document.querySelector("[data-chat-pane]");
 const streamTabs = document.querySelector("[data-stream-tabs]");
@@ -187,7 +187,7 @@ const dialogWorkingDirectoryNote = document.querySelector("[data-dialog-working-
 const dialogStreamRules = document.querySelector("[data-dialog-stream-rules]");
 const dialogStreamRulesCount = document.querySelector("[data-dialog-stream-rules-count]");
 const dialogStreamRulesSave = document.querySelector("[data-dialog-stream-rules-save]");
-const dialogStreamReleaseManager = document.querySelector("[data-dialog-stream-release-manager]");
+const dialogStreamTaskAcceptance = document.querySelector("[data-dialog-stream-task-acceptance]");
 const dialogStreamTeamLead = document.querySelector("[data-dialog-stream-team-lead]");
 const dialogStreamTeamLeadTooltip = document.querySelector("[data-stream-team-lead-tooltip]");
 const dialogStreamQuickMessagesEntry = document.querySelector("[data-dialog-stream-quick-messages-entry]");
@@ -213,6 +213,10 @@ const composer = document.querySelector("[data-composer]");
 const composerGrow = document.querySelector("[data-composer-grow]");
 const composerInput = document.querySelector("[data-composer-input]");
 const composerSend = document.querySelector("[data-composer-send]");
+const composerEmojiPicker = window.AgentHubComposerEmojiPicker?.create(composer, {
+  onOpen: closeSlashMenu,
+  onSelect: (emoji) => insertTextAtCaret(composerInput, emoji),
+});
 const composerQuickMessages = document.querySelector("[data-composer-quick-messages]");
 const connectionQualityIndicator = document.querySelector("[data-connection-quality]");
 const annotationsBox = document.querySelector("[data-annotations]");
@@ -281,6 +285,8 @@ const serverStateDot = document.querySelector("[data-server-state-dot]");
 const serverFacts = document.querySelector("[data-server-facts]");
 const serverComponents = document.querySelector("[data-server-components]");
 const serverAccounts = document.querySelector("[data-server-accounts]");
+const githubAccountPanel = document.querySelector("[data-github-account]");
+let githubLocalAccess = false;
 const serverConfig = document.querySelector("[data-server-config]");
 
 const dialog = document.querySelector("[data-text-dialog]");
@@ -757,47 +763,17 @@ function applyActivityRailVisibility(value, { persist = false } = {}) {
   if (persist) activityRailPreference.persist(localStorage, selected);
 }
 
-function savedStreamStatusStyle() {
-  try {
-    const value = localStorage.getItem("agent-hub-stream-status-style")
-      ?? localStorage.getItem("agent-hub-context-flash-style");
-    return value === "fill" ? "fill" : "edge";
-  } catch {
-    return "edge";
-  }
-}
-
-function applyStreamStatusStyle(value, { persist = false } = {}) {
-  const style = value === "fill" ? "fill" : "edge";
-  root.dataset.streamStatusStyle = style;
-  if (persist) {
-    try {
-      localStorage.setItem("agent-hub-stream-status-style", style);
-      localStorage.removeItem("agent-hub-context-flash-style");
-    } catch {
-      // Настройка останется активной до закрытия WebView.
-    }
-  }
-}
-
-const STREAM_STATUS_EFFECTS = new Set([
-  "calm", "impulse", "scanner", "energy",
-  /* Наборы из stream-status.css: дыхание, нить, осадок и эхо. */
-  "breath", "thread", "sediment", "echo",
-  "off",
-]);
-
 function savedStreamStatusEffect() {
   try {
     const value = localStorage.getItem("agent-hub-stream-status-effect");
-    return STREAM_STATUS_EFFECTS.has(value) ? value : "impulse";
+    return window.AgentHubStreamTabs.normalizeStatusEffect(value);
   } catch {
-    return "impulse";
+    return "dynamic";
   }
 }
 
 function applyStreamStatusEffect(value, { persist = false } = {}) {
-  const effect = STREAM_STATUS_EFFECTS.has(value) ? value : "impulse";
+  const effect = window.AgentHubStreamTabs.normalizeStatusEffect(value);
   root.dataset.streamStatusEffect = effect;
   if (persist) {
     try {
@@ -973,7 +949,7 @@ applyActivityRailVisibility(activityRailPreference.stored(localStorage));
 const composerShortcuts = window.AgentHubComposerShortcuts.createSettings({
   document, storage: () => globalThis.localStorage, overlays: modalOverlays,
 });
-applyStreamStatusStyle(savedStreamStatusStyle());
+root.dataset.streamStatusStyle = "edge";
 applyStreamStatusEffect(savedStreamStatusEffect());
 applyActivityStreamDetailedCards(savedActivityStreamDetailedCards());
 applyStreamOrderMode("activity");
@@ -1338,11 +1314,11 @@ function el(tag, props = {}, children = []) {
   return node;
 }
 
-/* Анимации состояния живут на псевдоэлементах карточки, поэтому новый узел
+/* При обновлении карточки новый узел
    начинает их заново. Списки пересобираются целиком, и при частых обновлениях
    полоса активности не успевает пройти свой цикл. Узел с тем же ключом
    переиспользуется, а его анимации продолжаются с накопленного времени. */
-const STREAM_STATUS_LAYER_SELECTOR = ".stream-tab-status-layer";
+const STREAM_STATUS_LAYER_SELECTOR = ".stream-effect-layer";
 const STREAM_STATUS_ANIMATION_NAME = /(?:^|-)stream-/u;
 let reusableWorkspaceCards = new Map();
 let reusableStreamTabs = new Map();
@@ -1350,7 +1326,7 @@ let adoptedCardAnimations = [];
 const renderedCardAnswerIdentities = new WeakMap();
 
 function statusAnimationKey(animation) {
-  return `${animation.animationName} ${animation.effect?.pseudoElement ?? ""}`;
+  return `${animation.animationName} ${animation.effect?.target?.getAttribute("class") ?? ""} ${animation.effect?.pseudoElement ?? ""}`;
 }
 
 function statusAnimationSnapshot(node) {
@@ -1400,7 +1376,7 @@ function adoptRenderedCard(index, key, next, answerIdentity = "") {
   const sameAnswer = Boolean(answerIdentity) && previous.answerIdentity === answerIdentity;
   // Обновление той же непрочитанной ревизии не обрывает конечную вспышку.
   // После её завершения, чтения или смены final прежний эффект не переносится.
-  if (sameAnswer && previous.answerAnimating && !next.hasAttribute("data-running")
+  if (sameAnswer && previous.answerAnimating
     && (next.hasAttribute("data-unread") || next.hasAttribute("data-answer-ready"))) {
     next.setAttribute("data-answer-arrived", "");
   }
@@ -1418,9 +1394,6 @@ function adoptRenderedCard(index, key, next, answerIdentity = "") {
   }
   /* У вкладки Stream анимацию несёт собственный слой статуса, поэтому он
      переносится в обновлённое содержимое вместо заново созданного. */
-  const keptLayer = node.querySelector(STREAM_STATUS_LAYER_SELECTOR);
-  const nextLayer = next.querySelector(STREAM_STATUS_LAYER_SELECTOR);
-  if (keptLayer && nextLayer) nextLayer.replaceWith(keptLayer);
   node.replaceChildren(...next.childNodes);
   const times = next.hasAttribute("data-answer-arrived") && !sameAnswer
     ? new Map([...previous.times].filter(([key]) => !previous.answerKeys.has(key)))
@@ -1509,9 +1482,10 @@ function refreshTaskDurations() {
 }
 
 let toastTimer = 0;
-function showToast(message, action = null) {
+function showToast(message, action = null, { persistent = false } = {}) {
   if (!message) return;
-  toast.replaceChildren(el("span", { text: message }));
+  const label = el("span", { text: message });
+  toast.replaceChildren(label);
   if (action?.label && typeof action.onClick === "function") {
     const button = el("button", { type: "button", text: action.label });
     button.addEventListener("click", () => {
@@ -1525,6 +1499,13 @@ function showToast(message, action = null) {
   toast.hidden = false;
   toast.classList.add("visible");
   clearTimeout(toastTimer);
+  if (persistent) {
+    return () => {
+      if (label.parentNode !== toast) return;
+      toast.hidden = true;
+      toast.classList.remove("visible");
+    };
+  }
   toastTimer = window.setTimeout(() => {
     toast.classList.remove("visible");
     toastTimer = window.setTimeout(() => { toast.hidden = true; }, 220);
@@ -1955,7 +1936,7 @@ function removeComposerTask(taskId) {
   composerDraftReconciliation.remove(id);
   discardAttachmentPreviews(id);
   attachmentOperationSequences.delete(id);
-  annotationOperationSequences.delete(id);
+  clearPendingAnnotation(id);
 }
 
 function captureComposerTaskOperation(taskId = state.selectedId) {
@@ -1983,7 +1964,7 @@ function advanceComposerAsyncOperationFence(taskId) {
   const id = String(taskId ?? "").trim();
   if (!id) return;
   attachmentOperationSequences.set(id, (attachmentOperationSequences.get(id) ?? 0) + 1);
-  annotationOperationSequences.set(id, (annotationOperationSequences.get(id) ?? 0) + 1);
+  clearPendingAnnotation(id);
   discardAttachmentPreviews(id);
 }
 
@@ -2668,7 +2649,7 @@ function currentQuickMessageContext() {
   if (!task) return null;
   return {
     streamId: streamKey(task),
-    streamName: String(task.streamName ?? task.streamDisplayName ?? "Stream").trim() || "Stream",
+    streamName: String(task.streamName ?? task.streamDisplayName ?? "Поток").trim() || "Поток",
     workspaceId: workspaceKey(task),
     workspaceName: String(task.workspaceName ?? task.title ?? "Workspace").trim() || "Workspace",
   };
@@ -3150,9 +3131,9 @@ function settleQuickMessagesSelection(mutationId = "") {
    заменяет, поэтому и запись идёт единственным прежним путём. */
 const PROMPT_TEMPLATE_SCOPES = ["global", "workspace", "stream"];
 const PROMPT_TEMPLATE_SCOPE_NOTES = {
-  global: "Видны во всех Workspace и Stream.",
-  workspace: "Видны во всех Stream этого Workspace.",
-  stream: "Видны только в этом Stream.",
+  global: "Видны во всех Workspace и потоках.",
+  workspace: "Видны во всех потоках этого Workspace.",
+  stream: "Видны только в этом потоке.",
 };
 
 let promptTemplatesScope = "global";
@@ -3179,7 +3160,7 @@ function promptTemplateScopeAvailable(scope) {
 function promptTemplateScopeName(scope) {
   if (scope === "global") return "Глобальные";
   if (scope === "workspace") return promptTemplatesContext.workspaceName || "Workspace";
-  return promptTemplatesContext.streamName || "Stream";
+  return promptTemplatesContext.streamName || "Поток";
 }
 
 function promptTemplateScopeEntries(scope) {
@@ -3530,7 +3511,7 @@ function toggleOpenStream(workspaceId, streamId, streams, { additive = false, pr
     .filter((id) => available.has(id));
   const selection = window.AgentHubStreamTabs.applyOpenStreamSelection(selected, streamId, { additive });
   if (selection.limitReached) {
-    showToast("Одновременно можно открыть не больше четырёх Streams.");
+    showToast("Одновременно можно открыть не больше четырёх потоков.");
     return;
   }
   const next = selection.ids;
@@ -3764,7 +3745,7 @@ function setViewContent(view, { persist = true, activate = true } = {}) {
           ? "Null"
           : next === "server"
             ? "Server"
-            : "Chat";
+            : "Диалоги";
   }
   syncMobileNav();
   if (activate) activateView(next);
@@ -3991,6 +3972,13 @@ function workspaceLastActivity(tasks) {
   }, 0);
 }
 
+function taskDialogName(task) {
+  return window.AgentHubStreamTabs.streamDisplayName({
+    name: task?.streamName || task?.streamDisplayName,
+    ordinal: task?.streamOrdinal,
+  }, workspaceStreams(state.tasks.filter((item) => workspaceKey(item) === workspaceKey(task))).length);
+}
+
 function representativeWorkspaceTask(tasks) {
   const selected = currentTask();
   if (selected && tasks.some((task) => task.id === selected.id)) return selected;
@@ -4082,6 +4070,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
     "data-answer-arrived": tasks.some((task) => transientAnswerArrivalTaskIds.has(task.id)) ? "" : null,
     "data-running": running ? "" : null,
     "data-maintenance": maintenance || null,
+    ...streamEffectAttributes(tasks),
     "data-folder-member": folderMember ? "" : null,
     role: "button",
     tabindex: "0",
@@ -4089,6 +4078,7 @@ function renderTaskWorkspaceItem({ id, name, kind, tasks }, { folderMember = fal
     "aria-label": folderMember ? name : null,
     title: "ПКМ — редактировать Workspace",
   }, [
+    streamEffectLayer(reusableWorkspaceCards.get(id)),
     el("span", { class: "task-workspace-name", text: name }),
     el("span", {
       class: "task-workspace-time",
@@ -4126,6 +4116,7 @@ function streamAttentionKind(task, now = Date.now()) {
   if (task?.activityUnknown) return "unknown";
   if (task?.unread && !task?.running) return "completed";
   if (task?.running) return "running";
+  if (task?.openQuestion || streamMaintenanceKind(task)) return "running";
   const activityTime = streamActivityTime(task);
   const recentWindow = activityRecentPeriodMinutes * 60_000;
   if (recentWindow > 0 && activityTime > 0 && Math.max(0, now - activityTime) <= recentWindow) {
@@ -4166,6 +4157,57 @@ function streamPresentation(task) {
     ? formatRunningDuration(task.startedAt)
     : formatRelativeTime(task?.lastActivity);
   return { provider, agentLabel, running, answerReady, time, statusLabel };
+}
+
+function streamEffectAttributes(tasks) {
+  const active = tasks.filter(task => task?.running);
+  const ready = tasks.filter(task => task?.unread);
+  return {
+    "data-interstream-run": active.length && active.every(task => task.interstreamRun) ? "" : null,
+    "data-interstream-ready": ready.length && ready.every(task => task.latestFinal?.interstreamOnly) ? "" : null,
+    "data-open-question": tasks.some(task => task?.openQuestion) ? "" : null,
+  };
+}
+
+let streamFrameId = 0;
+
+function streamEffectLayer(previousCard, { activityRail = false } = {}) {
+  const existing = previousCard?.node.querySelector(STREAM_STATUS_LAYER_SELECTOR);
+  if (existing) return existing;
+  const outline = `stream-frame-${++streamFrameId}`;
+  const trail = [];
+  // Overlapping strokes end at the same head. The tail grows brighter along
+  // the path itself, including through corners and across the loop seam.
+  const steps = 16;
+  for (let i = 0; i < steps; i += 1) {
+    const start = i * 30 / steps;
+    trail.push(svgEl("use", {
+      href: "#" + outline, class: "stream-run-solid",
+      "stroke-dasharray": `0 ${start} ${30 - start} 70`,
+      "stroke-opacity": 1 / (steps - i),
+    }));
+  }
+  for (let i = 0; i < 6; i += 1) {
+    const start = i * 3;
+    trail.push(svgEl("use", {
+      href: "#" + outline, class: "stream-run-dot",
+      "stroke-dashoffset": `calc(-1px * (var(--stream-travel) + ${start}))`,
+      "stroke-opacity": (i + 1) / 6,
+    }));
+  }
+  return svgEl("svg", { class: "stream-effect-layer", "aria-hidden": "true" }, [
+    svgEl("defs", {}, [
+      svgEl("path", { id: outline, class: "stream-frame-outline", pathLength: 100 }),
+      svgEl("path", { id: outline + "-inner", class: "stream-frame-inner", pathLength: 100 }),
+    ]),
+    activityRail ? svgEl("g", { class: "activity-run-frame" }, [
+      svgEl("use", { href: "#" + outline }),
+      svgEl("use", { href: "#" + outline + "-inner", class: "activity-run-frame-inner" }),
+    ]) : null,
+    svgEl("g", { class: "stream-run-track" }, trail),
+    svgEl("use", { class: "stream-maintenance-track", href: "#" + outline + "-inner" }),
+    svgEl("line", { class: "stream-ready-strike", x1: "4%", x2: "96%", y1: "calc(100% - 9px)", y2: "calc(100% - 9px)" }),
+  ]);
 }
 
 function renderStreamStatusCard(task, title, presentation) {
@@ -4265,9 +4307,11 @@ function renderActivityRail() {
   const renderEntry = (task) => {
     const presentation = streamPresentation(task);
     const streamName = String(task.streamName || task.streamDisplayName || "").trim()
-      || `Stream ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
+      || `Поток ${Math.max(1, Number(task.streamOrdinal) || 1)}`;
     const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
     const activityTitle = `${workspaceName} — ${streamName}`;
+    const isCurrentStream = selectedTask !== null && workspaceKey(task) === workspaceKey(selectedTask)
+      && streamKey(task) === streamKey(selectedTask);
     const provider = String(task?.provider ?? "none");
     const providerModelTitle = streamProviderModelTitle({
       provider,
@@ -4283,18 +4327,19 @@ function renderActivityRail() {
       "data-stream-provider-label": presentation.agentLabel,
       "data-stream-model": task?.modelLabel ?? "",
       "data-stream-title": title,
-      "data-current": task.id === state.selectedId ? "" : null,
+      "data-current": isCurrentStream ? "" : null,
       "data-running": presentation.running ? "" : null,
+      ...streamEffectAttributes([task]),
       "data-answer-ready": presentation.answerReady ? "" : null,
       "data-answer-arrived": transientAnswerArrivalTaskIds.has(task.id) ? "" : null,
       "data-recent": streamAttentionKind(task) === "recent" ? "" : null,
       "data-maintenance": streamMaintenanceKind(task) || null,
-      "aria-pressed": String(task.id === state.selectedId),
+      "aria-pressed": String(isCurrentStream),
       "aria-label": [workspaceName, streamName, presentation.agentLabel, presentation.statusLabel]
         .filter(Boolean).join(". "),
       title,
     }, [
-      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      streamEffectLayer(reusableActivityCards.get(task.id), { activityRail: true }),
       renderStreamStatusCard(task, activityTitle, presentation),
     ]), cardAnswerIdentity([task]));
   };
@@ -4406,8 +4451,8 @@ function renderStreamTabs() {
     class: "stream-tab-utility stream-tab-create",
     "data-action": "stream-create",
     "data-workspace-id": workspaceId,
-    title: "Создать Stream и настроить будущий чат",
-    "aria-label": "Создать Stream",
+    title: "Создать поток и настроить будущий чат",
+    "aria-label": "Новый поток",
   }, [window.AgentHubStreamTabs.createPhosphorIcon(document, "plus", "stream-tab-create-mark")]);
   const overflowItems = [];
   const groups = ordered.map((stream, index) => {
@@ -4422,7 +4467,7 @@ function renderStreamTabs() {
       : task?.running && task.startedAt
         ? formatRunningDuration(task.startedAt)
         : formatRelativeTime(task?.lastActivity);
-    const title = `${statusLabel ? `${statusLabel}. ` : ""}${streamProviderModelTitle({ provider, agentLabel, modelLabel: task?.modelLabel })}. Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : ""} ПКМ — управление Stream.`;
+    const title = `${statusLabel ? `${statusLabel}. ` : ""}${streamProviderModelTitle({ provider, agentLabel, modelLabel: task?.modelLabel })}. Нажмите, чтобы переключиться. Ctrl+click — добавить или убрать колонку. ${streamOrderMode === "manual" ? "Перетащите, чтобы изменить порядок." : ""} ПКМ — управление потоком.`;
     const pinned = pinnedIds.includes(stream.id);
     const attributes = {
       type: "button",
@@ -4439,6 +4484,7 @@ function renderStreamTabs() {
       "aria-pressed": String(open.has(stream.id)),
       "data-current": task?.id === selected.id ? "" : null,
       "data-running": running ? "" : null,
+      ...streamEffectAttributes([task]),
       "data-answer-ready": answerReady ? "" : null,
       "data-answer-arrived": transientAnswerArrivalTaskIds.has(task?.id) ? "" : null,
       "data-state": statusState,
@@ -4470,7 +4516,7 @@ function renderStreamTabs() {
       class: "stream-tab",
       draggable: window.AgentHubStreamTabs.streamsAreDraggable(streamOrderMode, surface) ? "true" : null,
     }, [
-      el("span", { class: "stream-tab-status-layer", "aria-hidden": "true" }),
+      streamEffectLayer(reusableStreamTabs.get(stream.id)),
       el("span", { class: "stream-tab-card" }, content()),
     ]), cardAnswerIdentity(task ? [task] : []));
     overflowItems.push(el("button", {
@@ -4594,7 +4640,7 @@ function renderStreamChatPreview(task) {
     selectTaskFromUi(task.id);
   });
   const workspaceName = String(task.workspaceName || task.title || "Workspace").trim();
-  const streamName = String(task.streamName || task.streamDisplayName || "Stream").trim();
+  const streamName = String(task.streamName || task.streamDisplayName || "Поток").trim();
   const head = el("header", { class: "stream-chat-preview-head" }, [
     el("strong", { class: "stream-chat-preview-title", text: streamName }),
     el("span", { class: "stream-chat-preview-workspace", text: workspaceName }),
@@ -4604,7 +4650,7 @@ function renderStreamChatPreview(task) {
   if (!messages) {
     log.append(el("p", { class: "stream-chat-preview-empty", text: "Загрузка истории…" }));
   } else if (!messages.length) {
-    log.append(el("p", { class: "stream-chat-preview-empty", text: "В этом Stream пока нет сообщений." }));
+    log.append(el("p", { class: "stream-chat-preview-empty", text: "В этом потоке пока нет сообщений." }));
   } else {
     for (const message of MessageView.conversationSurfaceMessages(messages).slice(-20)) {
       log.append(renderMessage(message, { readOnly: true, task }));
@@ -4724,7 +4770,7 @@ function renderStreamChatDeck() {
   const hasVisible = shown.length > 0;
   streamChatColumns.hidden = !hasVisible;
   chatEmpty.hidden = hasVisible;
-  if (!hasVisible && chatEmptyText) chatEmptyText.textContent = "Выберите Stream в полосе сверху.";
+  if (!hasVisible && chatEmptyText) chatEmptyText.textContent = "Выберите поток в полосе сверху.";
   streamChatColumns.toggleAttribute("data-multi-stream", shown.length > 1);
   streamChatColumns.style.setProperty("--stream-chat-count", String(Math.max(1, shown.length)));
   renderedStreamChatDeckKey = deckKey;
@@ -4951,7 +4997,7 @@ function renderWorkspaceMessageSearch() {
     const first = values[0];
     const group = el("section", { class: "workspace-message-search-group" }, [
       el("header", { class: "workspace-message-search-group-head" }, [
-        el("strong", { text: first.streamName || `Stream ${first.streamOrdinal || 1}` }),
+        el("strong", { text: first.streamName || `Поток ${first.streamOrdinal || 1}` }),
         el("span", { text: String(values.length) }),
       ]),
     ]);
@@ -4985,11 +5031,11 @@ function renderWorkspaceMessageSearch() {
     && !search.loading && !search.error && !indexingActive && !indexingPartial;
   workspaceMessageSearchStatus.textContent = search.error
     || (shortQuery ? "Введите минимум два символа."
-      : search.loading ? "Ищем во всех Streams…"
+      : search.loading ? "Ищем во всех потоках…"
         : indexingActive
-          ? `Индексируем историю: ${indexing.completedThreads ?? 0} из ${indexing.totalThreads ?? 0} Streams.`
+          ? `Индексируем историю: ${indexing.completedThreads ?? 0} из ${indexing.totalThreads ?? 0} потоков.`
           : indexingPartial
-            ? `Индекс готов частично: ${indexing.failedThreads ?? 0} Streams пока недоступно.`
+            ? `Индекс готов частично: ${indexing.failedThreads ?? 0} потоков пока недоступно.`
         : search.results.length ? "" : "Ничего не найдено.");
   workspaceMessageSearchMore.hidden = search.nextOffset == null || search.loading;
 }
@@ -5144,7 +5190,6 @@ function attachTaskReferenceToComposer(targetTaskId, reference) {
   saveDraft({ userEdited: true });
   composerInput.focus({ preventScroll: true });
   composer.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  showToast(`Task «${reference.title}» прикреплена к сообщению`);
   return true;
 }
 
@@ -5306,7 +5351,7 @@ function openWorkspaceCard(workspaceId) {
   workspaceWorkingDirectoryField?.setValue(String(workspace.settings?.workingDirectory ?? ""));
   workspaceCardTaskPrefix.value = String(workspace.settings?.taskPrefix ?? "");
   workspaceCardRules.value = entityAgentRules(workspace);
-  workspaceCardReleaseWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
+  workspaceCardTaskWorkflow.checked = workspace.settings?.releaseWorkflowEnabled === true;
   workspaceCardAutoReview.checked = workspace.settings?.autoReviewEnabled === true;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages(workspace.id);
@@ -5343,7 +5388,7 @@ function openNewWorkspaceCard() {
   workspaceWorkingDirectoryField?.setValue("");
   workspaceCardTaskPrefix.value = "";
   workspaceCardRules.value = "";
-  workspaceCardReleaseWorkflow.checked = false;
+  workspaceCardTaskWorkflow.checked = false;
   workspaceCardAutoReview.checked = false;
   updateAgentRulesLimit(workspaceCardRules, workspaceCardRulesCount);
   renderWorkspaceCardQuickMessages("");
@@ -5482,7 +5527,7 @@ function ensureStreamContextMenu() {
   streamContextMenu = el("div", {
     class: "stream-context-menu",
     role: "menu",
-    "aria-label": "Управление Stream",
+    "aria-label": "Управление потоком",
     hidden: true,
   });
   document.body.append(streamContextMenu);
@@ -5543,7 +5588,7 @@ function openStreamContextMenu(event, tab) {
         ? "Сначала завершите текущий ход"
         : !["codex", "claude"].includes(provider)
           ? "Ротация доступна для Codex и Claude"
-          : `Завершить текущий Thread и продолжить Stream в новом Thread ${provider === "claude" ? "Claude" : "Codex"}`,
+          : `Завершить текущую работу агента и продолжить поток в новом контексте ${provider === "claude" ? "Claude" : "Codex"}`,
     }),
     el("button", {
       type: "button", role: "menuitem", class: "stream-context-action",
@@ -5554,8 +5599,8 @@ function openStreamContextMenu(event, tab) {
       title: tab.hasAttribute("data-running")
         ? "Сначала завершите текущий ход"
         : oppositeProvider
-          ? `Создать новый ${oppositeLabel} Thread в этом Stream и передать ему handoff-пакет`
-          : "Провайдер Stream не определён",
+          ? `Продолжить поток в новом контексте ${oppositeLabel} и передать накопленный контекст`
+          : "Провайдер потока не определён",
     }),
   );
   menu.hidden = false;
@@ -5738,8 +5783,10 @@ function selectTaskFromUi(id, {
   }
   ensureTaskStreamVisible(currentTask());
   persistOpenStreams();
-  if (preserveTaskList) syncTaskListSelection();
-  else renderTasks();
+  if (preserveTaskList) {
+    syncTaskListSelection();
+    renderActivityRail();
+  } else renderTasks();
   renderChat({ preserveStreamTabs });
   if (!preservePane) setPane("chat");
   emit("task:select", { id });
@@ -5913,9 +5960,9 @@ function providerConnectionTitle(providerLabel, presentation, measurement) {
 function renderStreamChatHeader(task, now = Date.now()) {
   mobileDialogs?.sync();
   if (!streamChatHeader) return;
-  streamChatHeader.hidden = !task;
+  streamChatHeader.hidden = !task && !root.hasAttribute("data-mobile-dialogs-enabled");
   const workspaceName = task ? String(task.workspaceName || task.title || "Workspace").trim() : "";
-  const streamName = task ? String(task.streamName || task.streamDisplayName || "Stream").trim() : "";
+  const streamName = task ? taskDialogName(task) : "";
   if (streamHeaderWorkspace) {
     streamHeaderWorkspace.textContent = workspaceName;
     streamHeaderWorkspace.title = workspaceName;
@@ -5973,6 +6020,7 @@ function renderStreamChatHeader(task, now = Date.now()) {
   const branch = String(task.branch ?? task.gitBranch ?? task.repositoryBranch ?? "").trim();
   if (streamHeaderBranch) {
     streamHeaderBranch.textContent = branch;
+    streamHeaderBranch.title = branch;
     streamHeaderBranch.hidden = !branch;
   }
   if (streamHeaderBranchSeparator) streamHeaderBranchSeparator.hidden = !branch;
@@ -5994,10 +6042,11 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
   const hasTask = Boolean(task);
   if (!hasTask) {
     chatEmpty.hidden = false;
-    if (chatEmptyText) chatEmptyText.textContent = "Выберите Workspace слева, чтобы открыть его Потоки.";
+    if (chatEmptyText) chatEmptyText.textContent = "Выберите Workspace слева, чтобы открыть его потоки.";
     streamTabs.hidden = true;
     streamTabs.replaceChildren();
     chatPane.hidden = true;
+    if (activeChatId) clearPendingAnnotation(activeChatId);
     activeChatId = null;
     activeChatHistoryBinding = "";
     renderedStreamChatDeckKey = "";
@@ -6026,6 +6075,9 @@ function renderChatContent({ preserveStreamTabs = false } = {}) {
       distance: Math.max(0, chatScroll.scrollHeight - chatScroll.clientHeight - chatScroll.scrollTop),
       pinned: scrollContainerIsNearBottom(chatScroll),
     });
+  }
+  if (activeChatId && (activeChatId !== task.id || activeChatHistoryBinding !== historyBinding)) {
+    clearPendingAnnotation(activeChatId);
   }
   if (taskChanged) chatScrollControllers.get(chatScroll)?.noteUserIntent();
 
@@ -6085,6 +6137,7 @@ function renderContextUsage(task) {
     ? "свёртка…"
     : context.usagePending ? "обновление…" : known
       ? `${context.estimated ? "≈" : ""}${Math.round(percent)}% контекста` : "нет оценки";
+  contextUsageButton.setAttribute("aria-label", `Использование контекста: ${contextLabel.textContent.replace(" контекста", "")}`);
   contextRing.style.setProperty("--context-percent", `${percent}%`);
   contextUsageButton.title = preparing ? "Подготовка обслуживания контекста. Проверяется завершение предыдущего хода…"
     : starting ? "Запуск обслуживания контекста…" : context.compacting
@@ -6326,7 +6379,7 @@ function loadAttachmentViewerSource({ source = "", name = "Изображени�
       generation,
       index,
       loaded: false,
-      message: "Не удалось загрузить изображение",
+      message: attachmentViewerGallery[index]?.loadError ?? "Не удалось загрузить изображение",
     });
   };
   attachmentViewerImage.src = resource;
@@ -6469,6 +6522,7 @@ function navigateBack() {
     return true;
   }
   if (root.dataset.view === "chat" && root.dataset.pane === "chat") {
+    if (root.hasAttribute("data-mobile-dialogs-enabled")) return false;
     setPane("tasks");
     return true;
   }
@@ -6783,7 +6837,7 @@ window.AgentHubPruneComposerFiles = pruneComposerFiles;
 function syncMessageUploadActions(head, message) {
   const state = String(message.uploadState ?? "");
   let actions = head?.querySelector("[data-message-upload-actions]");
-  if (!state) { actions?.remove(); return; }
+  if (!state || state === "uploading") { actions?.remove(); return; }
   if (actions?.dataset.uploadState === state) return;
   actions?.remove();
   actions = el("span", { "data-message-upload-actions": "", "data-upload-state": state, class: "msg-upload-actions" });
@@ -6861,9 +6915,14 @@ function patchRenderedMessage(node, message) {
 
 function messageRenderSpec(message, index, lastAgentIndex, taskDiff, citationPresentations = []) {
   const withDiff = index === lastAgentIndex && Boolean(taskDiff);
-  const renderedMessage = citationPresentations.length
+  let renderedMessage = citationPresentations.length
     ? { ...message, responseCitationPresentations: citationPresentations }
     : message;
+  if (message.role === "agent" && message.activityGroups?.some((group) => group.responseAnnotationPresentation)) {
+    renderedMessage = { ...renderedMessage,
+      activityGroups: message.activityGroups.map((group) => traceCitationPresentation(group, message)),
+    };
+  }
   return {
     key: MessageView.messageKey(message, index),
     signature: MessageView.messageContentSignature(renderedMessage, {
@@ -7188,6 +7247,8 @@ function markdownLink(raw, fileContext = currentFileLinkContext()) {
     : source;
   const taskReferenceLink = TaskReferences.link(value);
   if (taskReferenceLink) return taskReferenceLink;
+  const imageLink = projectedImageLink(value, fileContext.attachments);
+  if (imageLink) return imageLink;
   if (/^https?:\/\//iu.test(value)) {
     try {
       return { href: new URL(value).href };
@@ -7196,6 +7257,25 @@ function markdownLink(raw, fileContext = currentFileLinkContext()) {
     }
   }
   return desktopFileLink(value, fileContext);
+}
+
+function projectedImageLink(value, attachments) {
+  if (!Array.isArray(attachments) || !attachments.length) return null;
+  let target;
+  try { target = new URL(value, window.location.href); }
+  catch { return null; }
+  if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) return null;
+  for (const attachment of attachments) {
+    if (!attachment?.url || !resourceInteractions.isImageAttachment(attachment)) continue;
+    try {
+      if (new URL(attachment.url, window.location.href).href !== target.href) continue;
+      const imageMime = String(attachment.type || "image/*");
+      if (resourceInteractions.imageLinkPreview({ href: target.href, type: imageMime, attachmentName: attachment.name ?? "" })) {
+        return { href: target.href, imageMime };
+      }
+    } catch { /* Invalid attachment metadata has no authority. */ }
+  }
+  return null;
 }
 
 function codexFileCitation(raw) {
@@ -7233,6 +7313,7 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
           rel: "noopener noreferrer",
         });
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
+        if (targetLink.imageMime) link.dataset.agentHubImageMime = targetLink.imageMime;
         target.append(link);
         appendLocalResourceOverflow(target, link, targetLink, citation?.label);
       } else {
@@ -7265,19 +7346,24 @@ function appendInlineMarkdown(target, source, fileContext = currentFileLinkConte
       appendInlineMarkdown(emphasis, token.slice(1, -1), fileContext);
       target.append(emphasis);
     } else {
-      const parts = token.match(/^\[([^\]\n]+)\]\(<([^>\n]+)>(?:\s+"([^"]*)")?\)$/u)
-        ?? token.match(/^\[([^\]\n]+)\]\(([^)\n]+?)(?:\s+"([^"]*)")?\)$/u);
-      const targetLink = markdownLink(parts?.[2], fileContext);
+      const parts = token.match(/^\[([^\]\n]+)\]\(([^\n]+)\)$/u);
+      const destination = parts?.[2] ?? "";
+      const title = destination.endsWith('"')
+        ? /(\S)\s+"((?:[^"\\]|\\[^\n])*)"$/u.exec(destination)
+        : null;
+      const linkDestination = title ? destination.slice(0, title.index + title[1].length) : destination;
+      const targetLink = markdownLink(linkDestination, fileContext);
       if (targetLink) {
         const link = el("a", {
           href: targetLink.href,
           target: targetLink.taskId ? null : "_blank",
           rel: targetLink.taskId ? null : "noopener noreferrer",
           text: parts[1],
-          title: parts[3] || null,
+          title: title?.[2].replace(/\\(["\\])/gu, "$1") || null,
         });
         if (targetLink.taskId) link.dataset.agentHubTaskReference = targetLink.taskId;
         if (targetLink.localPath) link.dataset.agentHubLocalLink = targetLink.localPath;
+        if (targetLink.imageMime) link.dataset.agentHubImageMime = targetLink.imageMime;
         target.append(link);
         appendLocalResourceOverflow(target, link, targetLink, parts[1]);
       } else {
@@ -7409,10 +7495,17 @@ function renderMarkdownCodeBlock(lines, language = "") {
   ]);
 }
 
+const visualizationResponseOwners = new WeakMap();
+
 function renderMarkdown(target, source, fileContext = currentFileLinkContext(), messageRole = "agent", detailsDepth = 0) {
   const disclosureState = MessageView.captureMarkdownDetailsState(target);
   target.replaceChildren();
   const lines = String(source ?? "").replace(/\r\n?/gu, "\n").split("\n");
+  const visualization = window.AgentHubVisualization;
+  const visualizationOwner = visualizationResponseOwners.get(target);
+  const isVisualizationLine = (line) => visualizationOwner && visualization?.markerLine(line);
+  const headingPattern = /^\s*(#{1,6})\s+(.+)$/u;
+  const listItemPattern = /^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u;
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];
@@ -7429,11 +7522,23 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       target.append(renderMarkdownCodeBlock(code, fence.language));
       continue;
     }
+    if (isVisualizationLine(line)) {
+      const { provider, threadId, streamId, turnId, itemId } = visualizationOwner;
+      const load = provider === "codex" && threadId && streamId && turnId && itemId
+        ? (markerHash) => new Promise((resolve, reject) => emit("history:visualization", {
+            provider, threadId, streamId, turnId, itemId, markerHash, resolve, reject,
+          }))
+        : null;
+      target.append(visualization.card(line, load));
+      index += 1;
+      continue;
+    }
     const disclosure = detailsDepth < 32 ? MessageView.markdownDetailsAt(lines, index) : null;
     if (disclosure) {
       const summary = el("summary");
       appendInlineMarkdown(summary, disclosure.summary || "Подробнее", fileContext);
       const body = el("div", { class: "markdown-details-body" });
+      if (visualizationOwner) visualizationResponseOwners.set(body, visualizationOwner);
       renderMarkdown(body, disclosure.body, fileContext, messageRole, detailsDepth + 1);
       const details = el("details", { class: "markdown-details" }, [summary, body]);
       details.agentHubMarkdownDetailsSource = JSON.stringify([disclosure.summary, disclosure.body]);
@@ -7459,7 +7564,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       target.append(renderTechnicalRows(rows));
       continue;
     }
-    const heading = line.match(/^\s*(#{1,6})\s+(.+)$/u);
+    const heading = line.match(headingPattern);
     if (heading) {
       const node = document.createElement(`h${heading[1].length}`);
       appendInlineMarkdown(node, heading[2], fileContext);
@@ -7473,13 +7578,13 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       index = table.nextIndex;
       continue;
     }
-    const list = line.match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+    const list = line.match(listItemPattern);
     if (list) {
       const ordered = Boolean(list[2]);
       const node = document.createElement(ordered ? "ol" : "ul");
       if (ordered && Number(list[2]) !== 1) node.start = Number(list[2]);
       while (index < lines.length) {
-        const item = lines[index].match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+        const item = lines[index].match(listItemPattern);
         if (!item || Boolean(item[2]) !== ordered) break;
         const entry = el("li");
         appendInlineMarkdown(entry, item[3], fileContext);
@@ -7487,7 +7592,7 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
         index += 1;
         let nextIndex = index;
         while (nextIndex < lines.length && !lines[nextIndex].trim()) nextIndex += 1;
-        const nextItem = lines[nextIndex]?.match(/^\s*(?:([-+*])|(\d+)\.)\s+(.+)$/u);
+        const nextItem = lines[nextIndex]?.match(listItemPattern);
         if (nextItem && Boolean(nextItem[2]) === ordered) index = nextIndex;
       }
       target.append(node);
@@ -7506,12 +7611,17 @@ function renderMarkdown(target, source, fileContext = currentFileLinkContext(), 
       target.append(quote);
       continue;
     }
-    const paragraph = [];
+    // An unrecognized block marker is literal text. Consume the first line
+    // before looking for the next block so every pass advances the cursor.
+    const paragraph = [lines[index++]];
     while (index < lines.length
       && lines[index].trim()
+      && !isVisualizationLine(lines[index])
       && !MessageView.markdownFenceStart(lines[index])
-      && !/^\s*(?:#{1,6}\s|[-+*]\s+|\d+\.\s+|>\s?)/u.test(lines[index])
-      && !(paragraph.length && detailsDepth < 32 && MessageView.markdownDetailsAt(lines, index))
+      && !headingPattern.test(lines[index])
+      && !listItemPattern.test(lines[index])
+      && !/^\s*>\s?/u.test(lines[index])
+      && !(detailsDepth < 32 && MessageView.markdownDetailsAt(lines, index))
       && !markdownTableAt(lines, index)) {
       paragraph.push(lines[index++]);
     }
@@ -7597,16 +7707,49 @@ function visibleTurnTraceGroups(groups) {
 
 const traceDetailSources = new WeakMap();
 
-function traceReasoningNode(group) {
+function traceCitationPresentation(group, identity) {
+  const presentation = group.responseAnnotationPresentation;
+  if (!presentation || typeof presentation.text !== "string") return group;
+  const messages = state.messages.get(state.selectedId) ?? [];
+  const ownerIndex = identity ? messages.findIndex((message) => (
+    MessageView.messageKey(message) === MessageView.messageKey(identity)
+  )) : -1;
+  const live = state.live.get(state.selectedId);
+  const currentLive = identity && live && MessageView.messageKey({ ...identity, role: "agent" })
+    === MessageView.messageKey({ ...live, role: "agent" });
+  const preceding = ownerIndex >= 0 ? messages.slice(0, ownerIndex) : currentLive ? messages : [];
+  const message = { ...identity, ...presentation, role: "agent",
+    ...(group.responseAnnotationTarget ? { responseAnnotationReferences: (presentation.responseAnnotationReferences ?? [])
+      .map(reference => ({ ...reference, target: group.responseAnnotationTarget })) } : {}),
+  };
+  return { ...group, responseAnnotationPresentation: { ...presentation,
+    responseCitationPresentations: MessageView.responseCitationPresentations(
+      [...preceding, message], preceding.length,
+    ),
+  } };
+}
+
+function traceGroupWithCitationContext(group, identity) {
+  const matches = (identity?.activityGroups ?? []).filter((candidate) => candidate.id === group.id
+    && String(candidate.sourceItemId ?? "") === String(group.sourceItemId ?? ""));
+  const target = matches.length === 1 ? matches[0].responseAnnotationTarget : null;
+  return target ? { ...group, responseAnnotationTarget: target } : group;
+}
+
+function traceReasoningNode(group, identity = null) {
   const node = el("div", { class: "turn-trace-reasoning", "data-trace-group-id": group.id });
-  renderMarkdown(node, group.reasoning);
+  const presentation = traceCitationPresentation(group, identity).responseAnnotationPresentation;
+  if (presentation && typeof presentation.text === "string") {
+    const message = { ...identity, ...presentation, role: "agent" };
+    renderAgentResponseBody(node, message, presentation.text);
+  } else renderMarkdown(node, group.reasoning);
   traceDetailSources.set(node, group);
   return node;
 }
 
-function requestTracePage(identity, tracePage) {
+function requestTracePage(identity, tracePage, commandId) {
   const boundIdentity = { ...identity, streamId: identity.streamId || currentTask()?.streamId };
-  return new Promise((resolve, reject) => emit("history:trace-page", { identity: boundIdentity, tracePage, resolve, reject }));
+  return new Promise((resolve, reject) => emit("history:trace-page", { identity: boundIdentity, tracePage, commandId, resolve, reject }));
 }
 
 function traceArchiveNode(identity) {
@@ -7635,7 +7778,7 @@ function traceArchiveNode(identity) {
       if (direction === "previous") offsets.pop();
       page = result;
       content.replaceChildren(...page.groups.map((group) => el("section", {}, [
-        ...(group.reasoning ? [traceReasoningNode(group)] : []),
+        ...(group.reasoning ? [traceReasoningNode(group, identity)] : []),
         ...group.activities.map(activityItemNode),
       ])));
       status.textContent = "";
@@ -7671,7 +7814,7 @@ function turnTraceGroupsNode(values, { liveStage = "", openGroupIds = [], identi
       class: "turn-trace-block",
       "data-trace-index": String(index),
     });
-    const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
+    const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index], identity);
     section.append(reasoningNode);
     return section;
   });
@@ -7721,7 +7864,7 @@ function turnTraceNode(groups, identity = null) {
     const omission = traceOmissionNode(values, identity);
     if (omission) target.append(omission);
     content.reasoningBlocks.forEach((reasoning, index) => {
-      const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index]);
+      const reasoningNode = traceReasoningNode(values.filter((group) => String(group.reasoning ?? "").trim())[index], identity);
       target.append(el("section", {
         class: "turn-trace-block",
         "data-trace-index": String(index),
@@ -7901,13 +8044,20 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     target.replaceChildren();
     // Markdown собирается только безопасными DOM-узлами; сырой HTML не исполняется.
     if (renderResponseAnnotations(target, message)) return;
+    if (role === "agent" && (message.provider || task?.provider) === "codex"
+      && (!message.phase || message.phase === "final_answer")) {
+      visualizationResponseOwners.set(target, {
+        ...message, provider: message.provider || task?.provider, streamId: message.streamId || task?.streamId,
+      });
+    }
     const text = role === "system"
       ? MessageView.normalizeSystemEventText(message.text ?? "")
       : message.text ?? "";
+    const fileContext = { ...currentFileLinkContext(task), attachments: message.attachments };
     if (role === "agent" && Array.isArray(message.responseCitationPresentations)
       && message.responseCitationPresentations.length) {
-      renderAgentResponseBody(target, message, text, currentFileLinkContext(task));
-    } else renderMarkdown(target, text, currentFileLinkContext(task), role);
+      renderAgentResponseBody(target, message, text, fileContext);
+    } else renderMarkdown(target, text, fileContext, role);
   };
   const deferredPreview = MessageView.deferredUserMessagePreview(message);
   if (deferredPreview != null) {
@@ -8002,8 +8152,32 @@ document.addEventListener("click", (event) => {
     TaskReferences.open({ taskId: taskReferenceLink.dataset.agentHubTaskReference });
     return;
   }
-  const link = event.target.closest("a[data-agent-hub-local-link]");
+  const link = event.target.closest("a[href]");
   if (!link) return;
+  const localPath = link.dataset.agentHubLocalLink;
+  if (!event.defaultPrevented && event.button === 0 && !event.altKey && !event.ctrlKey
+    && !event.metaKey && !event.shiftKey && link.closest("[data-chat-pane] .msg-body")) {
+    const preview = resourceInteractions.imageLinkPreview({
+      href: link.href,
+      localPath,
+      type: link.dataset.agentHubImageMime,
+    });
+    if (preview) {
+      event.preventDefault();
+      const name = preview.name || "Изображение";
+      const generation = openAttachmentViewer({
+        gallery: [{
+          name,
+          type: "image/*",
+          dataUrl: preview.url,
+          loadError: "Не удалось открыть изображение: файл недоступен или формат не поддерживается",
+        }],
+      });
+      if (preview.localPath) emit("resource:image-preview", { localPath, name, generation });
+      return;
+    }
+  }
+  if (!localPath) return;
   event.preventDefault();
   openResourceContextMenu(event, resourceInteractions.linkResource({
     href: link.href,
@@ -8086,11 +8260,14 @@ function renderAgentResponseBody(body, message, text, fileContext) {
   const legacyReferences = references.filter((reference) => !reference.position);
   const { segments, unpositioned } = MessageView.responseCitationSegments(text, message.responseCitationPresentations);
   const content = el("div", { class: "msg-response-content" });
+  const visualizationOwner = visualizationResponseOwners.get(body);
+  if (visualizationOwner) visualizationResponseOwners.set(content, visualizationOwner);
   if (segments.some((segment) => segment.citation)) {
     for (const segment of segments) {
       if (segment.citation) content.append(renderResponseCitations({ responseCitationPresentations: [segment.citation] }));
       else if (segment.text.trim()) {
         const part = el("div", { class: "msg-response-part" });
+        if (visualizationOwner) visualizationResponseOwners.set(part, visualizationOwner);
         renderMarkdown(part, MessageView.withoutResponseCitationFallbacks(segment.text, legacyReferences), fileContext, "agent");
         content.append(...part.childNodes);
       }
@@ -8139,8 +8316,31 @@ function selectedResponseAnnotationSourceMessages() {
   );
 }
 
+function compatibleCodexTraceProjections(messages, source, nativeItemId, selectedPrefix = "") {
+  const matches = messages.flatMap((message, index) => (
+    responseAnnotationSourceIdentity(message, source)?.messageKey === source.messageKey ? [{ message, index }] : []
+  ));
+  if (!matches.length || (matches.length > 1 && !nativeItemId)) return [];
+  const textCopies = [];
+  for (const { message } of matches) {
+    const groups = (message.activityGroups ?? []).filter(group => group.id === source.traceGroupId);
+    if (groups.length !== 1 || (nativeItemId && groups[0].sourceItemId !== nativeItemId)) return [];
+    const group = traceGroupWithCitationContext(groups[0], message);
+    textCopies.push(traceReasoningNode(group, message).textContent.trimEnd());
+  }
+  // Different live and final parent items may contain the same native group.
+  // Only compatible rendered copies can share the verified exact source.
+  const longest = textCopies.reduce((left, right) => left.length >= right.length ? left : right);
+  return textCopies.every(text => text.startsWith(selectedPrefix) && longest.startsWith(text)) ? matches : [];
+}
+
 function sourceMessageProjection(source) {
-  return responseAnnotationSourceProjection(selectedResponseAnnotationSourceMessages(), source);
+  const messages = selectedResponseAnnotationSourceMessages();
+  const unique = responseAnnotationSourceProjection(messages, source);
+  if (unique || source.provider !== "codex" || !source.traceGroupId) return unique;
+  return compatibleCodexTraceProjections(messages, source, source.itemId)
+    .find(({ message, index }) => renderedResponseAnnotationSourceRoot(MessageView.messageKey(message, index))?.isConnected)
+    ?? null;
 }
 
 function renderedResponseAnnotationSourceRoot(renderedKey) {
@@ -8195,11 +8395,11 @@ async function focusResponseCitationSource(button) {
         const page = await requestTracePage(projection.message, { turnId: source.turnId, groupId: source.traceGroupId });
         if (!article.isConnected) return false;
         if (page.groups?.length !== 1 || page.groups[0].id !== source.traceGroupId) return false;
-        group = page.groups[0];
+        group = traceGroupWithCitationContext(page.groups[0], projection.message);
         const candidate = { ...projection.message, activityGroups: [group] };
         if (await responseAnnotationSha256(responseAnnotationSourceContent(candidate, source)) !== source.contentHash) return false;
         article.querySelector("[data-citation-trace]")?.remove();
-        recoveredTraceSurface = traceReasoningNode(group);
+        recoveredTraceSurface = traceReasoningNode(group, projection.message);
         const target = el("section", { "data-citation-trace": "" }, [recoveredTraceSurface]);
         article.append(target);
       } catch { return false; }
@@ -8215,7 +8415,7 @@ async function focusResponseCitationSource(button) {
     responseAnnotationSha256(surface.textContent),
     responseAnnotationSha256(range.toString().trim()),
   ]);
-  if (!responseAnnotationSourceHashesMatch(source, { contentHash, surfaceHash, selectionHash })) return false;
+  if (!article.isConnected || !responseAnnotationSourceHashesMatch(source, { contentHash, surfaceHash, selectionHash })) return false;
   activeSourceCitationCleanup?.();
   const highlight = highlightResponseAnnotationRange(surface, source.start, source.end);
   if (!highlight) return false;
@@ -8277,7 +8477,9 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
   node.querySelector("[data-live-author]").textContent = live.author || fallbackAuthor;
   const liveStage = liveStageParts(live.stage);
   const stageNode = node.querySelector("[data-live-stage]");
-  stageNode.textContent = liveStage.status;
+  stageNode.textContent = liveStage.status === "Ход выполняется"
+    ? window.AgentHubStreamTabs.dialogListPresentation(task, { live }).status || "Готовит ответ"
+    : liveStage.status;
   stageNode.hidden = !liveStage.status;
   const durationNode = node.querySelector("[data-live-turn-duration]");
   if (durationNode) {
@@ -8288,7 +8490,7 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     durationNode.textContent = durationLabel;
     durationNode.hidden = !durationLabel;
   }
-  const groups = visibleTurnTraceGroups(live.activityGroups);
+  const groups = visibleTurnTraceGroups(live.activityGroups).map((group) => traceCitationPresentation(group, live));
   const stageDetail = node.querySelector("[data-live-stage-detail]");
   const standaloneStageDetail = standaloneLiveStageDetail({ stage: live.stage, traceGroups: groups });
   stageDetail.textContent = standaloneStageDetail;
@@ -8306,6 +8508,9 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
       historyMessages.length,
     ),
   };
+  const visualizationOwner = liveMessage.provider === "codex" && liveMessage.responsePhase === "final_answer"
+    ? { ...liveMessage, streamId: liveMessage.streamId || task?.streamId }
+    : null;
   node.dataset.messageKey = MessageView.messageKey(liveMessage, historyMessages.length);
   const renderParts = window.AgentHubLiveCardRender.liveCardRenderParts({
     visibleText,
@@ -8314,7 +8519,11 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
     activities,
     stageDetail: liveStage.detail,
     fileContext,
-    bodyState: liveMessage.responseCitationPresentations,
+    bodyState: visualizationOwner ? {
+      citations: liveMessage.responseCitationPresentations,
+      threadId: visualizationOwner.threadId, turnId: visualizationOwner.turnId,
+      itemId: visualizationOwner.itemId, streamId: visualizationOwner.streamId,
+    } : liveMessage.responseCitationPresentations,
   });
   liveCardRenderController.reconcile(node, "reasoning", renderParts.reasoning, () => {
     renderMarkdown(reasoning, standaloneReasoning, fileContext);
@@ -8344,6 +8553,8 @@ function populateLiveCard(node, live, fallbackAuthor = "Агент", task = curr
   liveTrace.hidden = groups.length === 0;
   const body = node.querySelector("[data-live-body]");
   liveCardRenderController.reconcile(node, "body", renderParts.body, () => {
+    if (visualizationOwner) visualizationResponseOwners.set(body, visualizationOwner);
+    else visualizationResponseOwners.delete(body);
     if (liveMessage.responseCitationPresentations.length) {
       renderAgentResponseBody(body, liveMessage, visibleText, fileContext);
     } else renderMarkdown(body, visibleText, fileContext);
@@ -8488,6 +8699,25 @@ function renderApprovals() {
   });
 }
 
+const queueIconPaths = {
+  "pencil": "M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325",
+  "arrow-up": "M8 15a.5.5 0 0 0 .5-.5V2.707l3.146 3.147a.5.5 0 0 0 .708-.708l-4-4a.5.5 0 0 0-.708 0l-4 4a.5.5 0 1 0 .708.708L7.5 2.707V14.5a.5.5 0 0 0 .5.5",
+  "arrow-down": "M8 1a.5.5 0 0 1 .5.5v11.793l3.146-3.147a.5.5 0 0 1 .708.708l-4 4a.5.5 0 0 1-.708 0l-4-4a.5.5 0 0 1 .708-.708L7.5 13.293V1.5A.5.5 0 0 1 8 1",
+  steer: "M3 8l5-5 5 5 M3 13l5-5 5 5",
+  pause: "M5.5 3.5v9 M10.5 3.5v9",
+  cancel: "M4 4l8 8 M12 4l-8 8",
+};
+
+function queueActionButton(label, symbol, attributes) {
+  const path = queueIconPaths[symbol];
+  const icon = path ? svgEl("svg", { viewBox: "0 0 16 16", "aria-hidden": "true" }, [
+    svgEl("path", { d: path, "stroke-width": symbol === "pause" ? 3 : 2 }),
+  ]) : symbol;
+  return el("button", {
+    type: "button", class: "queue-action", title: label, "aria-label": label, ...attributes,
+  }, [icon]);
+}
+
 function renderQueueForTask(taskId, container) {
   const queued = (state.queue.get(taskId) ?? [])
     .slice()
@@ -8524,9 +8754,9 @@ function renderQueueForTask(taskId, container) {
       }));
       if (entry.uploadState) {
         for (const action of entry.uploadState === "paused" ? ["resume", "cancel"] : ["cancel"]) {
-          const button = el("button", {
-            type: "button", class: "queue-accept", [`data-upload-${action}`]: "",
-            text: action === "resume" ? "Продолжить загрузку" : "Отменить отправку",
+          const resume = action === "resume";
+          const button = queueActionButton(resume ? "Продолжить загрузку" : "Отменить отправку", resume ? "▶" : "cancel", {
+            [`data-upload-${action}`]: "",
           });
           button.addEventListener("click", () => emit(`message:upload-${action}`, {
             taskId, clientUserMessageId: entry.clientUserMessageId,
@@ -8535,10 +8765,9 @@ function renderQueueForTask(taskId, container) {
         }
       }
       if (entry.admissionRetryAvailable) {
-        const retry = el("button", {
-          type: "button", class: "queue-accept", "data-message-retry-unconfirmed": "",
-          text: "Повторить отправку",
-          title: "Повторить исходный запрос с тем же идентификатором; приём Hub пока не подтверждён",
+        const retry = queueActionButton("Повторить отправку", "↻", {
+          "data-message-retry-unconfirmed": "",
+          "aria-description": "Повторить исходный запрос с тем же идентификатором; приём Hub пока не подтверждён",
         });
         retry.addEventListener("click", () => emit("message:retry-unconfirmed", {
           taskId, clientUserMessageId: entry.clientUserMessageId,
@@ -8546,9 +8775,9 @@ function renderQueueForTask(taskId, container) {
         actions.push(retry);
       }
       if (entry.cancellationAvailable) {
-        actions.push(el("button", {
-          type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-          title: "Отменить отложенное сообщение", "aria-label": "Отменить отложенное сообщение", text: "Отменить",
+        actions.push(queueActionButton("Отменить", "cancel", {
+          "data-action": "queue-remove", "data-queue-id": entry.id,
+          "aria-description": "Отменить отложенное сообщение",
         }));
       }
     } else {
@@ -8557,87 +8786,64 @@ function renderQueueForTask(taskId, container) {
         && entry.attentionRequired === true
         && entry.conflictKind === "message-steer";
       if (!exactSteerDecision) {
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-steer",
+        actions.push(queueActionButton("В текущий ход", "steer", {
           "data-action": "queue-steer",
           "data-queue-id": entry.id,
-          title: steerAvailable
+          "aria-description": steerAvailable
             ? (task.provider === "claude"
               ? "Прервать текущий ход и продолжить его этим сообщением"
               : "Добавить это сообщение в текущий ход")
             : "Доступно, пока эта задача выполняет ход",
           disabled: !steerAvailable,
-          text: "В текущий ход",
         }));
       }
-      actions.push(el("button", {
-        type: "button",
-        class: "queue-edit",
+      actions.push(queueActionButton("Изменить", "pencil", {
         "data-action": "queue-edit",
         "data-queue-id": entry.id,
-        title: "Вернуть весь исходный черновик в основной композер",
-        text: "Изменить",
+        "aria-description": "Вернуть весь исходный черновик в основной композер",
       }));
       if (["queued", "paused"].includes(entry.state)) {
         const movableIndex = movable.findIndex((candidate) => candidate.id === entry.id);
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-move",
+        actions.push(queueActionButton("Поднять сообщение в очереди", "arrow-up", {
           "data-action": "queue-move",
           "data-direction": "up",
           "data-queue-id": entry.id,
-          title: "Поднять сообщение в очереди",
-          "aria-label": "Поднять сообщение в очереди",
           disabled: movableIndex <= 0,
-          text: "↑",
         }));
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-move",
+        actions.push(queueActionButton("Опустить сообщение в очереди", "arrow-down", {
           "data-action": "queue-move",
           "data-direction": "down",
           "data-queue-id": entry.id,
-          title: "Опустить сообщение в очереди",
-          "aria-label": "Опустить сообщение в очереди",
           disabled: movableIndex < 0 || movableIndex >= movable.length - 1,
-          text: "↓",
         }));
-        actions.push(el("button", {
-          type: "button",
-          class: "queue-pause",
-          "data-action": entry.state === "paused" ? "queue-resume" : "queue-pause",
+        const paused = entry.state === "paused";
+        const recheck = paused && entry.waitReason === "provider-thread-active";
+        const pauseLabel = recheck ? "Проверить снова" : paused ? "Продолжить" : "Пауза";
+        const pauseIcon = recheck ? "↻" : paused ? "▶" : "pause";
+        actions.push(queueActionButton(pauseLabel, pauseIcon, {
+          "data-action": paused ? "queue-resume" : "queue-pause",
           "data-queue-id": entry.id,
-          text: entry.state === "paused"
-            ? entry.waitReason === "provider-thread-active" ? "Проверить снова" : "Продолжить"
-            : "Пауза",
         }));
       }
       if (entry.state === "pending") {
         if (entry.lastError) {
-          actions.push(el("button", {
-            type: "button",
-            class: "queue-accept",
+          actions.push(queueActionButton("Повторить", "↻", {
             "data-action": "queue-retry",
             "data-queue-id": entry.id,
-            title: "Повторить доставку в исходный ход с тем же идентификатором",
-            text: "Повторить",
+            "aria-description": "Повторить доставку в исходный ход с тем же идентификатором",
           }));
         }
         if (!entry.lastError || entry.queueAfterTurnAvailable === true) {
-          actions.push(el("button", {
-            type: "button",
-            class: "queue-accept",
+          actions.push(queueActionButton("После хода", "⇥", {
             "data-action": "queue-accept",
             "data-queue-id": entry.id,
-            title: "Явно разрешить отправку после завершения текущего хода",
-            text: "После хода",
+            "aria-description": "Явно разрешить отправку после завершения текущего хода",
           }));
         }
       }
-      actions.push(el("button", {
-        type: "button", class: "queue-remove", "data-action": "queue-remove", "data-queue-id": entry.id,
-        title: "Отменить отложенное сообщение", "aria-label": "Отменить отложенное сообщение", text: "Отменить",
+      actions.push(queueActionButton("Отменить", "cancel", {
+        "data-action": "queue-remove", "data-queue-id": entry.id,
+        "aria-description": "Отменить отложенное сообщение",
       }));
     }
     const entryAnnotations = Array.isArray(entry.annotations) ? entry.annotations : [];
@@ -8650,9 +8856,6 @@ function renderQueueForTask(taskId, container) {
     const content = el("div", { class: "queue-content" }, [
       entry.author ? el("strong", { class: "queue-author", text: entry.author }) : null,
       visibleText ? el("div", { class: "queue-text", text: visibleText }) : null,
-      (entry.waitReason === "managed-run-activity-unknown"
-        || task?.activityUnknown && [entry.waitReason, entry.conflictKind].includes("task-running"))
-        ? el("div", { class: "queue-status", text: "Поток занят исходным ходом: состояние уточняется после потери связи. Доступен Stop; сообщение повторно не отправляется." }) : null,
       entry.state === "paused" && entry.waitReason === "task-running"
         ? el("div", { class: "queue-status", text: 'Сообщение на паузе; нажми "Продолжить", чтобы вернуть его в очередь.' }) : null,
       entry.waitReason === "provider-thread-active"
@@ -9530,7 +9733,7 @@ let annotations = [];
 let pendingAnnotationSelection = null;
 let lastAnnotationSelection = null;
 let lastTouchSelectionAt = 0;
-const annotationOperationSequences = new Map();
+const pendingAnnotationOperations = new Map();
 const TOUCH_CONTEXT_MENU_WINDOW_MS = 3_000;
 
 function currentAnnotations() {
@@ -9546,25 +9749,29 @@ function setAnnotations(next) {
 function renderAnnotations() {
   annotationsBox.replaceChildren();
   annotationsBox.hidden = annotations.length === 0;
-  annotations.forEach((annotation, index) => {
-    annotationsBox.append(el("div", { class: "annotation" }, [
-      el("div", { class: "annotation-content" }, [
-        el("span", { class: "annotation-quote", tabindex: "0", text: annotation.quote }),
-        el("textarea", {
-          class: "annotation-comment",
-          "data-annotation-comment-index": index,
-          rows: 1,
-          placeholder: "Комментарий к этой цитате…",
-          "aria-label": `Комментарий к цитате ${index + 1}`,
-          text: annotation.annotation ?? "",
-        }),
-      ]),
-      el("button", {
-        type: "button", class: "annotation-remove", "data-annotation-index": index,
-        title: "Убрать аннотацию", "aria-label": "Убрать аннотацию", text: "×",
+  annotations.forEach(appendAnnotation);
+}
+
+function appendAnnotation(annotation, index) {
+  const card = el("div", { class: "annotation" }, [
+    el("div", { class: "annotation-content" }, [
+      el("span", { class: "annotation-quote", tabindex: "0", text: annotation.quote }),
+      el("textarea", {
+        class: "annotation-comment",
+        "data-annotation-comment-index": index,
+        rows: 1,
+        placeholder: "Комментарий к этой цитате…",
+        "aria-label": `Комментарий к цитате ${index + 1}`,
+        text: annotation.annotation ?? "",
       }),
-    ]));
-  });
+    ]),
+    el("button", {
+      type: "button", class: "annotation-remove", "data-annotation-index": index,
+      title: "Убрать аннотацию", "aria-label": "Убрать аннотацию", text: "×",
+    }),
+  ]);
+  annotationsBox.append(card);
+  return card;
 }
 
 annotationsBox.addEventListener("click", (event) => {
@@ -9628,7 +9835,7 @@ function intersectedQuotableSelection(range) {
   return matches[0] ?? null;
 }
 
-function selectedQuotableSelection() {
+function selectedMessageDomRange() {
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0) return null;
   const range = selection.getRangeAt(0);
@@ -9645,12 +9852,18 @@ function selectedQuotableSelection() {
   });
   if (!scope) return null;
   if (scope.startSurface !== scope.endSurface) return null;
-  const offsets = domRangeOffsets(scope.startSurface, range);
+  return { ...scope, range, rangeCount: selection.rangeCount };
+}
+
+function selectedQuotableSelection() {
+  const scope = selectedMessageDomRange();
+  if (!scope) return null;
+  const offsets = domRangeOffsets(scope.startSurface, scope.range);
   if (!offsets) return null;
   const exactRange = domRangeFromOffsets(scope.startSurface, offsets.start, offsets.end);
   const quote = quotableSelectionText({
     text: exactRange?.toString(),
-    rangeCount: selection.rangeCount,
+    rangeCount: scope.rangeCount,
     startMessage: scope.message,
     endMessage: scope.message,
     startSurface: scope.startSurface,
@@ -9683,6 +9896,24 @@ function selectedQuotableSelectionAt(target) {
 function normalizedAnnotationQuote(value) {
   return String(value ?? "").trim();
 }
+
+function selectedMessageClipboard(selection) {
+  const scope = selectedMessageDomRange();
+  if (!scope || scope.rangeCount !== 1 || (selection && scope.startSurface !== selection.surface)) return null;
+  return MessageView.messageSelectionClipboard(scope.startSurface, scope.range);
+}
+
+document.addEventListener("copy", (event) => {
+  if (event.defaultPrevented || !event.clipboardData) return;
+  if (document.activeElement?.matches("input, textarea, [contenteditable]:not([contenteditable='false'])")) return;
+  const selection = selectedMessageDomRange();
+  if (!selection || selection.rangeCount !== 1 || !selection.message.closest("[data-chat-log], [data-chat-live]")) return;
+  const clipboard = MessageView.messageSelectionClipboard(selection.startSurface, selection.range);
+  if (!clipboard) return;
+  event.clipboardData.setData("text/plain", clipboard.text);
+  event.clipboardData.setData("text/html", clipboard.html);
+  event.preventDefault();
+});
 
 function meaningfulAnnotationSelection(value) {
   return Boolean(String(value ?? "").trim());
@@ -9717,69 +9948,65 @@ function sourceMessageForSelection(selection) {
   return { message: group ? { ...messages[index], ...(groupIdentity ? { itemId: groupIdentity.itemId } : {}), activityGroups: [group] } : messages[index], root: renderedRoot };
 }
 
-function responseAnnotationRefusal(decision) {
+function responseAnnotationRefusal(decision, commandId) {
   try {
-    window.AgentHubCommandTrace?.record("ui-interaction", "annotation-source", 0, undefined,
+    window.AgentHubCommandTrace?.record("ui-interaction", "annotation-source", 0, commandId,
       { decision }, Date.now(), "failed");
   } catch { /* A bounded content-free diagnostic cannot affect the refusal. */ }
   return null;
 }
 
-async function responseAnnotationFromSelection(selection) {
+async function responseAnnotationFromSelection(selection, commandId) {
+  const refuse = (decision) => responseAnnotationRefusal(decision, commandId);
   const quote = normalizedAnnotationQuote(selection?.quote);
-  const projection = sourceMessageForSelection(selection);
+  const captured = selection?.traceSource;
+  if (captured && captured.taskId !== state.selectedId) return refuse("source-replaced");
+  const projection = captured?.projection ?? sourceMessageForSelection(selection);
   const identity = responseAnnotationSourceIdentity(projection?.message);
-  const locator = responseAnnotationSurfaceLocator(selection?.message, selection?.surface);
+  const locator = captured?.locator ?? responseAnnotationSurfaceLocator(selection?.message, selection?.surface);
   const start = Number(selection?.offsets?.start);
   const end = Number(selection?.offsets?.end);
-  if (!quote) return responseAnnotationRefusal("empty-selection");
-  if (!projection) return responseAnnotationRefusal("source-unavailable");
-  if (!identity) return responseAnnotationRefusal("item-identity-unavailable");
-  if (!locator) return responseAnnotationRefusal("surface-unavailable");
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return responseAnnotationRefusal("invalid-range");
+  if (!quote) return refuse("empty-selection");
+  if (!projection) return refuse("source-unavailable");
+  if (!identity) return refuse("item-identity-unavailable");
+  if (!locator) return refuse("surface-unavailable");
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return refuse("invalid-range");
   let sourceMessage = projection.message;
   let sourceSurface = selection.surface;
   const selectedTaskId = state.selectedId;
-  const selectedSurfaceText = String(sourceSurface.textContent ?? "");
-  // Streaming may replace the trace DOM while the exact source page is read.
-  // Rebind only the same unique provider item and unchanged rendered group.
+  const selectedSurfaceText = captured?.text ?? String(sourceSurface.textContent ?? "");
+  const selectedNativeItemId = captured?.nativeItemId ?? traceDetailSources.get(sourceSurface)?.sourceItemId;
+  const selectedPrefix = selectedSurfaceText.trimEnd();
+  // An exact native group can keep growing or move into collapsed history.
+  // Verify ownership and the captured rendering even if its DOM was replaced.
   const currentTraceSelection = () => {
     if (state.selectedId !== selectedTaskId) return null;
-    const messages = selectedResponseAnnotationSourceMessages().flatMap((message, index) => (
-      responseAnnotationSourceIdentity(message, { traceGroupId: locator.traceGroupId, itemId: identity.itemId })?.messageKey === identity.messageKey
-        ? [{ message, index }] : []
-    ));
-    if (messages.length !== 1) return null;
-    const root = renderedResponseAnnotationSourceRoot(MessageView.messageKey(messages[0].message, messages[0].index));
-    if (!root?.isConnected) return null;
-    const surfaces = Array.from(root.querySelectorAll(".turn-trace-reasoning"))
-      .filter((node) => node.dataset.traceGroupId === locator.traceGroupId);
-    if (!surfaces.length || surfaces.some((node) => node.textContent !== selectedSurfaceText)) return null;
-    return messages[0].message;
+    return compatibleCodexTraceProjections(selectedResponseAnnotationSourceMessages(),
+      { ...identity, traceGroupId: locator.traceGroupId }, selectedNativeItemId, selectedPrefix)[0]?.message ?? null;
   };
   if (locator.traceGroupId && identity.provider === "codex") {
     // Durable history is a bounded preview, including legacy rows with no
     // truncation marker. Bind new exact-group quotes to the source, not that copy.
     let page;
-    try { page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId }); }
-    catch { return responseAnnotationRefusal("source-read-failed"); }
+    try { page = await requestTracePage(sourceMessage, { turnId: identity.turnId, groupId: locator.traceGroupId }, commandId); }
+    catch { return refuse("source-read-failed"); }
     const current = currentTraceSelection();
-    if (!current) return responseAnnotationRefusal("source-replaced");
-    if (page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return responseAnnotationRefusal("source-group-mismatch");
-    const selectedNativeItemId = traceDetailSources.get(selection.surface)?.sourceItemId;
-    if (selectedNativeItemId && page.groups[0].sourceItemId !== selectedNativeItemId) return responseAnnotationRefusal("source-item-mismatch");
-    sourceMessage = { ...current, activityGroups: page.groups };
-    sourceSurface = traceReasoningNode(page.groups[0]);
+    if (!current) return refuse("source-replaced");
+    if (page.groups?.length !== 1 || page.groups[0].id !== locator.traceGroupId) return refuse("source-group-mismatch");
+    if (selectedNativeItemId && page.groups[0].sourceItemId !== selectedNativeItemId) return refuse("source-item-mismatch");
+    const fullGroup = traceGroupWithCitationContext(page.groups[0], current);
+    sourceMessage = { ...current, activityGroups: [fullGroup] };
+    sourceSurface = traceReasoningNode(fullGroup, sourceMessage);
     // A cut Markdown construct may render differently. Do not guess a new range.
-    if (!sourceSurface.textContent.startsWith(selectedSurfaceText.trimEnd())) return responseAnnotationRefusal("rendered-prefix-mismatch");
-    if (domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return responseAnnotationRefusal("selected-range-mismatch");
+    if (!sourceSurface.textContent.startsWith(selectedPrefix)) return refuse("rendered-prefix-mismatch");
+    if (domRangeFromOffsets(sourceSurface, start, end)?.toString().trim() !== quote) return refuse("selected-range-mismatch");
   }
   const [contentHash, surfaceHash, selectionHash] = await Promise.all([
     responseAnnotationSha256(responseAnnotationSourceContent(sourceMessage, { ...locator, itemId: identity.itemId })),
     responseAnnotationSha256(sourceSurface.textContent),
     responseAnnotationSha256(quote),
   ]);
-  if (locator.traceGroupId && identity.provider === "codex" && !currentTraceSelection()) return responseAnnotationRefusal("source-replaced");
+  if (locator.traceGroupId && identity.provider === "codex" && !currentTraceSelection()) return refuse("source-replaced");
   const source = normalizedResponseAnnotationSource({
     version: 1,
     ...identity,
@@ -9790,7 +10017,7 @@ async function responseAnnotationFromSelection(selection) {
     surfaceHash,
     selectionHash,
   });
-  return source ? { quote, annotation: "", source } : responseAnnotationRefusal("hash-or-locator-unavailable");
+  return source ? { quote, annotation: "", source } : refuse("hash-or-locator-unavailable");
 }
 
 function duplicateResponseAnnotation(left, right) {
@@ -9800,46 +10027,79 @@ function duplicateResponseAnnotation(left, right) {
   return !leftSource && !rightSource && left?.quote === right?.quote;
 }
 
+function clearPendingAnnotation(taskId) {
+  const operation = pendingAnnotationOperations.get(taskId);
+  pendingAnnotationOperations.delete(taskId);
+  operation?.dismiss();
+}
+
 async function addAnnotation(selection) {
-  const quote = normalizedAnnotationQuote(selection?.quote);
-  if (!quote) {
+  if (!normalizedAnnotationQuote(selection?.quote)) {
     showToast("Выделите фрагмент сообщения или рассуждения.");
     return false;
   }
   const operation = captureComposerTaskOperation();
-  if (!operation) return false;
-  const operationSequence = (annotationOperationSequences.get(operation.taskId) ?? 0) + 1;
-  annotationOperationSequences.set(operation.taskId, operationSequence);
+  if (!operation || pendingAnnotationOperations.has(operation.taskId)) return false;
+  const { taskId } = operation;
+  const trace = window.AgentHubCommandTrace;
+  const commandId = trace.currentId() || trace.newId();
+  const started = trace.now();
+  const isSelectedOperation = () => state.selectedId === taskId
+    && composerTaskOperationCurrent(operation, { allowDraftEdits: true });
+  const pendingMessage = "Проверяем источник цитаты…";
+  operation.dismiss = showToast(pendingMessage, null, { persistent: true });
+  pendingAnnotationOperations.set(taskId, operation);
+  const isPending = () => pendingAnnotationOperations.get(taskId) === operation;
+  trace.afterPaint("ui-render", "annotation-pending", started, commandId, {}, () => ({
+    outcome: !toast.hidden && toast.textContent === pendingMessage ? "succeeded" : "cancelled",
+  }), () => isPending() && isSelectedOperation());
+
   let next;
   try {
-    next = await responseAnnotationFromSelection(selection);
+    next = await trace.measure("ui-interaction", "annotation-source",
+      () => responseAnnotationFromSelection(selection, commandId), commandId,
+      result => ({ outcome: result ? "succeeded" : "failed" }));
   } catch {
-    next = responseAnnotationRefusal("source-error");
+    next = responseAnnotationRefusal("source-error", commandId);
+  }
+  const owned = isPending();
+  if (owned) clearPendingAnnotation(taskId);
+  if (!owned || !isSelectedOperation()) {
+    trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId,
+      { decision: "superseded" }, Date.now(), "cancelled");
+    return false;
   }
   if (!next) {
     showToast("Не удалось подтвердить источник выделенного фрагмента.");
+    trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId,
+      { decision: "source-refused" }, Date.now(), "failed");
     return false;
   }
-  if (annotationOperationSequences.get(operation.taskId) !== operationSequence
-    || !composerTaskOperationCurrent(operation)) return false;
-  const current = composerDraftSnapshot(operation.taskId);
+  const current = composerDraftSnapshot(taskId);
   if (current.annotations.some((annotation) => duplicateResponseAnnotation(annotation, next))) {
     showToast("Этот фрагмент уже добавлен.");
+    trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId,
+      { decision: "already-added" }, Date.now(), "cancelled");
     return false;
   }
+  const draftUnedited = composerTaskOperationCurrent(operation);
   const nextAnnotations = [...current.annotations, next];
-  composerDraftReconciliation.save(operation.taskId, {
-    ...current,
-    annotations: nextAnnotations,
-  }, { userEdited: true });
-  if (state.selectedId === operation.taskId) {
-    restoreDraft();
+  composerDraftReconciliation.save(taskId, { ...current, annotations: nextAnnotations }, { userEdited: true });
+  trace.record("ui-interaction", "annotation-draft", trace.now() - started, commandId);
+
+  // Keep the active input and caret intact if the user edited while waiting.
+  annotations = nextAnnotations;
+  annotationsBox.hidden = false;
+  const card = appendAnnotation(next, nextAnnotations.length - 1);
+  updateSendState();
+  if (draftUnedited) {
     lastAnnotationSelection = null;
     window.getSelection()?.removeAllRanges();
-    annotationsBox.querySelector(
-      `[data-annotation-comment-index="${nextAnnotations.length - 1}"]`,
-    )?.focus();
+    card.querySelector(".annotation-comment")?.focus();
   }
+  trace.afterPaint("ui-render", "annotation-card", started, commandId, {}, () => ({
+    outcome: card.getClientRects().length && !card.closest("[hidden]") ? "succeeded" : "failed",
+  }), () => isSelectedOperation() && card.isConnected);
   return true;
 }
 
@@ -9849,7 +10109,17 @@ function closeAnnotationContextMenu() {
 }
 
 function openAnnotationContextMenu(event, selection) {
-  pendingAnnotationSelection = selection;
+  const group = traceDetailSources.get(selection.surface);
+  const projection = group ? sourceMessageForSelection(selection) : null;
+  const locator = projection && responseAnnotationSurfaceLocator(selection.message, selection.surface);
+  pendingAnnotationSelection = {
+    ...selection,
+    clipboardText: selectedMessageClipboard(selection)?.text ?? selection.quote,
+    ...(locator?.traceGroupId && projection.message.provider === "codex" ? {
+      traceSource: { taskId: state.selectedId, projection, locator, nativeItemId: group.sourceItemId,
+        text: String(selection.surface.textContent ?? "") },
+    } : {}),
+  };
   annotationContextMenu.hidden = false;
   const menuRect = annotationContextMenu.getBoundingClientRect();
   const chatRect = event.target.closest?.("[data-chat]")?.getBoundingClientRect();
@@ -9891,7 +10161,7 @@ annotationContextMenu.addEventListener("click", (event) => {
   const quote = selection?.quote ?? "";
   closeAnnotationContextMenu();
   if (action === "annotate-selection") void addAnnotation(selection);
-  else emit("clipboard:write", { text: quote });
+  else emit("clipboard:write", { text: selection?.clipboardText ?? quote });
 });
 
 document.addEventListener("pointerdown", (event) => {
@@ -10057,6 +10327,7 @@ function prepareForRuntimeReload() {
 }
 
 function restoreDraft() {
+  composerEmojiPicker?.close();
   const draft = drafts.get(state.selectedId) ?? {
     text: "", attachments: [], taskReferences: [], annotations: [],
   };
@@ -10330,7 +10601,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
       workingDirectory: workspaceCardWorkingDirectory.value.trim(),
       taskPrefix: workspaceCardTaskPrefix.value.trim(),
       rules: workspaceCardRules.value,
-      releaseWorkflowEnabled: workspaceCardReleaseWorkflow.checked,
+      releaseWorkflowEnabled: workspaceCardTaskWorkflow.checked,
       autoReviewEnabled: workspaceCardAutoReview.checked,
       beforeColumnId: order[targetIndex] ?? null,
     });
@@ -10339,7 +10610,7 @@ workspaceCardForm?.addEventListener("submit", (event) => {
   }
   const workspace = workspaceCatalogItem(workspaceCardId);
   if (!workspace) return closeWorkspaceCard();
-  const releaseWorkflowEnabled = workspaceCardReleaseWorkflow.checked;
+  const releaseWorkflowEnabled = workspaceCardTaskWorkflow.checked;
   const columnId = `workspace:${workspace.id}`;
   const remaining = order.filter((id) => id !== columnId);
   const targetIndex = Math.max(0, Math.min(remaining.length, requestedOrder - 1));
@@ -10704,14 +10975,14 @@ function renderDialogSettings() {
       : currentDirectory ? `Текущая: ${currentDirectory}` : "Наследуется от Workspace";
     if (dialogWorkingDirectoryNote) {
       dialogWorkingDirectoryNote.textContent = task?.draftStream
-        ? "Будет использована при создании Thread; пустое значение наследуется от Workspace."
-        : "Применится при создании следующего Thread; текущий Thread сохраняет свою директорию.";
+        ? "Будет использована после создания потока; пустое значение наследуется от Workspace."
+        : "Новая директория начнёт использоваться после следующего запуска агента. Текущая работа продолжится в прежней директории.";
     }
     streamWorkingDirectoryField?.refresh();
   }
-  if (dialogStreamReleaseManager) {
-    dialogStreamReleaseManager.checked = streamRoleSettings.releaseManagerEnabled(task?.streamSettings);
-    dialogStreamReleaseManager.disabled = !task?.streamId;
+  if (dialogStreamTaskAcceptance) {
+    dialogStreamTaskAcceptance.checked = streamRoleSettings.taskAcceptanceEnabled(task?.streamSettings);
+    dialogStreamTaskAcceptance.disabled = !task?.streamId;
   }
   if (dialogStreamTeamLead) {
     dialogStreamTeamLead.checked = streamRoleSettings.teamLeadEnabled(task?.streamSettings);
@@ -10730,7 +11001,7 @@ function renderDialogSettings() {
   }
   if (streamCardRotate) {
     streamCardRotate.disabled = !streamId || running || !["codex", "claude"].includes(provider);
-    streamCardRotate.title = running ? "Сначала завершите текущий ход" : "Продолжить Stream в новом Thread текущего провайдера";
+    streamCardRotate.title = running ? "Сначала завершите текущий ход" : "Продолжить поток в новом контексте текущего провайдера";
   }
   if (streamCardContinueProvider) {
     streamCardContinueProvider.textContent = oppositeProvider
@@ -10740,7 +11011,7 @@ function renderDialogSettings() {
     streamCardContinueProvider.disabled = !streamId || running || !oppositeProvider;
     streamCardContinueProvider.title = running
       ? "Сначала завершите текущий ход"
-      : oppositeProvider ? "Продолжить Stream в противоположном провайдере" : "Провайдер Stream не определён";
+      : oppositeProvider ? "Продолжить поток в противоположном провайдере" : "Провайдер потока не определён";
   }
   const moveOptions = workspaceMenuOptions(workspaceId);
   if (streamCardMoveMenu) {
@@ -10756,12 +11027,12 @@ function renderDialogSettings() {
     streamCardMove.disabled = !streamId || moveOptions.length === 0
       || typeof streamCardMoveMenu?.showPopover !== "function";
     streamCardMove.title = moveOptions.length
-      ? "Выбрать Workspace и сразу перенести Stream"
+      ? "Выбрать Workspace и сразу перенести поток"
       : "Нет доступных Workspace для переноса";
   }
   if (streamCardArchive) {
     streamCardArchive.disabled = !streamId || running;
-    streamCardArchive.title = running ? "Сначала завершите активный ход в этом Stream" : "Архивировать Stream";
+    streamCardArchive.title = running ? "Сначала завершите активный ход в этом потоке" : "Архивировать поток";
   }
   renderStreamRulesPreview();
   renderStreamQuickMessagesSettings();
@@ -10899,11 +11170,11 @@ dialogSettings.addEventListener("change", (event) => {
     selectDialogSetting(setting.dataset.dialogOptions, setting.value);
     return;
   }
-  const releaseManager = event.target.closest("[data-dialog-stream-release-manager]");
+  const releaseManager = event.target.closest("[data-dialog-stream-task-acceptance]");
   if (releaseManager) {
     const task = currentTask();
     if (!task?.streamId) return;
-    task.streamSettings = streamRoleSettings.withReleaseManager(task.streamSettings, releaseManager.checked);
+    task.streamSettings = streamRoleSettings.withTaskAcceptance(task.streamSettings, releaseManager.checked);
     emit("stream:settings-save", { streamId: task.streamId, settings: { ...task.streamSettings } });
     renderOptions();
     return;
@@ -11083,6 +11354,7 @@ function renderServerStatus(payload = {}) {
     component.note ? el("small", { text: component.note }) : null,
   ].filter(Boolean))) : [el("span", { class: "setting-empty", text: "Компоненты не определены" })]));
   renderServerAccounts(payload.accounts);
+  window.AgentHubGitHubAccountPanel?.render(githubAccountPanel, payload.githubAccount, emit, githubLocalAccess);
   /* Одно название вроде «Очередь входящих» ничего не объясняет, поэтому у
      плитки есть пояснение под значением и та же строка в подсказке. */
   const entries = Array.isArray(payload.configuration) ? payload.configuration : [];
@@ -11567,6 +11839,10 @@ async function handleAction(action, trigger) {
       });
       break;
     }
+    case "clear-ready-interstream":
+    case "clear-ready-all":
+      emit("activity:clear-ready", { interstreamOnly: action === "clear-ready-interstream" });
+      break;
     case "queue-remove":
       emit("queue:remove", { taskId, id: trigger.dataset.queueId });
       break;
@@ -11846,6 +12122,7 @@ const AgentHub = {
       && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
     if (sameMessages && (taskId !== state.selectedId || selectedSurfaceOwned)) return;
     if (!sameMessages) state.messages.set(taskId, next);
+    mobileDialogs?.sync();
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
@@ -11866,6 +12143,7 @@ const AgentHub = {
     const selectedSurfaceOwned = taskId === state.selectedId
       && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
     if (!sameMessages) state.messages.set(taskId, next);
+    mobileDialogs?.sync();
     if (taskId === state.selectedId) {
       if (sameMessages && selectedSurfaceOwned) {
         const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -11903,6 +12181,7 @@ const AgentHub = {
       && String(chatLog.dataset.messageOwnerKey ?? "") === String(taskId ?? "");
     if (sameMessages && (taskId !== state.selectedId || selectedSurfaceOwned)) return;
     if (!sameMessages) state.messages.set(taskId, next);
+    mobileDialogs?.sync();
     if (prependedCount > 0 && previousTail.hiddenCount === 0) {
       state.messageRenderLimits.set(
         taskId,
@@ -11934,6 +12213,7 @@ const AgentHub = {
     const list = state.messages.get(taskId) ?? [];
     list.push(message);
     state.messages.set(taskId, list);
+    mobileDialogs?.sync();
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
@@ -11945,6 +12225,7 @@ const AgentHub = {
     const message = list.find((item) => item.id === messageId);
     if (!message) return;
     Object.assign(message, patch);
+    mobileDialogs?.sync();
     if (taskId === state.selectedId) {
       renderMessages({ preserveTop: true });
       renderLive();
@@ -11974,6 +12255,7 @@ const AgentHub = {
     const next = live ?? null;
     if (sameData(state.live.get(taskId) ?? null, next)) return;
     state.live.set(taskId, next);
+    mobileDialogs?.sync();
     if (taskId === state.selectedId) renderLive();
     else refreshSupplementaryStreamChat(taskId);
   },
@@ -12216,6 +12498,18 @@ const AgentHub = {
     lastServerPayload = payload ?? {};
     if (root.dataset.view === "server") renderServerStatus(lastServerPayload);
   },
+  setGitHubAccount(payload, error = "") {
+    if (payload) lastServerPayload = { ...(lastServerPayload ?? {}), githubAccount: payload };
+    window.AgentHubGitHubAccountPanel?.finish(githubAccountPanel, error);
+    window.AgentHubGitHubAccountPanel?.render(githubAccountPanel, lastServerPayload?.githubAccount, emit, githubLocalAccess);
+  },
+  setGitHubLocalAccess(value) {
+    githubLocalAccess = value === true;
+    window.AgentHubGitHubAccountPanel?.render(githubAccountPanel, lastServerPayload?.githubAccount, emit, githubLocalAccess);
+  },
+  setGitHubLogin(login) {
+    window.AgentHubGitHubAccountPanel?.setLogin(githubAccountPanel, login);
+  },
   /** Попытка и ссылка входа из локального ответа на запуск; снапшот их не содержит. */
   setProviderLoginUrl(provider, { attemptId = null, authUrl = null } = {}) {
     providerLoginCodeDrafts.delete(provider);
@@ -12238,7 +12532,7 @@ const AgentHub = {
     const stream = streams.find((candidate) => candidate.id === normalizedStreamId);
     const target = representativeStreamTask(stream);
     if (!target) {
-      showToast("Stream недоступен");
+      showToast("Поток недоступен");
       return false;
     }
     state.openStreamsByWorkspace.set(normalizedWorkspaceId, [normalizedStreamId]);
@@ -12422,8 +12716,7 @@ document.addEventListener("agenthub:stream-view-settings-change", (event) => {
   const value = event.detail?.value;
   if (key === "streamStatusEffect") {
     applyStreamStatusEffect(value, { persist: true });
-  } else if (key === "streamStatusStyle") {
-    applyStreamStatusStyle(value, { persist: true });
+
   } else if (key === "activityStreamDetailedCards") {
     applyActivityStreamDetailedCards(value, { persist: true });
   } else if (key === "activityRailVisibility") {
@@ -18367,6 +18660,9 @@ if (journalPolling) {
 }
 if (vscodeMode) {
   window.addEventListener("message", (event) => {
+    const nativeHost = event.origin?.startsWith("vscode-webview://") && event.origin === window.location.origin;
+    if (event.origin === "null"
+      || (event.source && event.source !== window && event.source !== window.parent && !nativeHost)) return;
     if (event.data?.type === "agenthub:journal-changed") {
       if (journalRequested) void loadJournal({ force: event.data.force === true });
     }
@@ -18381,11 +18677,12 @@ AgentHub.setConnection(telegramMode ? "online" : "connecting");
 mobileDialogs = window.AgentHubMobileDialogs.create({
   root, state, currentTask, workspaceKey,
   workspaceStreams: (tasks) => orderedWorkspaceStreams(workspaceStreams(tasks), tasks[0] ? workspaceKey(tasks[0]) : ""),
-  representativeStreamTask,
+  representativeStreamTask, restoreSelection: restoreOpenStreams,
   selectTask: (id) => selectTaskFromUi(id), setView, setPane,
   isMobile: () => surface === "mobile" && !vscodeMode,
-  formatTime: (value) => formatRelativeTime(activityTimestamp(value)), shortModel: shortModelLabel,
-  openSearch: openWorkspaceMessageSearch, openSettings: openPanel,
+  openSettings: openPanel,
+  transientLayers: [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
+    annotationContextMenu, resourceContextMenu, composerEmojiPicker?.layer, dialog, settingsPanel, workspaceMessageSearch],
   openWorkspaceCard, workspaceDialog: workspaceCardModal, renameWorkspaceFolder,
   textDialog: dialog, cancelTextDialog: () => closeDialog(null),
   createStream: (workspaceId) => emit("stream:new", { workspaceId }),
@@ -18396,6 +18693,7 @@ mobileDialogs = window.AgentHubMobileDialogs.create({
     return false;
   },
   closeTransient: () => {
+    if (composerEmojiPicker?.dismiss()) return true;
     const menus = [streamContextMenu, workspaceContextMenu, workspaceFolderContextMenu,
       annotationContextMenu, resourceContextMenu];
     const shown = menus.find((menu) => menu && !menu.hidden);

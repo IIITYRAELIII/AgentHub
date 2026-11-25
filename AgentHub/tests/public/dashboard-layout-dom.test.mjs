@@ -959,7 +959,7 @@ test("activity rail keeps running effects and drags compact Tasks into the compo
     await openFixture(page);
     await page.evaluate(({ tasks, workspaces }) => {
       document.documentElement.dataset.view = "chat";
-      document.documentElement.dataset.streamStatusEffect = "energy";
+      document.documentElement.dataset.streamStatusEffect = "dynamic";
       window.AgentHub.setTasks([{
         id: "conversation", workspaceId: "one", workspaceName: "Hub",
         streamId: "stream", streamName: "Sirius", title: "Hub", provider: "codex",
@@ -972,10 +972,10 @@ test("activity rail keeps running effects and drags compact Tasks into the compo
     }, { tasks, workspaces });
     const effect = await page.locator(".activity-stream-item[data-running]")
       .evaluate((element) => {
-        const layer = element.querySelector(".stream-tab-status-layer");
-        return layer && getComputedStyle(layer, "::before").animationName;
+        const layer = element.querySelector(".stream-effect-layer");
+        return layer && getComputedStyle(layer.querySelector(".stream-run-track")).animationName;
       });
-    assert.equal(effect, "stream-energy-charge");
+    assert.equal(effect, "stream-track-clockwise");
     const source = await page.locator(".board-task-card.is-compact").first().boundingBox();
     const target = await page.locator(".chat-pane").boundingBox();
     await page.mouse.move(source.x + 30, source.y + 25);
@@ -988,6 +988,14 @@ test("activity rail keeps running effects and drags compact Tasks into the compo
     await reference.waitFor({ state: "visible" });
     assert.equal(await reference.count(), 1);
     assert.match(await reference.innerText(), /HUB-1/u);
+    assert.equal(await page.locator("[data-toast].visible").count(), 0);
+    if (process.env.AGENT_HUB_TEST_SCREENSHOT) await page.screenshot({ path: process.env.AGENT_HUB_TEST_SCREENSHOT });
+    await page.evaluate(({ tasks, workspaces }) => {
+      document.documentElement.dataset.view = "dashboard";
+      window.AgentHubTaskBoard.setSnapshot({ tasks: [{ ...tasks[0], triageStatus: "failed", triageError: "Historical failure" }], workspaces });
+    }, { tasks, workspaces });
+    await page.locator("[data-board-task-id]:visible").first().dblclick();
+    assert.equal(await page.getByRole("button", { name: "Повторить Spark", exact: true }).count(), 0);
     assert.deepEqual(await page.evaluate(() => window.__boardActions), []);
     assert.deepEqual(errors, []);
   } finally {
@@ -1004,7 +1012,7 @@ test("activity rail clips running effects to each card without horizontal overfl
     await openFixture(page);
     await page.evaluate(() => {
       document.documentElement.dataset.view = "chat";
-      document.documentElement.dataset.streamStatusStyle = "fill";
+      document.documentElement.dataset.streamStatusStyle = "edge";
       window.AgentHub.setTasks(["Sirius", "S3"].map((name, index) => ({
         id: `conversation-${index}`, workspaceId: "one", workspaceName: "Agent HUB",
         streamId: `stream-${index}`, streamName: name, title: "Agent HUB", provider: "codex",
@@ -1013,7 +1021,7 @@ test("activity rail clips running effects to each card without horizontal overfl
           providerStart: { turnId: `turn-${index}`, state: "observed" } },
       })));
     });
-    const checks = await page.evaluate(() => ["scanner", "energy", "impulse", "breath"].flatMap((effect) => {
+    const checks = await page.evaluate(() => ["static", "dynamic"].flatMap((effect) => {
       document.documentElement.dataset.streamStatusEffect = effect;
       return [0, 500, 1200].map((time) => {
         for (const animation of document.getAnimations()) { animation.pause(); animation.currentTime = time; }
@@ -1021,7 +1029,7 @@ test("activity rail clips running effects to each card without horizontal overfl
           effect, time,
           cards: [...document.querySelectorAll(".activity-stream-item[data-running]")].map((card) => {
             const outer = card.getBoundingClientRect();
-            const layer = card.querySelector(".stream-tab-status-layer").getBoundingClientRect();
+            const layer = card.querySelector(".stream-effect-layer").getBoundingClientRect();
             return { clipped: getComputedStyle(card).overflow === "hidden",
               inside: layer.left >= outer.left && layer.top >= outer.top
                 && layer.right <= outer.right && layer.bottom <= outer.bottom };

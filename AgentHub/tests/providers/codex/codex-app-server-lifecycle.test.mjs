@@ -79,7 +79,7 @@ function spawnableChild() {
   return child;
 }
 
-test("automatic prepared activation fences one original RPC and restores selected subscription without self-deadlock", async () => {
+test("automatic prepared activation fences one original RPC without restoring an old Thread", async () => {
   const { lifecycle, events } = fixture();
   const initialized = deferred();
   lifecycle.transport.initialize = async () => { await initialized.promise; return { newlyInitialized: true }; };
@@ -93,7 +93,7 @@ test("automatic prepared activation fences one original RPC and restores selecte
   assert.equal(events.filter(([name]) => name === "recover").length, 0);
   const calls = events.filter(([name]) => name === "request");
   assert.equal(calls.length, 1); assert.equal(calls[0][2], original);
-  assert.deepEqual(events.filter(([name]) => ["start", "stop", "attach"].includes(name)).map(([name]) => name), ["stop", "start", "attach"]);
+  assert.deepEqual(events.filter(([name]) => ["start", "stop", "attach"].includes(name)).map(([name]) => name), ["stop", "start"]);
 });
 
 test("automatic activation refuses live work, pending RPC and stopping; lost transport alone keeps exact recovery ownership", async () => {
@@ -109,7 +109,7 @@ test("automatic activation refuses live work, pending RPC and stopping; lost tra
   lifecycle.transport.pending.clear();
   const before = structuredClone(run);
   assert.equal(await lifecycle.applyPreparedUpdate(), true);
-  assert.equal(events.filter(([name]) => name === "recover").length, 1);
+  assert.equal(events.filter(([name]) => name === "recover").length, 0);
   assert.deepEqual(run, before);
   assert.equal(events.filter(([name, method]) => name === "request" && method === "turn/start").length, 0);
 });
@@ -137,7 +137,7 @@ test("a custody bind failure after spawn closes only the newly created child bef
 test("Codex App Server lifecycle owns crash recovery", async () => {
   const { lifecycle, events } = fixture();
   await lifecycle.restartAfterCrash();
-  assert.deepEqual(events.map(([name]) => name), ["start", "initialize", "notify", "attach", "recover"]);
+  assert.deepEqual(events.map(([name]) => name), ["start", "initialize", "notify"]);
 });
 
 test("Codex App Server lifecycle retries once with last-known-good after candidate startup failure", async () => {
@@ -329,7 +329,7 @@ test("Codex App Server lifecycle restarts only after its follow-up health check 
   await timeout({ id: 51, method: "thread/turns/list", timeoutMs: 1_000, generation: 1 });
 
   assert.deepEqual(events.map(([name]) => name), [
-    "error", "request", "error", "stop", "start", "initialize", "notify", "attach", "recover",
+    "error", "request", "error", "stop", "start", "initialize", "notify",
   ]);
 });
 
@@ -345,7 +345,7 @@ test("Codex health recycling restores an unselected backend exactly once", async
   assert.equal(events.filter(([name]) => name === "start").length, 1);
   assert.equal(events.filter(([name]) => name === "initialize").length, 1);
   assert.equal(events.some(([name]) => name === "attach"), false);
-  assert.equal(events.filter(([name]) => name === "recover").length, 1);
+  assert.equal(events.filter(([name]) => name === "recover").length, 0);
 });
 
 test("Codex health recovery retries a failed restart even when another provider is selected", async () => {
@@ -357,7 +357,7 @@ test("Codex health recovery retries a failed restart even when another provider 
   assert.ok(retry);
   lifecycle.transport.start = async () => events.push(["start"]);
   await retry[1]();
-  assert.equal(events.filter(([name]) => name === "recover").length, 1);
+  assert.equal(events.filter(([name]) => name === "recover").length, 0);
 });
 
 test("Codex health recycling does not interrupt a managed turn", async () => {
@@ -386,6 +386,6 @@ test("Codex App Server lifecycle still restarts after a transport crash", async 
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.deepEqual(events.map(([name]) => name), [
-    "error", "start", "initialize", "notify", "attach", "recover",
+    "error", "start", "initialize", "notify",
   ]);
 });

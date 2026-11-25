@@ -28,7 +28,8 @@ import { runtimeHostCompilerCandidates } from "../src/infrastructure/process/run
 const execute = promisify(execFile), here = import.meta.dirname, source = path.resolve(here, "..");
 const [artifactFile, outputArgument] = process.argv.slice(2);
 const mode = process.argv[4] ?? "whole";
-if (!["whole", "downgrade", "poststop-recovery", "inside-hub"].includes(mode)) throw Error("Unknown isolated scenario");
+if (!["whole", "downgrade", "poststop-recovery", "inside-hub", "inside-hub-forced"].includes(mode)) throw Error("Unknown isolated scenario");
+const insideHub = mode === "inside-hub" || mode === "inside-hub-forced";
 if (process.platform !== "win32" || !artifactFile || !outputArgument) throw Error("Windows artifacts.json and new isolated output required");
 const input = JSON.parse(await fs.readFile(artifactFile, "utf8")), output = path.resolve(outputArgument);
 await fs.mkdir(output); // Exclusive: never adopt an existing instance/data/cache.
@@ -41,6 +42,7 @@ const event = async (stage, details = {}) => { report.events.push({ stage, at: n
 const started = performance.now();
 await save();
 let monitor, sampling, samplingError, server, telegram, host, externalSampler, externalLines, externalExit, lastOperation;
+let writerHolder, writerHolderExit, writerHolderLines;
 const samples = [], children = new Set();
 const essential = new Set(["SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "PATH", "PATHEXT", "COMSPEC", "OS",
   "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "USERNAME", "USERDOMAIN", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432"]);
@@ -79,7 +81,7 @@ function operation() {
       updatedAt: value.updatedAt, blockers: value.blockers });
     return value;
   } catch (error) {
-    if ([5, 6].includes(error.errcode)) {
+    if ([5, 6, 1546].includes(error.errcode)) {
       // Backup's real writer reservations may temporarily prevent this readonly
       // observer. Keep waiting on the same original; never infer its outcome.
       report.busyReadObservations = (report.busyReadObservations ?? 0) + 1;
@@ -134,10 +136,15 @@ try {
   await event("verified-local-artifacts");
   const previous = input.artifacts[0], previousRoot = path.join(root, "releases", previous.releaseId);
   const previousManifest = await json(path.join(previous.releaseRoot, "runtime-manifest.json"));
+  let borrowedDependencyFiles = 0;
   for (const name of [...previousManifest.files.map(file => file.path), "runtime-manifest.json"]) {
     const target = path.join(previousRoot, name); await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.copyFile(path.join(previous.releaseRoot, name), target, 1);
+    if (name.startsWith("node_modules/")) {
+      await fs.link(path.join(previous.releaseRoot, name), target); borrowedDependencyFiles++;
+    } else await fs.copyFile(path.join(previous.releaseRoot, name), target, 1);
   }
+  report.borrowedDependencies = { root: previous.releaseRoot, files: borrowedDependencyFiles,
+    method: "immutable private dependency hardlinks; retain both owners until disposition" };
   await installPreparedRuntime({ runtimeRoot: root, releaseId: previous.releaseId });
   await event("initial-private-instance-prepared");
   telegram = new LoopbackTelegramApi(); await telegram.start();
@@ -166,7 +173,9 @@ try {
   await fs.copyFile(path.join(here, "whole-update-preload.mjs"), preload);
   const control = { root, metadataUrl: `https://api.github.com/repos/IIITYRAELIII/AgentHub/releases/tags/${tag}`,
     temporaryRoot: path.join(output, "temp"), telegramApiBaseUrl: telegram.baseUrl, transport: `http://127.0.0.1:${server.address().port}`, assetBase, assetNames: Object.keys(assets),
-    churn: ["downgrade", "inside-hub"].includes(mode) ? null : "replacement",
+    churn: mode === "downgrade" || insideHub ? null : "replacement",
+    ...(mode === "inside-hub-forced" ? {
+      delayedAdmissionRelease: target.value.releaseId, admissionDelayMs: 45_000, startupDelayMs: 100_000 } : {}),
     ...(mode === "poststop-recovery" ? { installFailurePath: path.join(root, "releases", target.value.releaseId) } : {}) };
   await fs.writeFile(controlFile, JSON.stringify(control));
   await fs.writeFile(path.join(root, ".agent-hub-release-acceptance.json"), JSON.stringify({ schemaVersion: 1, id, root,
@@ -187,6 +196,21 @@ try {
   host.stdout.pipe(createWriteStream(path.join(output, "host.stdout"))); host.stderr.pipe(createWriteStream(path.join(output, "host.stderr")));
   await waitForAcceptanceHost(host, { runtimeRoot: root, expectedReleaseId: input.artifacts[0].releaseId, timeoutMs: 120_000 });
   const before = await json(path.join(root, "data/bot.lock")); report.before = before;
+  if (mode === "inside-hub-forced") {
+    const holder = path.join(fixtures, "writer-holder.exe");
+    await run("compile-writer-holder", runtimeHostCompilerCandidates()[0], ["/nologo", "/target:exe", `/out:${holder}`,
+      "/reference:System.dll", "/reference:System.Web.Extensions.dll", path.join(source, "tests/fixtures/runtime-package-retirement.cs")]);
+    writerHolder = spawn(holder, [launcher, process.execPath, "hold-owned", root, String(host.pid)], {
+      env: cleanEnvironment, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    });
+    writerHolderExit = once(writerHolder, "close");
+    writerHolder.stderr.pipe(createWriteStream(path.join(output, "writer-holder.stderr")));
+    writerHolderLines = createInterface({ input: writerHolder.stdout });
+    const [line] = await Promise.race([once(writerHolderLines, "line"), writerHolderExit.then(() => { throw Error("Writer holder refused"); })]);
+    const held = JSON.parse(line); assert.equal(held.jobMember, true);
+    await fs.writeFile(path.join(fixtures, "held-writer.json"), JSON.stringify(held));
+    assert.equal(processIsAlive(held.pid), true);
+  }
   if (mode === "whole") {
   await prepareAcceptanceRestartTarget({ root, telegram });
   telegram.pushMessage("[whole-update-wait] finish only after package admission");
@@ -203,7 +227,7 @@ try {
   }
   const cli = ["-X", "utf8", "-B", path.join(here, "whole-update-transport.py"), controlFile, installer, "--release", tag,
     "--prepare-update", "--operation-id", id, "--runtime-root", root, "--scratch-root", path.join(output, "cache")];
-  if (mode === "inside-hub") {
+  if (insideHub) {
     const jobProbe = path.join(fixtures, "job-membership.exe");
     await run("compile-job-probe", runtimeHostCompilerCandidates()[0], ["/nologo", "/target:exe", `/out:${jobProbe}`,
       path.join(source, "tests/fixtures/runtime-job-membership.cs")]);
@@ -217,7 +241,7 @@ try {
     }), "managed provider public installer acknowledgement", 180_000);
     report.managedTurn = managed;
     assert.equal(managed.original.operationId, id);
-    const completed = await wait(() => operation()?.status === "succeeded" && operation(), "same original installed and Ready", 240_000);
+    const completed = await wait(() => operation()?.status === "succeeded" && operation(), "same original installed and Ready", 600_000);
     const lock = await json(path.join(root, "data/bot.lock"));
     assert.equal(lock.releaseId, target.value.releaseId); assert.equal(lock.ready, true);
     assert.notEqual(lock.pid, before.pid);
@@ -236,6 +260,21 @@ try {
       "--operation-id", id, "--runtime-root", root, "--scratch-root", path.join(output, "cache")]);
     assert.equal(JSON.stringify(operation()), beforeReadback);
     await wait(() => !processIsAlive(completed.metadata.packageNative.hostPid), "independent native continuation joined");
+    if (completed.metadata.packageIncoming) {
+      assert.equal(completed.metadata.packageIncoming.outsideAllJobs, true);
+      assert.equal(completed.metadata.packageLaunchAdmission.outsideInheritedJobs, true);
+      await wait(() => !processIsAlive(completed.metadata.packageIncoming.native.hostPid), "incoming native continuation joined");
+    }
+    if (mode === "inside-hub-forced") {
+      const held = await json(path.join(fixtures, "held-writer.json"));
+      assert.equal(processIsAlive(held.pid), false);
+      assert.equal(completed.metadata.packageRetirement.forced, true);
+      assert.equal(completed.metadata.packageForcedStop.bindingSha256, completed.metadata.packageHandoff.sha256);
+      assert.equal(completed.metadata.packageIncoming.recovery.prior.metadata.packageNative.hostPid,
+        completed.metadata.packageNative.hostPid);
+      assert.equal(externalSampler.exitCode, null, "the foreign accounting process survives exact installation termination");
+      report.heldWriter = held;
+    }
     assert.equal(processIsAlive(managed.providerPid), false);
     assert.equal(processIsAlive(managed.installerPid), false);
     report.completed = completed; report.after = lock; report.health = health; report.status = "passed";
@@ -392,7 +431,11 @@ try {
   }
   }
   }
-} catch (error) { report.status = "failed"; report.error = { message: error.message, stack: error.stack }; throw error; }
+} catch (error) {
+  report.status = "failed"; report.error = { message: error.message, stack: error.stack };
+  await save(); // Retain the first failure even if finally encounters a readback refusal.
+  throw error;
+}
 finally {
   report.stopSampling?.(); delete report.stopSampling;
   await sampling;
@@ -409,10 +452,23 @@ finally {
   if (lastOperation?.metadata?.packageNative?.hostPid) {
     await wait(() => !processIsAlive(lastOperation.metadata.packageNative.hostPid), "owned admitted continuation drain", 300_000);
   }
+  const beforeCloseOriginal = operation() ?? lastOperation;
+  const beforeCloseIncoming = beforeCloseOriginal?.metadata?.packageIncoming?.native;
+  if (beforeCloseIncoming && beforeCloseOriginal?.metadata?.packageNative) {
+    await wait(() => !processIsAlive(beforeCloseIncoming.hostPid), "admitted incoming install completion before fence", 600_000);
+  }
   try { if (host) await execute(path.join(root, "AgentHub.RuntimeHost.exe"), ["--close-release-acceptance"], { env: { ...cleanEnvironment, AGENT_HUB_RUNTIME_ROOT: root }, windowsHide: true, timeout: 15_000 }); }
   catch (error) { report.cleanupError = error.message; report.status = "failed"; }
+  const incoming = operation()?.metadata?.packageIncoming?.native;
+  if (incoming) await wait(() => !processIsAlive(incoming.hostPid), "owned incoming continuation drain", 300_000);
+  if (writerHolder) {
+    writerHolder.stdin.end("close\n");
+    const [code] = await writerHolderExit; writerHolderLines.close();
+    if (code !== 0) { report.status = "failed"; report.writerHolderExitCode = code; }
+  }
   if (host && host.exitCode === null) await Promise.race([once(host, "close"), new Promise((_, reject) => setTimeout(() => reject(Error("Owned Host did not join")), 15_000))]);
   if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+  await inspectAcceptanceArtifact(input.artifacts[0].releaseRoot);
   await telegram?.stop(); report.ownedChildren = [...children].map(child => ({ pid: child.pid, code: child.exitCode }));
   report.finishedAt = new Date().toISOString(); await save();
   if (report.status !== "passed") process.exitCode = 1;

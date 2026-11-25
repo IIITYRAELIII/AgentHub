@@ -7,7 +7,7 @@ import { CodexLifecycleController } from "../providers/codex/codex-lifecycle-con
 import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { runCodexAppServerCompatibilityCanary } from "./codex-app-server-canary.mjs";
 import { observeAgentHubProviderInitialized, observeAgentHubProviderInitializing,
-  observeAgentHubProviderInitializationFailure, observeAgentHubRunRecovery } from "../application/agent-hub-startup-coordinator.mjs";
+  observeAgentHubProviderInitializationFailure } from "../application/agent-hub-startup-coordinator.mjs";
 
 export function createCodexLifecycleComposition({
   config,
@@ -56,7 +56,6 @@ export function createCodexLifecycleComposition({
     providerSelected: runtimeDependencies.providerSelected,
     activeRuns: runtimeDependencies.activeRuns,
     setStage: runtimeDependencies.setStage,
-    recoverRuns: () => observeAgentHubRunRecovery(runtimeDependencies.recoverRuns),
     startTyping: runtimeDependencies.startTyping,
     attachSelectedThread: runtimeDependencies.attachSelectedThread,
     scheduleRetry: (operation, delayMs) => setTimeout(() => void operation(), delayMs),

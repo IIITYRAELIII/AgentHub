@@ -23,14 +23,6 @@ export function observeAgentHubProviderInitializationFailure(error) {
   activeStartupCoordinator?.providerInitializationFailed(error);
 }
 
-export async function observeAgentHubRunRecovery(recoverRuns) {
-  const coordinator = activeStartupCoordinator;
-  const failure = coordinator?.captureRunRecoveryFailure();
-  const result = await recoverRuns();
-  if (coordinator === activeStartupCoordinator) coordinator?.runsRecovered(failure);
-  return result;
-}
-
 export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
   { id: "release", label: "Проверка установленного релиза", state: "completed" },
   { id: "configuration", label: "Загрузка конфигурации и хранилищ", state: "completed" },
@@ -41,7 +33,6 @@ export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
   { id: "history", label: "Проверка истории Codex" },
   { id: "provider", label: "Инициализация провайдера" },
   { id: "provider-metadata", label: "Восстановление метаданных провайдера" },
-  { id: "runs", label: "Восстановление активных ходов" },
   { id: "notifications", label: "Восстановление проекций завершённых ходов" },
   { id: "background-jobs", label: "Восстановление фоновых операций" },
   { id: "timers", label: "Запуск фоновых таймеров" },
@@ -69,7 +60,6 @@ export class AgentHubStartupCoordinator {
     initializeProvider,
     providerIsRunning,
     backfillProviderMetadata,
-    recoverRuns,
     retryTerminalProjections,
     retryNotifications,
     restoreBackgroundJobs,
@@ -101,7 +91,6 @@ export class AgentHubStartupCoordinator {
       initializeProvider,
       providerIsRunning,
       backfillProviderMetadata,
-      recoverRuns,
       retryTerminalProjections,
       retryNotifications,
       restoreBackgroundJobs,
@@ -121,13 +110,19 @@ export class AgentHubStartupCoordinator {
       log,
       logError,
     });
+    if (commandTrace?.measureBestEffort && typeof startDesktopControl === "function") {
+      this.startDesktopControl = () => startDesktopControl((phase, operation) => commandTrace.measureBestEffort({
+        commandId: `startup:${startupTraceId}`, stage: `startup-desktop-control-${phase}`, transport: "server-runtime",
+        metadata: { startupTraceId, operationId: "desktop-control" },
+      }, operation));
+    }
     // Wrap the existing awaited ports, keeping their order and failure handling.
     // Recording the start separately makes a never-settled port observable.
     for (const [name, stage] of [
       ["startMiniApp", "web"], ["startDesktopControl", "desktop-control"],
       ["startRuntimeCommand", "runtime-command"], ["startHubMcp", "hub-mcp"],
       ["sanitizeRollouts", "history"], ["initializeProvider", "provider"],
-      ["backfillProviderMetadata", "provider-metadata"], ["recoverRuns", "runs"],
+      ["backfillProviderMetadata", "provider-metadata"],
       ["retryTerminalProjections", "notifications"], ["retryNotifications", "notifications"],
       ["restoreBackgroundJobs", "background-jobs"],
       ["registerTelegramCommands", "telegram"], ["finalizeRestart", "restart"],
@@ -241,29 +236,6 @@ export class AgentHubStartupCoordinator {
     // Optional catalog/pricing repair runs after readiness, never in the restart barrier.
     this.health.skipOperation("provider-metadata");
 
-    this.health.startOperation("runs");
-    await this.recoverRuns().then(() => {
-      this.health.completeOperation("runs");
-    }).catch(async (error) => {
-      this.health.failOperation("runs", error);
-      this.#capture(error, "runs");
-      if (this.telegramEnabled) {
-        this.health.setCapability("telegram", {
-          critical: false,
-          state: "failed",
-          error: error.message,
-        });
-        await this.warnUser(`⚠️ Не удалось восстановить активные потоки: ${error.message}`);
-      } else {
-        this.health.setCapability("provider", {
-          critical: true,
-          state: "failed",
-          error: error.message,
-        });
-      }
-      this.logError("Cannot recover active tasks:", error.message);
-    });
-
     if (this.telegramEnabled) this.health.setCapability("telegram", { critical: false });
     else this.health.setCapability("telegram", { critical: false, state: "disabled" });
     this.health.startOperation("notifications");
@@ -362,30 +334,7 @@ export class AgentHubStartupCoordinator {
   providerInitializing() {
     if (!this.#initialStartupFinished) return;
     this.#providerUpdatePending = true;
-    const failure = this.health.snapshot().startup.operations.find(operation => operation.id === "runs" && operation.state === "failed");
-    if (!failure) this.health.setCapability("provider", { critical: true, state: "pending" });
-  }
-
-  captureRunRecoveryFailure() {
-    if (!this.#initialStartupFinished) return null;
-    const snapshot = this.health.snapshot();
-    const operation = snapshot.startup.operations.find(entry => entry.id === "runs");
-    return operation?.state === "failed" ? { startedAtMs: snapshot.startup.startedAtMs,
-      completedAtMs: operation.completedAtMs, error: operation.error } : null;
-  }
-
-  runsRecovered(failure) {
-    if (!failure || !this.#initialStartupFinished || !this.#providerInitializeObserved || !this.providerIsRunning()) return;
-    const snapshot = this.health.snapshot();
-    const operation = snapshot.startup.operations.find(entry => entry.id === "runs");
-    if (failure.startedAtMs !== snapshot.startup.startedAtMs || operation?.state !== "failed"
-      || failure.completedAtMs !== operation.completedAtMs || failure.error !== operation.error) return;
-    this.health.retryOperation("runs", { background: true });
-    this.health.completeOperation("runs");
-    if (snapshot.startup.operations.find(entry => entry.id === "provider")?.state === "completed") {
-      this.health.setCapability("provider", { critical: true, state: "ready" });
-      this.#startMetadataBackfill();
-    }
+    this.health.setCapability("provider", { critical: true, state: "pending" });
   }
 
   providerInitializationFailed(error) {
@@ -404,10 +353,8 @@ export class AgentHubStartupCoordinator {
       this.health.completeOperation("provider");
     }
     this.#providerUpdatePending = false;
-    const recoveryFailure = snapshot.startup.operations.find(entry => entry.id === "runs" && entry.state === "failed");
-    this.health.setCapability("provider", { critical: true,
-      state: recoveryFailure ? "failed" : "ready", error: recoveryFailure?.error });
-    if (!recoveryFailure) this.#startMetadataBackfill();
+    this.health.setCapability("provider", { critical: true, state: "ready" });
+    this.#startMetadataBackfill();
   }
 
   #startMetadataBackfill() {
@@ -442,7 +389,7 @@ export class AgentHubStartupCoordinator {
       throw new Error("Процесс Хаба уже сменился. Обновите состояние запуска.");
     }
     if (!this.#initialStartupFinished) throw new Error("Первичный запуск ещё выполняется. Можно перезапустить Хаб.");
-    const retryableIds = new Set(["provider", "provider-metadata", "runs", "notifications", "background-jobs", "telegram", "recovery"]);
+    const retryableIds = new Set(["provider", "provider-metadata", "notifications", "background-jobs", "telegram", "recovery"]);
     const failed = snapshot.startup.operations.filter((operation) => operation.state === "failed");
     if (!this.#retryPromise && failed.length && !failed.some((operation) => retryableIds.has(operation.id))) {
       throw new Error("Оставшиеся инфраструктурные этапы требуют перезапуска Хаба.");
@@ -464,7 +411,6 @@ export class AgentHubStartupCoordinator {
     const retryable = [
       ["provider", this.initializeProvider, "provider"],
       ["provider-metadata", this.backfillProviderMetadata],
-      ["runs", this.recoverRuns, "provider"],
       ["notifications", async () => {
         await this.retryTerminalProjections();
         if (this.telegramEnabled) await this.retryNotifications();
@@ -478,7 +424,7 @@ export class AgentHubStartupCoordinator {
         const operation = operations.find((entry) => entry.id === id);
         if (operation?.state !== "failed"
           && !(id === "provider-metadata" && providerRetry && operation?.state === "skipped")) continue;
-        if (["provider-metadata", "runs"].includes(id) && !this.providerIsRunning()) continue;
+        if (id === "provider-metadata" && !this.providerIsRunning()) continue;
         if (id === "provider-metadata") {
           this.#startMetadataBackfill();
           continue;

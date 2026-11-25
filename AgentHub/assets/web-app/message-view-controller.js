@@ -14,7 +14,7 @@
         || index > MAX_RESPONSE_ANNOTATION_INDEX || seen.has(index)) continue;
       seen.add(index);
       const position = reference?.position;
-      normalized.push({ index, ...(Number.isSafeInteger(position?.start) && Number.isSafeInteger(position?.end) && position.start >= 0
+      normalized.push({ index, ...(reference.target && typeof reference.target === "object" ? { target: reference.target } : {}), ...(Number.isSafeInteger(position?.start) && Number.isSafeInteger(position?.end) && position.start >= 0
         && position.end === position.start + `Цитата ${index}`.length
         ? { position: { start: position.start, end: position.end } } : {}) });
     }
@@ -87,8 +87,23 @@
         break;
       }
     }
-    const target = values[targetIndex];
     return references.flatMap((reference) => {
+      let target = values[targetIndex];
+      let exactTargetIndex = targetIndex;
+      if (reference.target) {
+        const locator = reference.target;
+        const matches = values.flatMap((candidate, index) => {
+          if (!message.provider || !message.threadId || !message.turnId
+            || index >= messageIndex || candidate?.role !== "user"
+            || candidate.provider !== message.provider || candidate.threadId !== message.threadId
+            || candidate.turnId !== message.turnId) return [];
+          const key = locator.clientUserMessageId ? "clientUserMessageId"
+            : locator.sourceOccurrenceId ? "sourceOccurrenceId" : locator.itemId ? "itemId" : "";
+          return key && candidate[key] === locator[key] ? [{ candidate, index }] : [];
+        });
+        target = matches.length === 1 ? matches[0].candidate : null;
+        exactTargetIndex = matches.length === 1 ? matches[0].index : -1;
+      }
       const index = Number(reference?.index);
       const annotation = target?.responseAnnotations?.[index - 1];
       const interactive = Boolean(target && annotation);
@@ -102,7 +117,7 @@
         label: `Цитата ${index}`,
         quote: interactive ? quote : "",
         annotation: quote,
-        targetMessageKey: interactive ? messageKey(target, targetIndex) : "",
+        targetMessageKey: interactive ? messageKey(target, exactTargetIndex) : "",
         ...(interactive && source ? { source } : {}),
         interactive,
       }];
@@ -648,6 +663,95 @@
     }
   }
 
+  // Clipboard text is a projection of the selected DOM, never a replacement
+  // for quote offsets or the message's canonical Markdown.
+  function messageSelectionClipboard(surface, range) {
+    if (!surface || !range || range.collapsed) return null;
+    const document = surface.ownerDocument;
+    const contents = document.createRange();
+    contents.selectNodeContents(surface);
+    range = range.cloneRange();
+    // Only an empty browser boundary outside this one message may be clipped.
+    // Whitespace selected INSIDE the message is body content, not quote trim.
+    if (range.compareBoundaryPoints(0, contents) < 0) {
+      const before = range.cloneRange();
+      before.setEnd(contents.startContainer, contents.startOffset);
+      if (before.toString().trim()) return null;
+      range.setStart(contents.startContainer, contents.startOffset);
+    }
+    if (range.compareBoundaryPoints(2, contents) > 0) {
+      const after = range.cloneRange();
+      after.setStart(contents.endContainer, contents.endOffset);
+      if (after.toString().trim()) return null;
+      range.setEnd(contents.endContainer, contents.endOffset);
+    }
+    if (!surface.contains(range.startContainer) || !surface.contains(range.endContainer)) return null;
+    const selected = (node) => range.intersectsNode(node);
+    const ordinals = new WeakMap();
+    function ordinal(item) {
+      const list = item.parentElement;
+      if (ordinals.has(item)) return ordinals.get(item);
+      const items = [...list.children].filter((child) => child.tagName === "LI");
+      const step = list.reversed ? -1 : 1;
+      let value = list.hasAttribute("start") ? list.start : list.reversed ? items.length : 1;
+      for (const sibling of items) {
+        if (sibling.hasAttribute("value")) value = sibling.value;
+        ordinals.set(sibling, value);
+        value += step;
+      }
+      return ordinals.get(item);
+    }
+    let ordered = false;
+    function cloneSelected(node) {
+      if (!selected(node)) return null;
+      if (node.nodeType === 3) {
+        const start = node === range.startContainer ? range.startOffset : 0;
+        const end = node === range.endContainer ? range.endOffset : node.length;
+        return end > start ? document.createTextNode(node.data.slice(start, end)) : null;
+      }
+      if (node.nodeType !== 1) return null;
+      const style = document.defaultView.getComputedStyle(node);
+      if (node.hidden || style.display === "none" || style.visibility === "hidden" || style.userSelect === "none") return null;
+      const clone = node.cloneNode(false);
+      for (const child of node.childNodes) {
+        const part = cloneSelected(child);
+        if (part) clone.append(part);
+      }
+      if (!clone.hasChildNodes() && node.tagName !== "BR") return null;
+      if (node.tagName === "LI" && node.parentElement?.tagName === "OL") {
+        clone.setAttribute("value", String(ordinal(node)));
+        ordered = true;
+      }
+      return clone;
+    }
+    const clone = cloneSelected(surface);
+    if (!clone || !ordered) return null;
+    const blocks = new Set(["P", "DIV", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6"]);
+    const separator = (text) => ({ text, separator: true });
+    function trimSeparators(parts) {
+      while (parts[0]?.separator) parts.shift();
+      while (parts.at(-1)?.separator) parts.pop();
+      return parts;
+    }
+    function plain(node, depth = 0) {
+      if (node.nodeType === 3) return [{ text: node.data }];
+      if (node.tagName === "BR") return [{ text: "\n" }];
+      const list = node.tagName === "OL" || node.tagName === "UL";
+      const parts = [...node.childNodes].flatMap((child) => plain(child, depth + (list ? 1 : 0)));
+      if (node.tagName === "LI") {
+        const marker = node.parentElement.tagName === "OL" ? `${node.value}. ` : "- ";
+        return [{ text: `${"  ".repeat(Math.max(0, depth - 1))}${marker}` },
+          ...trimSeparators(parts), separator("\n")];
+      }
+      if (list) return [separator("\n"), ...parts];
+      if (blocks.has(node.tagName)) return [separator("\n"), ...parts, separator("\n")];
+      if (node.tagName === "TR") return [...parts, separator("\n")];
+      if (node.tagName === "TD" || node.tagName === "TH") return [...parts, separator("\t")];
+      return parts;
+    }
+    return { text: trimSeparators(plain(clone)).map((part) => part.text).join(""), html: clone.innerHTML };
+  }
+
   globalThis.AgentHubMessageView = Object.freeze({
     claimKeyedChildrenOwner,
     captureMarkdownDetailsState,
@@ -661,6 +765,7 @@
     extractTechnicalTails,
     messageTechnicalContent,
     messageCopyRequest,
+    messageSelectionClipboard,
     messageDisclosurePresentation,
     messageContentSignature,
     messageKey,

@@ -12,6 +12,9 @@ import { agentHubRuntimeHealth } from "../application/runtime-health.mjs";
 import { retryAgentHubStartup } from "../application/agent-hub-startup-coordinator.mjs";
 import { StreamMessagePinService } from "../application/stream-message-pin-service.mjs";
 import { DesktopDirectoryPickerService } from "../interfaces/desktop/desktop-directory-picker-service.mjs";
+import { installerCutoverOperation, installerCutoverSnapshot } from "../application/installer-cutover.mjs";
+import { findCodexRolloutPath } from "../providers/codex/codex-turn-usage.mjs";
+import { readCodexVisualizationInWorker } from "../providers/codex/codex-rollout-activity-worker-client.mjs";
 
 export function createDesktopShellComposition({
   config, server = {}, diagnostics, limits, models, state, catalog,
@@ -61,8 +64,6 @@ export function createDesktopShellComposition({
     workLogUsageRemoteConfigStore,
     workspaceCatalogStore,
     taskReleasePlanner,
-    workspaceReleaseService,
-    releaseOperationCommands,
     streamHandoff,
     runtimeStateStore,
     commandTraceService,
@@ -260,7 +261,13 @@ export function createDesktopShellComposition({
       queuedValues: () => [...queuedInputs.values()],
       describeAttachments: desktopAttachmentDescriptors,
       receiptForMessage: (identity) => runtimeStateStore.projectMessageReceipt(desktopMessageReceipts.get(identity)),
-      receiptForCommand: (clientUserMessageId) => runtimeStateStore.projectMessageReceipt({ clientUserMessageId }),
+      receiptForCommand: (clientUserMessageId) => {
+        const identity = { clientUserMessageId };
+        // The ledger wins when it owns a command. A retained runtime receipt
+        // still represents a real result when no ledger row owns that ID.
+        const receipt = runtimeStateStore.projectMessageReceipt(desktopMessageReceipts.get(identity) ?? identity);
+        return receipt?.result ? receipt : null;
+      },
       recentReceipts: () => desktopMessageReceipts.snapshot().slice(-100)
         .map((receipt) => runtimeStateStore.projectMessageReceipt(receipt)),
       messagePinsSnapshot: () => streamMessagePins.snapshot(),
@@ -282,6 +289,11 @@ export function createDesktopShellComposition({
       androidEnabled: () => Boolean(config.components.androidApp),
       readCachedHistory,
       readExactHistoryTurn: (identity) => taskSyncStore.historyTurn(identity),
+      readVisualization: async (identity, startedAt) => {
+        if (config.testContourRecording) return null;
+        const file = await findCodexRolloutPath(identity.threadId, startedAt);
+        return file ? readCodexVisualizationInWorker(file, { ...identity, attachmentDirectory }) : null;
+      },
       readHistoryPage: (...args) => taskSyncStore.readHistoryPage(...args),
       refreshHistory,
       attachmentImporter: importCodexDesktopAttachments,
@@ -303,8 +315,6 @@ export function createDesktopShellComposition({
   const workspaceCatalog = new WorkspaceCatalogService({
     store: workspaceCatalogStore,
     taskBoard,
-    releasePlanner: taskReleasePlanner,
-    releaseCompleter: workspaceReleaseService,
     blockingRunForWorkspace,
   });
   const workspaceMutation = async (run, { resultKey = "" } = {}) => {
@@ -434,8 +444,7 @@ export function createDesktopShellComposition({
       streamHandoff,
       workspaceCatalog: workspaceCatalogStore,
       workspaceCatalogService: workspaceCatalog,
-      releaseOperationCommands,
-      workspaceMutation,
+        workspaceMutation,
       blockingWorkCount: runtime.restartBlockingWorkCount,
       maintenanceOperations,
       announceDesktopRestart,
@@ -540,8 +549,7 @@ export function createDesktopShellComposition({
         }) ?? fallbackReceipt,
       }),
       commandTrace: commandTraceService,
-      releaseOperationCommands,
-      usageSyncAuto,
+        usageSyncAuto,
       usageSyncRemoteConfigStore: workLogUsageRemoteConfigStore,
       executionRuntimeLabel: taskExecutionRuntimeLabel,
       sendMessageTo,
@@ -570,7 +578,8 @@ export function createDesktopShellComposition({
       hasDeferredBacklog: (target) => deferredInputs.hasBacklog(target),
       isMaintenanceActive: (target) => streamContextMaintenance.isActive(target),
       isManagedMaintenanceActive: (target) => streamContextMaintenance.isManagedActive(target),
-      isRuntimeStopping: () => hostState.stopping,
+      isRuntimeStopping: () => hostState.stopping
+        || Boolean(installerCutoverOperation(maintenanceOperations, config.dataDir)),
       scheduleDeferred: scheduleQueuedInput,
       setProgressStage: (...args) => taskProgress.setStage(...args),
       noteRunActivity: (...args) => taskProgress.noteActivity(...args),
@@ -596,6 +605,10 @@ export function createDesktopShellComposition({
       setAutostart: (params) => serverControlController.setAutostart(params),
       updateServerConfiguration: (params) => serverControlController.updateConfiguration(params),
       startProviderLogin: (params) => serverControlController.startProviderLogin(params),
+      connectGitHub: (params) => serverControlController.connectGitHub(params),
+      pollGitHubLogin: (params) => serverControlController.pollGitHubLogin(params),
+      cancelGitHubLogin: (params) => serverControlController.cancelGitHubLogin(params),
+      disconnectGitHub: () => serverControlController.disconnectGitHub(),
       submitProviderLoginCode: (params) => serverControlController.submitProviderLoginCode(params),
       cancelProviderLogin: (params) => serverControlController.cancelProviderLogin(params),
       readPreTurnInstructions: () => serverControlController.readPreTurnInstructions(),
@@ -620,6 +633,12 @@ export function createDesktopShellComposition({
       }),
       runtimeHealth: () => ({
         ...agentHubRuntimeHealth.snapshot(),
+        installerCutover: installerCutoverSnapshot({
+          operation: installerCutoverOperation(maintenanceOperations, config.dataDir),
+          runs: taskRuns.values().filter(taskRunIsActive),
+          pendingAdmission: desktopRunCoordinator?.hasPendingAdmission(() => true),
+          maintenanceCount: streamMaintenance.activeCount(),
+        }),
         ...(process.env.AGENT_HUB_PACKAGE_HANDOFF_PROTOCOL === "1" && typeof desktopActions.restartPackage === "function"
           ? { packageHandoff: { protocol: 1 } } : {}),
         process: {

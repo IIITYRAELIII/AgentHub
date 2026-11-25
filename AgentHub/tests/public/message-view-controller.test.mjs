@@ -316,22 +316,6 @@ test("prepend optimization accepts equivalent projections but rejects changed me
   assert.equal(api.prependedMessageCount(previous, changed), 0);
 });
 
-test("selected Stream rerenders when logical chat state and DOM ownership diverge", async () => {
-  const appSource = await readFile(
-    new URL("../../assets/web-app/app.js", import.meta.url),
-    "utf8",
-  );
-
-  assert.match(
-    appSource,
-    /const taskChanged = activeChatId !== task\.id\s*\|\| String\(chatLog\.dataset\.messageOwnerKey \?\? ""\) !== String\(task\.id \?\? ""\)/u,
-  );
-  assert.equal(
-    (appSource.match(/if \(sameMessages && \(taskId !== state\.selectedId \|\| selectedSurfaceOwned\)\) return;/gu) ?? []).length,
-    2,
-  );
-});
-
 test("ordinary composer defaults to queue and explicit steer preserves current Stream intent", async () => {
   const api = await messageViewApi();
   assert.equal(api.composerFollowUpMode({ running: true }), "queue");
@@ -540,6 +524,25 @@ test("rendered annotation content still changes the message signature", async ()
     api.messageContentSignature(message),
     api.messageContentSignature({ ...message, responseAnnotationRequest: "Другой запрос" }),
   );
+});
+
+test("explicit citation targets refuse foreign, missing and ambiguous users instead of using the latest quote", async () => {
+  const api = await messageViewApi();
+  const scope = { provider: "codex", threadId: "thread", turnId: "turn" };
+  const a = { ...scope, role: "user", clientUserMessageId: "client-A", itemId: "hydrated-A",
+    sourceOccurrenceId: "occurrence-A", responseAnnotations: [{ text: "same", annotation: "same" }] };
+  const b = { ...scope, role: "user", clientUserMessageId: "client-B", responseAnnotations: [{ text: "same", annotation: "same" }] };
+  const response = { ...scope, role: "agent", itemId: "answer", responseAnnotationReferences: [{ index: 1,
+    target: { sourceOccurrenceId: "occurrence-A", itemId: "old-native-A" } }] };
+  const citation = values => api.responseCitationPresentations(values, values.length - 1)[0];
+  assert.equal(citation([a, b, response]).targetMessageKey, "client\u001fclient-A");
+  assert.equal(citation([{ ...a, threadId: "foreign" }, b, response]).interactive, false);
+  assert.equal(citation([{ ...a, turnId: "old-turn" }, b, response]).interactive, false);
+  assert.equal(citation([b, response]).interactive, false);
+  assert.equal(citation([a, { ...a }, b, response]).interactive, false);
+  assert.equal(citation([a, b, { ...response, provider: "" }]).interactive, false);
+  assert.equal(citation([a, b, { ...response, responseAnnotationReferences: [{ index: 1 }] }]).targetMessageKey,
+    "client\u001fclient-B", "legacy references retain their existing compatibility mapping");
 });
 
 test("agent citation displays the user comment and targets its annotation card by canonical identity", async () => {

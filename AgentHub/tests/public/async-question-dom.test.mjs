@@ -45,7 +45,20 @@ test("async question cards retain drafts, follow Stream selection and retry only
       state: "dispatching", answers: { "0": ["Сохранённый ответ"] },
     });
     await applyFixtureSnapshot(page, frozen);
-    await other.getByRole("button", { name: "Повторить отправку" }).waitFor();
+    try {
+      await other.getByRole("button", { name: "Повторить отправку" }).waitFor();
+    } catch (error) {
+      error.message += `; applied DOM ${JSON.stringify(await page.evaluate(() => ({
+        selectedTask: document.querySelector("[data-chat-pane]")?.dataset.streamChatTaskId,
+        cards: [...document.querySelectorAll("[data-approvals] [data-approval-id]")].map(node => ({
+          id: node.dataset.approvalId,
+          frozen: Boolean(node.querySelector("fieldset:disabled")),
+          submit: node.querySelector("[data-action='approval-submit']")?.textContent,
+        })),
+        suppliedVersion: window.__agentHubFixture.snapshot.version,
+      })))}`;
+      throw error;
+    }
     assert.equal(await other.locator("[data-approval-other]").inputValue(), "Сохранённый ответ");
     assert.equal(await other.locator("[data-approval-other]").isDisabled(), true);
     assert.equal(await other.locator('[data-decision="decline"]').count(), 0);

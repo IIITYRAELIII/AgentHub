@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import test from "node:test";
 import { createRuntimeHealth } from "../../src/application/runtime-health.mjs";
+import { observeRuntimeWorkerMemory } from "../../src/application/runtime-worker-memory.mjs";
 
 test("runtime health distinguishes startup, ready and degraded states", () => {
   const health = createRuntimeHealth();
@@ -62,4 +64,34 @@ test("runtime health exposes one authoritative ordered startup progression", () 
       { id: "ready", label: "Ready", state: "failed", startedAtMs: 3_000, completedAtMs: 4_000, error: "local path" },
     ],
   });
+});
+
+test("worker-only startup diagnostics preserve readiness before event-loop observation exists", () => {
+  const worker = new EventEmitter();
+  worker.threadId = 843;
+  assert.equal(observeRuntimeWorkerMemory("commandTrace", worker), true);
+  const health = createRuntimeHealth().begin()
+    .setCapability("provider", { critical: true, state: "pending" });
+  try {
+    const starting = health.snapshot();
+    assert.equal(starting.ready, false);
+    assert.equal(starting.status, "starting");
+    assert.ok(starting.diagnostics.process.rssBytes > 0);
+    assert.equal(starting.diagnostics.workerMemory.commandTrace.activeWorkers, 1);
+    assert.equal(starting.diagnostics.workerMemory.commandTrace.usedHeapBytes, null);
+    assert.equal(Object.hasOwn(starting.diagnostics.process, "eventLoopDelayP95Ms"), false);
+    assert.equal(Object.hasOwn(starting.diagnostics.process, "eventLoopDelayMaxMs"), false);
+
+    health.setDiagnosticSource("journal", () => ({ retainedRecords: 0 }));
+    health.setCapability("provider", { critical: true, state: "ready" }).complete();
+    const ready = health.snapshot();
+    assert.equal(ready.ready, true);
+    assert.equal(ready.degraded, false);
+    assert.ok(Number.isFinite(ready.diagnostics.process.eventLoopDelayP95Ms));
+    assert.ok(Number.isFinite(ready.diagnostics.process.eventLoopDelayMaxMs));
+    assert.deepEqual(ready.diagnostics.journal, { retainedRecords: 0 });
+  } finally {
+    worker.emit("exit", 0);
+  }
+  assert.equal(health.snapshot().diagnostics.workerMemory.commandTrace.activeWorkers, 0);
 });

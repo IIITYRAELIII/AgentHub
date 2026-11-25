@@ -21,7 +21,7 @@ const SNAPSHOT = {
   },
 };
 const WORKSPACE_CARD = '.task-workspace-item[data-workspace-id="workspace-1"]';
-const FOLDER_CARD = '.task-workspace-folder .task-workspace-item[data-workspace-id="workspace-2"]';
+
 const STREAM_TAB = '.stream-tab[data-stream-tab-id="stream-0"]';
 
 function contentType(pathname) {
@@ -74,7 +74,7 @@ async function openShell(page, { allThemes = false } = {}) {
   });
   await page.goto("https://agent-hub.test/", { waitUntil: "load" });
   await page.waitForFunction(() => typeof window.AgentHub === "object");
-  await page.evaluate(() => { document.documentElement.dataset.streamStatusEffect = "impulse"; });
+  await page.evaluate(() => { document.documentElement.dataset.streamStatusEffect = "dynamic"; });
 }
 
 // Настоящий путь обновления: снимок приносит новые данные потоков.
@@ -135,7 +135,7 @@ async function markRenderedNodes(page, { card, tab }) {
     if (folder) folder.identityProbe = "folder";
     const node = document.querySelector(tab);
     node.identityProbe = "tab";
-    node.querySelector(".stream-tab-status-layer").identityProbe = "layer";
+    node.querySelector(".stream-effect-layer").identityProbe = "layer";
   }, { card, tab });
 }
 
@@ -143,7 +143,7 @@ async function readState(page, { card, tab }) {
   return page.evaluate(({ card, tab }) => {
     const cardNode = document.querySelector(card);
     const tabNode = document.querySelector(tab);
-    const layerNode = tabNode?.querySelector(".stream-tab-status-layer") ?? null;
+    const layerNode = tabNode?.querySelector(".stream-effect-layer") ?? null;
     const animationTime = (node) => {
       const animation = node?.getAnimations({ subtree: true })
         .find((item) => String(item.animationName ?? "").startsWith("stream-"));
@@ -320,17 +320,16 @@ const STATUS_SURFACES = [
 async function motionState(page) {
   return page.evaluate((selectors) => selectors.map((selector) => {
     const node = document.querySelector(selector);
-    const target = node?.querySelector(".stream-tab-status-layer") ?? node;
+    const target = node?.querySelector(".stream-effect-layer") ?? node;
     const animation = target?.getAnimations({ subtree: true })
-      .find((item) => item.effect?.target === target && item.effect?.pseudoElement);
-    const pseudo = animation?.effect?.pseudoElement;
-    const style = target && pseudo ? getComputedStyle(target, pseudo) : null;
+      .find((item) => item.animationName?.startsWith("stream-"));
+    const style = animation?.effect?.target ? getComputedStyle(animation.effect.target) : null;
     return {
       selector,
       kept: window.statusSurfaceNodes?.get(selector) === node,
       time: animation ? Number(animation.currentTime) : null,
       playState: animation?.playState ?? null,
-      transform: style?.transform ?? null,
+      transform: style?.strokeDashoffset ?? null,
       opacity: style?.opacity ?? null,
       running: node?.hasAttribute("data-running") ?? false,
       unread: (node?.hasAttribute("data-unread") || node?.hasAttribute("data-answer-ready")) ?? false,
@@ -348,9 +347,9 @@ async function rememberStatusSurfaces(page) {
 async function waitForMotionProgress(page, before, delta = 100) {
   await page.waitForFunction(({ selectors, before, delta }) => selectors.every((selector, index) => {
     const node = document.querySelector(selector);
-    const target = node?.querySelector(".stream-tab-status-layer") ?? node;
+    const target = node?.querySelector(".stream-effect-layer") ?? node;
     const animation = target?.getAnimations({ subtree: true })
-      .find((item) => item.effect?.target === target && item.effect?.pseudoElement);
+      .find((item) => item.animationName?.startsWith("stream-"));
     return animation && Number(animation.currentTime) > before[index].time + delta;
   }), { selectors: STATUS_SURFACES, before, delta }, { timeout: 5000 });
 }
@@ -469,37 +468,34 @@ test("эффекты, смена Stream и возврат к диалогам с
     let tick = 0;
     for (const theme of ["jedi-archives", "bespin"]) {
       await page.locator("[data-theme-select]").selectOption(theme, { force: true });
-      for (const style of ["edge", "fill"]) {
-        await applyViewSetting(page, "streamStatusStyle", style);
-        for (const effect of ["impulse", "scanner", "energy", "breath", "thread", "sediment", "echo", "calm", "off"]) {
-          await applyViewSetting(page, "streamStatusEffect", effect);
-          await publishSnapshot(page, { tick: tick++ });
-          await page.waitForTimeout(160);
-          const before = await motionState(page);
-          await publishSnapshot(page, { tick: tick++, selectedIndex: 1 });
-          const reattached = await motionState(page);
-          if (!["calm", "off"].includes(effect)) {
-            for (let index = 0; index < reattached.length; index += 1) {
-              assert.ok(reattached[index].time >= before[index].time,
-                `${theme}/${style}/${effect}: время сброшено при смене Stream`);
-            }
-            await waitForMotionProgress(page, before, 80);
+      for (const effect of ["static", "dynamic"]) {
+        await applyViewSetting(page, "streamStatusEffect", effect);
+        await publishSnapshot(page, { tick: tick++ });
+        await page.waitForTimeout(160);
+        const before = await motionState(page);
+        await publishSnapshot(page, { tick: tick++, selectedIndex: 1 });
+        const reattached = await motionState(page);
+        if (effect === "dynamic") {
+          for (let index = 0; index < reattached.length; index += 1) {
+            assert.ok(reattached[index].time >= before[index].time,
+              `${theme}/${effect}: время сброшено при смене Stream`);
           }
-          for (const current of await motionState(page)) {
-            if (["calm", "off"].includes(effect)) assert.equal(current.time, null);
-            else assert.equal(current.playState, "running");
-          }
-          if (["impulse", "scanner", "energy", "breath", "echo"].includes(effect)) {
-            const finalRevision = tick + 1;
-            await publishSnapshot(page, { tick: tick++, running: false, unread: true, finalRevision });
-            await page.waitForTimeout(100);
-            const arrival = await motionState(page);
-            await publishSnapshot(page, { tick: tick++, running: false, unread: true, finalRevision });
-            await waitForMotionProgress(page, arrival, 50);
-          }
+          await waitForMotionProgress(page, before, 80);
+        }
+        for (const current of await motionState(page)) {
+          if (effect === "static") assert.equal(current.time, null);
+          else assert.equal(current.playState, "running");
+        }
+        if (effect === "dynamic") {
+          const finalRevision = tick + 1;
+          await publishSnapshot(page, { tick: tick++, running: false, unread: true, finalRevision });
+          await page.waitForTimeout(100);
+          const arrival = await motionState(page);
+          await publishSnapshot(page, { tick: tick++, running: false, unread: true, finalRevision });
+          await waitForMotionProgress(page, arrival, 50);
         }
       }
-      await applyViewSetting(page, "streamStatusEffect", "impulse");
+      await applyViewSetting(page, "streamStatusEffect", "dynamic");
       await publishSnapshot(page, { tick: tick++ });
       await page.locator('[data-view-button="dashboard"]').click();
       await page.locator('[data-view-button="chat"]').click();

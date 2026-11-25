@@ -11,9 +11,8 @@ import { HubMcpService } from "./src/application/hub-mcp-service.mjs";
 import { measureTaskOperation } from "./src/infrastructure/process/task-operation-timing.mjs";
 import { TaskBoardService } from "./src/application/task-board-service.mjs";
 import { TaskLifecycleService } from "./src/application/task-lifecycle-service.mjs";
-import { TaskReleasePlanService } from "./src/application/task-release-plan-service.mjs";
-import { WorkspaceReleasePreflightService } from "./src/application/workspace-release-preflight-service.mjs";
-import { resolveReleaseValidationSource } from "./src/composition/infrastructure-composition.mjs";
+import { TaskCompositionPlanService } from "./src/application/task-composition-plan-service.mjs";
+import { TaskIntegrationService } from "./src/application/task-integration-service.mjs";
 import { createPersistenceMutationCapabilities } from "./src/composition/persistence-mutation-composition.mjs";
 import { taskProjectRoot } from "./src/domain/task-project-root.mjs";
 import { normalizedInitialNativeTest, taskGitIdentityHash } from "./src/domain/task-git-reference.mjs";
@@ -21,10 +20,9 @@ import { runtimeLayout, runtimeReleaseDirectory } from "./src/infrastructure/fil
 import { verifyRuntimeManifest } from "./src/infrastructure/filesystem/runtime-manifest-verifier.mjs";
 import { runtimeStatus } from "./src/runtime/runtime-manager.mjs";
 import { loadConfig, samePath } from "./src/infrastructure/filesystem/config.mjs";
-import { ReleaseGitWorkspaceService } from "./src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "./src/infrastructure/filesystem/task-integration-git.mjs";
 import { TaskGitWorkspaceService } from "./src/infrastructure/filesystem/task-git-workspace.mjs";
 import { readPublicationState } from "./src/infrastructure/persistence/publication-state.mjs";
-import { createRepositoryProductionValidationAdapter } from "./src/infrastructure/process/repository-production-validation.mjs";
 import { openTaskOperationReconciliationStores } from "./src/interfaces/cli/task-operation-reconciliation-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -266,20 +264,15 @@ export async function openTaskAwaitCutoverRuntime({
     ?? new TaskGitWorkspaceService({ dataDir: config.dataDir,
       readClaimCustodyNamespace: id => workspaceCatalogStore.claimCustodyNamespaceForTask(id) });
   const releaseGitWorkspaces = suppliedReleaseGitWorkspaces
-    ?? new ReleaseGitWorkspaceService({ dataDir: config.dataDir,
+    ?? new TaskIntegrationGitService({ dataDir: config.dataDir,
       readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root),
       readPreparationOriginal: id => workspaceCatalogStore.mcpOperation(id) });
-  const releasePlanner = new TaskReleasePlanService({ taskBoard, taskGitWorkspaces, measureOperation: measureTaskOperation });
-  const releasePreflight = suppliedReleasePreflight ?? new WorkspaceReleasePreflightService({
+  const releasePlanner = new TaskCompositionPlanService({ taskBoard, taskGitWorkspaces, measureOperation: measureTaskOperation });
+  const releasePreflight = suppliedReleasePreflight ?? new TaskIntegrationService({
     measureOperation: measureTaskOperation,
     releasePlanner,
     taskGitWorkspaces,
     releaseGitWorkspaces,
-    resolveReleaseValidationSource,
-    validateProductionCandidate: createRepositoryProductionValidationAdapter({
-      policies: config.releaseValidation?.repositories ?? [],
-      dataDir: path.join(config.dataDir, "release-validation"),
-    }),
     readPublicationState,
   });
   const taskLifecycle = new TaskLifecycleService({

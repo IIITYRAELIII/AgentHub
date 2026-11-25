@@ -448,3 +448,33 @@ test("date week month and Workspace modes keep complete percentage metrics with 
     await browser.close();
   }
 });
+
+
+test("bounded journal pages request the next cursor only on demand and preserve exact distinct turn identities", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch(process.platform === "win32" ? { channel: "msedge", headless: true } : { headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    const requests = await openProductionJournal(page, { turnPageResponse: ({ payload, requestNumber }) => {
+      if (requestNumber === 1) return { payload: { ...payload, nextOffset: 1 } };
+      const second = { ...payload.turns[0], turnRef: "turn-ref-older", html: payload.turns[0].html
+        .replaceAll("turn-high", "turn-older").replaceAll("High turn", "Older turn").replaceAll("turn-ref-high", "turn-ref-older") };
+      return { payload: { ...payload, turns: [...payload.turns, second], nextOffset: null } };
+    } });
+    const scope = page.locator('[data-journal-virtual-mode="stream"]').first();
+    assert.equal(requests.length, 1);
+    assert.equal(await scope.locator("[data-work-log-turn-entry]").count(), 1);
+    const first = new URL(requests[0]);
+    assert.equal(first.searchParams.get("offset"), "0");
+    assert.equal(first.searchParams.get("limit"), "30");
+    await scope.locator("[data-journal-turn-show-more]").click();
+    await page.waitForFunction(() => document.querySelectorAll('[data-journal-virtual-mode="stream"] [data-work-log-turn-entry]').length === 2);
+    assert.equal(requests.length, 2);
+    const next = new URL(requests[1]);
+    assert.equal(next.searchParams.get("offset"), "1");
+    assert.equal(next.searchParams.get("limit"), "30");
+    for (const key of ["workspaceId", "streamId", "provider", "version"]) assert.equal(next.searchParams.get(key), first.searchParams.get(key));
+    assert.deepEqual(await scope.locator("[data-work-log-turn-entry]").evaluateAll(nodes => nodes.map(node => node.dataset.workLogTurnId)), ["turn-high", "turn-older"]);
+    assert.equal(await scope.locator("[data-journal-turn-show-more]").count(), 0);
+  } finally { await browser.close(); }
+});

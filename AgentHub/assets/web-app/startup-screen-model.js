@@ -70,6 +70,7 @@ export function createStartupScreenModel(snapshot, nowMs = Date.now()) {
 
   return {
     available: true,
+    confirmedAtMs: nowMs,
     ready,
     failed,
     finished,
@@ -102,6 +103,17 @@ export function createStartupDisconnectedModel(model, {
   sinceMs = null,
   nowMs = Date.now(),
 } = {}) {
+  if (!restarting && model?.operations?.length) {
+    return {
+      ...model,
+      ready: false,
+      status: "unknown",
+      connectionLost: true,
+      stale: true,
+      connectionStatus: "Связь не подтверждена. Показаны последние подтверждённые этапы.",
+      lastConfirmedAtMs: model.confirmedAtMs,
+    };
+  }
   // A disconnected health sample cannot describe the replacement's progress.
   // Keep only known error details and the generation used by recovery actions.
   const failedOperations = restarting ? [] : (model?.failedOperations ?? []);
@@ -181,4 +193,11 @@ export function restartWaitFailed(snapshot, waitingSinceMs) {
   const operation = snapshot?.diagnostics?.restart;
   return operation?.status === "failed"
     && Date.parse(operation.completedAt ?? "") >= Number(waitingSinceMs);
+}
+
+export function restartWaitSettled(snapshot, waitingSinceMs) {
+  const operation = snapshot?.diagnostics?.restart;
+  return restartWaitFailed(snapshot, waitingSinceMs)
+    || snapshot?.ready === true && operation?.status === "succeeded"
+      && Date.parse(operation.completedAt ?? "") >= Number(waitingSinceMs);
 }

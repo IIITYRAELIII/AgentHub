@@ -8,6 +8,24 @@ import {
   startCodexAgentMessage,
 } from "../../../src/providers/codex/codex-agent-message-reducer.mjs";
 
+test("an agent item keeps its exact annotation user across steer, deltas and hydration", () => {
+  const userA = { role: "user", itemId: "native-user-A", clientUserMessageId: "client-A", responseAnnotations: [{ text: "same", annotation: "same" }] };
+  const userB = { role: "user", itemId: "native-user-B", clientUserMessageId: "client-B", responseAnnotations: [{ text: "same", annotation: "same" }] };
+  const run = { userMessages: [userA], responseItems: [] };
+  const item = { id: "answer-A", type: "agentMessage", phase: "commentary" };
+  startCodexAgentMessage(run, { turnId: "turn", item });
+  run.userMessages.push(userB);
+  appendCodexAgentMessageDelta(run, { turnId: "turn", itemId: item.id, delta: 'A :agent-annotation{index="1"}' });
+  const a = structuredClone(run.responseItems[0]);
+  assert.equal(a.responseAnnotationReferences[0].target.clientUserMessageId, "client-A");
+  completeCodexAgentMessage(run, { turnId: "turn", item: { ...item, text: 'A :agent-annotation{index="1"}' } });
+  assert.deepEqual(run.responseItems[0].responseAnnotationReferences, a.responseAnnotationReferences);
+  completeCodexAgentMessage(run, { turnId: "turn", item: { id: "answer-B", type: "agentMessage", phase: "final_answer", text: 'B :agent-annotation{index="1"}' } });
+  assert.equal(run.responseAnnotationReferences[0].target.clientUserMessageId, "client-B");
+  hydrateCodexAgentMessages(run, [{ ...item, text: 'A :agent-annotation{index="1"}' }], { turnId: "turn" });
+  assert.equal(run.responseAnnotationReferences[0].target.clientUserMessageId, "client-A");
+});
+
 test("async question metadata cannot select a final response or steal a real final", () => {
   const run = { responseText: "", responseItems: [] };
   const question = { id: "question", type: "agentMessage", phase: "final_answer",

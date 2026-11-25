@@ -10,7 +10,7 @@ import path from "node:path";
 import test from "node:test";
 import { TaskGitWorkspaceService } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { OwnedNativeObjectStore } from "../../../src/infrastructure/filesystem/owned-native-object-store.mjs";
-import { NativeCaptureRetirement, nativeCaptureCandidate } from "../../../src/infrastructure/filesystem/native-capture-retirement.mjs";
+import { nativeCaptureCandidate } from "../../../src/infrastructure/filesystem/native-capture-retirement.mjs";
 import { StorageRetentionService } from "../../../src/application/storage-retention-service.mjs";
 import { MaintenanceOperationStore } from "../../../src/infrastructure/persistence/maintenance-operation-store.mjs";
 import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-board-store.mjs";
@@ -19,14 +19,13 @@ import { retireSealedNativeCapture, measureNativeCaptureAllocation } from "../..
 import { inventoryNativeCapture } from "../../../src/infrastructure/filesystem/native-capture-inventory.mjs";
 import { withInterprocessLocks } from "../../../src/infrastructure/process/interprocess-lock.mjs";
 
-import { ReleaseOperationStore } from "../../../src/infrastructure/persistence/release-operation-store.mjs";
-import { ReleaseOperationService } from "../../../src/application/release-operation-service.mjs";
+
+
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
 
-import { assertNativeCaptureNotSourcePinned } from "../../../src/infrastructure/filesystem/native-capture-source-pins.mjs";
 
-import { assertNativeMergedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
-import historicalReplayLines from "../../fixtures/native-historical-replay-lines.json" with { type: "json" };
+
+
 import { withStorageRetentionLease } from "../../../src/composition/storage-retention-composition.mjs";
 import { createTaskOperationTimingLogRecorder } from "../../../src/infrastructure/persistence/task-operation-timing-log.mjs";
 
@@ -39,7 +38,7 @@ function git(cwd, args, { input = null, stdoutFd = null, rawOutput = false, bina
     c.stdin.end(input);
   });
 }
-async function fixture(t, { legacyOriginal = false, historicalReplay = null, selectedFiles = 75, ...options } = {}) {
+async function fixture(t, { legacyOriginal = false, selectedFiles = 75, ...options } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-retire-native-")), dataDir = path.join(root, "data"), source = path.join(root, "primary");
   await mkdir(dataDir); await mkdir(source); await mkdir(path.join(root, "releases"));
   await writeFile(path.join(root, "current.json"), JSON.stringify({ current: "fixture-current", previous: null, runtimeRetention: { retired: [] } }));
@@ -61,13 +60,7 @@ async function fixture(t, { legacyOriginal = false, historicalReplay = null, sel
   await git(source, ["init", "-b", "main"]);
   await writeFile(path.join(source, "history.bin"), randomBytes(1024 * 1024));
   await writeFile(path.join(source, "line-endings.txt"), "line one\nline two\n");
-  if (historicalReplay) await writeFile(path.join(source, "replay.txt"), historicalReplay.base);
   await git(source, ["add", "."]); await git(source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base"]);
-  const historicalAgreedBase = historicalReplay ? await git(source, ["rev-parse", "HEAD"]) : null;
-  if (historicalReplay) {
-    await writeFile(path.join(source, "replay.txt"), historicalReplay.source); await git(source, ["add", "."]);
-    await git(source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "shared historical prefix"]);
-  }
   const origin = path.join(root, "origin.git"); await git(root, ["init", "--bare", origin]); await git(source, ["remote", "add", "origin", origin]);
   await git(source, ["push", "origin", "main"]); await git(source, ["fetch", "origin"]);
   let publication = null;
@@ -75,10 +68,6 @@ async function fixture(t, { legacyOriginal = false, historicalReplay = null, sel
   const prepared = await taskGit.prepare({ taskId: task.id, taskNumber: task.taskNumber, projectRoot: source });
   for (let i = 0; i < selectedFiles; i++) await writeFile(path.join(prepared.projectRoot, "value-" + i + ".txt"), "selected " + i);
   const snapshot = await taskGit.snapshot({ taskId: task.id, taskNumber: task.taskNumber, projectRoot: prepared.projectRoot });
-  if (historicalReplay) {
-    await writeFile(path.join(source, "replay.txt"), historicalReplay.prefix); await git(source, ["add", "."]);
-    await git(source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "independent prefix correction"]);
-  }
   const integrated = await taskGit.withTaskLock(task.id, lease => taskGit.mergeIntoDevOwned(snapshot, { lease, operationId: originalId }));
   board.beginLifecycleTransition(task.id, { operationId: originalId, kind: "workflow", targetWorkflowStatus: "testing", expectedRevision: task.revision });
   board.commitWorkflowTransition({ operationId: originalId, gitReferences: [{ projectRoot: source, branch: prepared.branch, resultCommit: snapshot.headCommit }] });
@@ -99,7 +88,7 @@ async function fixture(t, { legacyOriginal = false, historicalReplay = null, sel
   nativeOwner.prune = async x => { try { return await prune(x); } catch (e) { t.diagnostic("Owning prune failure: " + e.stack); throw e; } };
   service = new StorageRetentionService({ store, owners: [nativeOwner], readContext: async () => ({ ready: true, releaseId: "fixture", isolated: false, busy: false }),
     withLease: fn => withInterprocessLocks([path.join(dataDir, "storage-retention")], fn) });
-  return { root, dataDir, source, board, catalog, workspace, taskGit, store, owner, nativeOwner, service, candidate, capture, state, task, originalId, historicalAgreedBase };
+  return { root, dataDir, source, board, catalog, workspace, taskGit, store, owner, nativeOwner, service, candidate, capture, state, task, originalId };
 }
 
 async function admitBeforeArchiveFailure(f) {
@@ -620,180 +609,8 @@ test("terminal prepared-only originals preserve their records while one exact co
 });
 
 
-test("completed generation Gitless source remainder preserves custody while unrelated SAME native retires", { skip: process.platform !== "win32" }, async t => {
-  let nativeCalls = 0;
-  const f = await fixture(t, { retire: async (...args) => { nativeCalls++; return retireSealedNativeCapture(...args); } });
-  const operationId = "fixture-generation-original", generation = 1;
-  const identity = { schemaVersion: 1, operationId, generation, repositoryRoot: f.source };
-  identity.identitySha256 = hash(`${operationId}:${generation}:${f.source}`);
-  const key = identity.identitySha256.slice(0, 24), generationRoot = path.join(f.dataDir, "release-gens", key);
-  const repository = path.join(generationRoot, "release-repositories", taskRepositoryKey(f.source), "repository");
-  const source = path.join(repository, "AgentHub"), archive = path.join(f.dataDir, "release-generation-evidence", key);
-  await mkdir(path.join(source, "WIP"), { recursive: true });
-  await writeFile(path.join(source, "source.mjs"), "export const retained = true;\n");
-  await writeFile(path.join(source, "WIP", "useful.txt"), "retain this unique original source remainder");
-  await mkdir(path.join(archive, "evidence"), { recursive: true });
-  const manifest = Buffer.from(JSON.stringify({ workspaceId: f.workspace.id, compositionPolicy: "main-selected-git-merge-v1",
-    tasks: [{ taskId: f.task.id, resultCommit: f.state.identity.resultCommit }] }));
-  const manifestHash = hash(manifest), checkpoint = Buffer.from(JSON.stringify({ phase: "frozen", preReleaseHead: f.state.head, manifestHash }));
-  await writeFile(path.join(archive, "identity.json"), JSON.stringify(identity));
-  await writeFile(path.join(archive, "checkpoint.json"), checkpoint);
-  const archivedManifest = path.join(archive, "evidence", manifestHash + ".json");
-  await writeFile(archivedManifest, manifest);
-  // This is a private reproduction of the real owner's partial removal state:
-  // live generation identity/Git are absent, originals are archived, source stays.
-  const prepared = path.join(f.root, "releases", "completed-generation-source"); await mkdir(prepared);
-  const runtimeManifest = path.join(prepared, "runtime-manifest.json");
-  const runtimeBytes = Buffer.from(JSON.stringify({ releaseId: "completed-generation-source", sourceRoot: source,
-    publicationRevision: f.state.head, files: [] }));
-  await writeFile(runtimeManifest, runtimeBytes);
-  const store = new ReleaseOperationStore({ dataDir: f.dataDir, idFactory: () => operationId }), scheduled = [];
-  const release = new ReleaseOperationService({ store, schedule: fn => scheduled.push(fn), processAlive: () => false,
-    compose: async () => ({ repositoryBases: [{ repositoryRoot: f.source, baseCommit: f.state.identity.before }],
-      selectedResults: [{ taskId: f.task.id, resultCommit: f.state.identity.resultCommit }],
-      candidates: [{ repositoryRoot: f.source, releaseRoot: repository, generationRoot, commit: f.state.head,
-        tree: await git(path.join(f.capture, "repository"), ["rev-parse", "HEAD^{tree}"]), manifestHash }] }),
-    validate: async () => ({ status: "passed" }),
-    publishTarget: async () => { await git(f.source, ["update-ref", "refs/heads/fixture-generation-published", f.state.head]); return { status: "applied", revision: f.state.head }; },
-    readTarget: async () => ({ status: "not_applied" }), finalize: async () => ({ closed: [f.task.id] }),
-  });
-  f.owner.readGeneration = (id, n) => release.retentionGeneration(id, n);
-  release.start({ requestId: "original-generation", workspaceId: f.workspace.id, streamId: "fixture-stream", threadId: "fixture-thread",
-    authorization: { taskIds: [f.task.id], validationMode: "full", approvedTargets: [{ targetId: "git", kind: "git", repositoryRoot: f.source }] } });
-  assert.equal((await f.owner.preview({ candidate: f.candidate })).status, "retained", "unfinished original is not source custody");
-  scheduled.shift()(); await release.drain(operationId);
-  assert.equal(store.get(operationId).state, "done");
-  const before = store.snapshot(operationId), pointer = await readFile(path.join(f.root, "current.json"));
-  const preview = await f.owner.preview({ candidate: f.candidate });
-  assert.equal(preview.status, "eligible", JSON.stringify(preview));
-  const priorGraft = process.env.GIT_GRAFT_FILE;
-  try {
-    let proofReads = 0;
-    const read = (id, n) => { proofReads++; return release.retentionGeneration(id, n); };
-    process.env.GIT_GRAFT_FILE = path.join(f.root, "foreign-history-input");
-    await assert.rejects(f.owner.installationLease(f.root, () => assertNativeCaptureNotSourcePinned(f.root,
-      path.join(f.capture, "repository"), { readGeneration: read })), /ordinary local Git source custody/u);
-    assert.equal(proofReads, 0, "ambient history refuses before reading a derived authority");
-    delete process.env.GIT_GRAFT_FILE;
-    const late = (id, n) => { const value = read(id, n); process.env.GIT_GRAFT_FILE = path.join(f.root, "late-history-input"); return value; };
-    await assert.rejects(f.owner.installationLease(f.root, () => assertNativeCaptureNotSourcePinned(f.root,
-      path.join(f.capture, "repository"), { readGeneration: late })), /ordinary local Git source custody/u);
-    assert.equal(proofReads, 1, "late ambient drift refuses the before-return fence");
-    delete process.env.GIT_GRAFT_FILE; proofReads = 0;
-    const finalRead = (id, n) => { const value = read(id, n); if (proofReads === 2) process.env.GIT_GRAFT_FILE = path.join(f.root, "final-history-input"); return value; };
-    await assert.rejects(f.owner.installationLease(f.root, () => assertNativeCaptureNotSourcePinned(f.root,
-      path.join(f.capture, "repository"), { readGeneration: finalRead })), /ordinary local Git source custody/u);
-    assert.equal(proofReads, 2, "second canonical read cannot introduce ambient history at return");
-    delete process.env.GIT_GRAFT_FILE; proofReads = 0;
-    const restoredIdentity = async (id, n) => { const value = read(id, n); if (proofReads === 2) await writeFile(path.join(generationRoot, "identity.json"), JSON.stringify(identity)); return value; };
-    await assert.rejects(f.owner.installationLease(f.root, () => assertNativeCaptureNotSourcePinned(f.root,
-      path.join(f.capture, "repository"), { readGeneration: restoredIdentity })), /generation custody changed/u);
-    await rm(path.join(generationRoot, "identity.json")); // Only this fixture's injected live identity.
-  } finally { if (priorGraft === undefined) delete process.env.GIT_GRAFT_FILE; else process.env.GIT_GRAFT_FILE = priorGraft; }
-  await writeFile(archivedManifest, Buffer.concat([manifest, Buffer.from(" ")]));
-  assert.equal((await f.owner.preview({ candidate: f.candidate })).status, "retained", "archive raw hash drift retains");
-  await writeFile(archivedManifest, manifest);
-  await writeFile(runtimeManifest, JSON.stringify({ ...JSON.parse(runtimeBytes), publicationRevision: "0".repeat(40) }));
-  assert.equal((await f.owner.preview({ candidate: f.candidate })).status, "retained", "wrong exact publication retains");
-  await writeFile(runtimeManifest, runtimeBytes);
-  const approved = [{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }];
-  const borrower = path.join(source, ".git"); await mkdir(path.join(borrower, "objects", "info"), { recursive: true });
-  await writeFile(path.join(borrower, "objects", "info", "alternates"), path.join(f.capture, "repository", ".git", "objects") + "\n");
-  await f.service.runApproved(approved);
-  assert.equal(nativeCalls, 0, "fresh effect guard must preserve a restored live borrower");
-  const first = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
-  assert.ok(!first?.metadata.captureArchive, "no archive/deletion authority from stale preview");
-  assert.equal(await readFile(path.join(source, "WIP", "useful.txt"), "utf8"), "retain this unique original source remainder");
-  assert.equal((await lstat(borrower)).isSymbolicLink(), false);
-  assert.equal(borrower, path.join(source, ".git"));
-  await rm(borrower, { recursive: true }); // Only this fixture's injected borrower.
-  let child;
-  for (let i = 0; i < 128; i++) {
-    await f.service.runApproved(approved);
-    const row = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
-    assert.ok(row); child ??= row.operationId; assert.equal(row.operationId, child);
-    if (row.status === "succeeded") break;
-    assert.equal(row.metadata.lastObservation?.status, "partial", JSON.stringify(row.metadata.lastObservation));
-    assert.ok(row.metadata.lastObservation.files > 0);
-  }
-  assert.equal(f.store.getReadonly(child).status, "succeeded");
-  await assert.rejects(lstat(path.join(f.capture, "repository")), { code: "ENOENT" });
-  assert.equal(await readFile(path.join(source, "source.mjs"), "utf8"), "export const retained = true;\n");
-  assert.equal(await readFile(path.join(source, "WIP", "useful.txt"), "utf8"), "retain this unique original source remainder");
-  assert.deepEqual(await readFile(archivedManifest), manifest);
-  assert.deepEqual(await readFile(path.join(archive, "checkpoint.json")), checkpoint);
-  assert.deepEqual(await readFile(runtimeManifest), runtimeBytes);
-  assert.deepEqual(await readFile(path.join(f.root, "current.json")), pointer);
-  assert.deepEqual(store.snapshot(operationId), before, "source custody proof is read-only under the original release");
-});
 
 
-test("retirement preserves historical original without granting current native result certification", { skip: process.platform !== "win32" }, async t => {
-  let nativeCalls = 0;
-  const f = await fixture(t, { historicalReplay: historicalReplayLines,
-    retire: async (...args) => { nativeCalls++; return retireSealedNativeCapture(...args); } });
-  const repository = path.join(f.capture, "repository"), stateFile = path.join(f.capture, "merge.json");
-  const recordFile = path.join(f.dataDir, "task-native-integrations", f.task.id, taskRepositoryKey(f.source), hash(f.originalId) + ".json");
-  const legacy = JSON.parse(await readFile(recordFile, "utf8"));
-  // Historical-record fixture: its old agreed base predates the shared prefix.
-  // The candidate stays the genuine automatic result produced by actual TaskGit.
-  // No current-admission success for that old agreed base is invented.
-  legacy.snapshot.baseCommit = f.historicalAgreedBase;
-  legacy.snapshot.gitBaseline.tree = f.historicalAgreedBase;
-  await writeFile(recordFile, JSON.stringify(legacy));
-  const stateBytes = await readFile(stateFile), recordBytes = await readFile(recordFile), pointer = await readFile(path.join(f.root, "current.json"));
-  const current = async gitPort => assertNativeMergedResults({ git: gitPort,
-    baseCommit: f.state.identity.before, tasks: [{ taskId: f.task.id, baseCommit: legacy.snapshot.baseCommit, resultCommit: f.state.identity.resultCommit }],
-    merges: f.state.merges, head: f.state.head, tree: legacy.targetTree, identity: f.state.identity });
-  const isCurrentRefusal = error => error.code === "RELEASE_SELECTED_CONTENT_MISSING";
-  await assert.rejects(current((args, options) => git(repository, args, options)), isCurrentRefusal);
-  const originals = await git(repository, ["cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)"]);
-  const preview = await f.owner.preview({ candidate: f.candidate }); assert.equal(preview.status, "eligible", JSON.stringify(preview));
-  const approved = [{ ownerId: "native-merge-transport", candidate: f.candidate, binding: preview.binding }];
-  const verification = f.taskGit.verifyNativeCaptureArchiveOwned.bind(f.taskGit);
-  // One real ordinary certification call models the old consumer AFTER its
-  // durable archive succeeded. It still refuses; no fake validator success.
-  f.taskGit.verifyNativeCaptureArchiveOwned = async args => {
-    f.taskGit.verifyNativeCaptureArchiveOwned = verification;
-    return verification({ ...args, retirementOperationId: null });
-  };
-  await f.service.runApproved(approved);
-  const first = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
-  assert.equal(first.outcome, "unknown"); assert.equal(nativeCalls, 0);
-  const archiveRow = f.store.getReadonly(first.metadata.captureArchiveIntent.operationId);
-  assert.equal(archiveRow.status, "succeeded");
-  const objects = new OwnedNativeObjectStore({ dataDir: f.dataDir, gitAt: git });
-  const archived = await objects.readArchive(archiveRow.metadata.archive), record = preview.binding.record;
-  await f.taskGit.withTaskLock(f.task.id, lease => assert.rejects(verification({ state: f.state, record, archive: archived, lease,
-    retirementOperationId: "foreign-original" })));
-  await f.taskGit.withTaskLock(f.task.id, lease => assert.rejects(verification({ state: f.state,
-    record: { ...record, sha256: "0".repeat(64) }, archive: archived, lease, retirementOperationId: first.operationId })));
-  assert.equal(nativeCalls, 0, "Foreign original/binding rejects without entering the native sink");
-  await f.taskGit.withTaskLock(f.task.id, lease => assert.rejects(verification({ state: f.state, record, archive: archived, lease }), isCurrentRefusal));
-  await writeFile(recordFile, Buffer.concat([recordBytes, Buffer.from(" ")]));
-  await f.service.runApproved(approved); assert.equal(nativeCalls, 0, "Changed raw original cannot become storage authority");
-  await writeFile(recordFile, recordBytes);
-  for (let batch = 0; batch < 128; batch++) {
-    await f.service.runApproved(approved);
-    const row = f.store.latestStorageArtifactReadonly("native-merge-transport", f.candidate.id);
-    assert.equal(row.operationId, first.operationId);
-    if (row.status === "succeeded") break;
-    assert.equal(row.metadata.lastObservation?.status, "partial", JSON.stringify(row.metadata.lastObservation));
-    assert.ok(row.metadata.lastObservation.files > 0);
-  }
-  const completed = f.store.getReadonly(first.operationId); assert.equal(completed.status, "succeeded");
-  assert.ok(nativeCalls > 0); await assert.rejects(lstat(repository), { code: "ENOENT" });
-  assert.equal(completed.metadata.captureArchive.operationId, archiveRow.operationId);
-  assert.equal(f.store.getReadonly(archiveRow.operationId).revision, archiveRow.revision, "No new archive/transfer or successful-original rewrite");
-  const retained = await objects.readArchive(completed.metadata.captureArchive);
-  assert.deepEqual(retained.manifest.objects, originals.split(/\r?\n/u).filter(Boolean).map(line => { const [oid, type] = line.split(" "); return { oid, type }; }).sort((a,b) => a.oid.localeCompare(b.oid)));
-  assert.equal(await git(objects.repository, ["show", f.state.identity.resultCommit + ":value-0.txt"]), "selected 0");
-  assert.equal(await git(objects.repository, ["show", f.state.head + ":replay.txt"]), historicalReplayLines.prefix.trimEnd());
-  await objects.withArchiveMath(retained.archive, math => assert.rejects(current((args, options) => git(math.repository, args, options)), isCurrentRefusal));
-  await f.taskGit.withTaskLock(f.task.id, lease => assert.rejects(verification({ state: f.state, record, archive: retained, lease }), isCurrentRefusal));
-  assert.deepEqual(await readFile(stateFile), stateBytes); assert.deepEqual(await readFile(recordFile), recordBytes);
-  assert.deepEqual(await readFile(path.join(f.root, "current.json")), pointer);
-});
 
 test("retirement still refuses a historical target with unreviewed native graph changes", { skip: process.platform !== "win32" }, async t => {
   let nativeCalls = 0;

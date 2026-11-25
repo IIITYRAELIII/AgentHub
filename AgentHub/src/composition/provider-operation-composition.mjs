@@ -7,6 +7,7 @@ import {
 } from "../domain/run-activity.mjs";
 import { taskRunKey } from "../domain/task-runs.mjs";
 import { providerThreadKey } from "../domain/workspace-stream-identity.mjs";
+import { runtimeCommandSpoolDirectory } from "../infrastructure/process/runtime-command.mjs";
 import { ClaudeEventService } from "../providers/claude/claude-event-service.mjs";
 import { isContextCompactionItem } from "../providers/codex/context-compaction-tracker.mjs";
 import { CodexEventService } from "../providers/codex/codex-event-service.mjs";
@@ -24,7 +25,6 @@ import {
   recoveredCodexAnswer,
 } from "../providers/codex/codex-task-snapshot-service.mjs";
 import { ClaudeCompletionService, CodexCompletionService } from "../providers/provider-completion-services.mjs";
-import { ClaudeRecoveryService, CodexRecoveryService } from "../providers/provider-recovery-services.mjs";
 import { ClaudeProviderTaskService, CodexProviderTaskService } from "../providers/provider-task-service.mjs";
 import { CodexTurnService, ProviderCancellationService } from "../providers/provider-turn-services.mjs";
 
@@ -38,10 +38,10 @@ export function createProviderOperationComposition({
   hubMcpService,
   mcpAdmissionCoordinator,
   saveState,
+  runtimeStateStore,
   taskProgress,
   taskObserver,
   managedRunLifecycle,
-  runRecovery,
   runCoordinator,
   turnTemporaryFiles,
   turnSpeechButtons,
@@ -56,6 +56,7 @@ export function createProviderOperationComposition({
   nameCreatedThread,
   activeProjectRoot,
   codexSandboxMode,
+  prepareVisualizationDirectory,
   codexModel,
   invalidateTaskCatalog,
   restoreCodexTaskSettings,
@@ -74,7 +75,6 @@ export function createProviderOperationComposition({
   persistClaudeRunHistory,
   projectClaudeRunToWorkLog,
   finalizeRunDelivery,
-  attachClaudeRunAfterRestart,
   readCodexTaskSnapshot,
   isCodex,
   autoApprove,
@@ -125,6 +125,7 @@ export function createProviderOperationComposition({
     bindCreatedThread,
     activeProjectRoot,
     sandboxMode: codexSandboxMode,
+    prepareVisualizationDirectory,
     model: codexModel,
     invalidateCatalog: invalidateTaskCatalog,
     restoreSettings: restoreCodexTaskSettings,
@@ -186,45 +187,16 @@ export function createProviderOperationComposition({
     removeFile: removeRuntimeFile,
     logError: (...args) => console.error(...args),
   });
-  const claudeRecoveryService = new ClaudeRecoveryService({
-    attach: attachClaudeRunAfterRestart,
-    finishInterrupted: (...args) => runRecovery().finishInterrupted(...args),
-  });
-  const codexRecoveryService = new CodexRecoveryService({
-    commandTrace,
-    retireLocalExecutionAfterReboot: (run) => managedRunLifecycle.retireLocalExecutionAfterReboot(run),
-    transportRunning: codexTransportRunning,
-    readTaskSnapshot: readCodexTaskSnapshot,
-    recoverInactiveRun: (run) => providerCancellationService.recoverCodex(run),
-    startTransport: startCodexTransport,
-    initialize: initializeCodex,
-    isCodex,
-    finishInterrupted: (...args) => runRecovery().finishInterrupted(...args),
-    readThread: readCodexThread,
-    autoApprove,
-    restartRequested,
-    finishProgress: (...args) => taskProgress().finish(...args),
-    completeRun: (run) => managedRunLifecycle.complete(run),
-    recoveredAnswer: recoveredCodexAnswer,
-    setProgressStage: (...args) => taskProgress().setStage(...args),
-    launchTurn,
-    reindexRun: (run, previous) => taskRuns.reindex(run, previous),
-    scheduleObservedRun: (...args) => taskObserver().schedule(...args),
-    startTyping,
-    saveState,
-    telegram,
-    consumeTracker: consumeTurnTokenTracker,
-    finalizeDelivery: finalizeCodexRunDelivery,
-    turnTokenUsage,
-  });
   const codexTurnService = new CodexTurnService({
     ensureThreadNamed: (reference) => nameCreatedThread({ ...reference, recovering: true }),
     sendRpc,
     sandboxMode: codexSandboxMode,
+    commandSpoolDirectory: runtimeCommandSpoolDirectory(),
     compactionRecycle: () => codexContextMaintenance.recycleInFlight,
     resolvedSkillNames: resolvedExplicitSkillNames,
     reindexRun: (run, previous) => taskRuns.reindex(run, previous),
     saveState,
+    checkpointDeferredRun: (run) => runtimeStateStore?.checkpointDeferredRun?.(run),
     startTyping,
     scheduleObservedRun: (...args) => taskObserver().schedule(...args),
     finishProgress: (...args) => taskProgress().finish(...args),
@@ -333,8 +305,6 @@ export function createProviderOperationComposition({
     claudeProviderTasks,
     codexCompletionService,
     claudeCompletionService,
-    claudeRecoveryService,
-    codexRecoveryService,
     codexTurnService,
     providerCancellationService,
     codexHubMcpBridgeRecovery,

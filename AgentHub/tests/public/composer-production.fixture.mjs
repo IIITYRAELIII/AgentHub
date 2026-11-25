@@ -2,6 +2,9 @@ import { readFile } from "node:fs/promises";
 import { after } from "node:test";
 import vm from "node:vm";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
+
+const { renderThemeHtml } = createRequire(import.meta.url)("../../theme-registry.cjs");
 
 const WEB_APP_ROOT = process.env.AGENT_HUB_TEST_WEB_APP_ROOT
   ? pathToFileURL(`${process.env.AGENT_HUB_TEST_WEB_APP_ROOT.replace(/[\\/]+$/u, "")}/`)
@@ -203,18 +206,24 @@ async function openFixture(page, {
   chunkedUpload = false,
   attachmentStorageOpenFailure = false,
   surface = "vscode",
+  localWeb = false,
   directTransport = false,
   webAppRoot = WEB_APP_ROOT,
   assetOverrides = {},
+  initialHash = "",
+  themeRegistry = null,
+  followSelection = false,
+  tracePageReader = null,
 } = {}) {
   const diagnostics = [];
   page.on("pageerror", (error) => diagnostics.push(error.message));
   page.on("console", (message) => {
     if (message.type() === "error") diagnostics.push(message.text());
   });
+  if (tracePageReader) await page.exposeFunction("__fixtureTracePageReader", tracePageReader);
   await page.addInitScript(({
     initialSnapshot, initialHistory, initialDrafts, authorityAvailable, holdAuthority, attachmentOpenFailure,
-    transportSurface, direct,
+    transportSurface, direct, followSelection,
   }) => {
     // Opening the attachment database fails. This covers only the open step:
     // the product treats that rejection as "not durable". The error code is set
@@ -357,24 +366,64 @@ async function openFixture(page, {
         let result = {};
         let error = "";
         if (message.action === "snapshot") result = fixture.snapshot;
+        else if (message.action === "select-task") {
+          const tasks = fixture.snapshot.tasks ?? fixture.snapshot.collectionDeltas?.conversations?.reset ?? [];
+          const selected = tasks.find((entry) => (
+            (!message.params.streamId || entry.streamId === message.params.streamId)
+            && entry.provider === message.params.provider && entry.threadId === message.params.threadId
+          ));
+          if (!selected) {
+            ok = false;
+            error = "Поток не найден в локальном каталоге";
+          } else {
+            const selectionChanged = selected.selected !== true;
+            const selectedTasks = tasks.map((entry) => ({ ...entry, selected: entry === selected }));
+            if (fixture.snapshot.tasks) fixture.snapshot.tasks = selectedTasks;
+            else fixture.snapshot.collectionDeltas.conversations.reset = selectedTasks;
+            fixture.snapshot.selected = { ...fixture.snapshot.selected,
+              streamId: selected.streamId, provider: selected.provider, threadId: selected.threadId };
+            result = message.params.deferSnapshot === true
+              ? { selectionChanged, snapshotDeferred: true }
+              : { ...fixture.snapshot, selectionChanged };
+          }
+        }
+        else if (message.action === "task-history" && message.params.tracePage
+          && typeof window.__fixtureTracePageReader === "function") {
+          void window.__fixtureTracePageReader(message.params).then(
+            result => respond({ id: message.id, result }),
+            failure => respond({ id: message.id, ok: false, error: String(failure?.message ?? failure) }),
+          );
+          return;
+        }
         else if (message.action === "open-task" || message.action === "task-history") {
           const streamId = message.params.streamId
             || fixture.snapshot.tasks.find((entry) => entry.provider === message.params.provider
               && entry.threadId === message.params.threadId)?.streamId
             || null;
-          const fixtureHistoryMatches = fixture.history?.provider === message.params.provider
-            && fixture.history?.threadId === message.params.threadId
-            && fixture.history?.streamId === streamId;
-          const history = fixtureHistoryMatches ? fixture.history : {
-            provider: message.params.provider,
-            threadId: message.params.threadId,
-            streamId,
-            items: [], start: 0, end: 0, total: 0, messageTotal: 0,
-            nextBefore: null, version: "empty",
-          };
-          result = message.action === "task-history"
-            ? history
-            : { history, snapshot: fixture.snapshot };
+          if (followSelection && ["open-task", "select-task"].includes(message.action)) {
+            for (const task of fixture.snapshot.tasks) task.selected = task.streamId === streamId;
+            fixture.snapshot.selected = { ...fixture.snapshot.selected, streamId,
+              provider: message.params.provider, threadId: message.params.threadId };
+          }
+          if (message.action === "select-task") {
+            result = message.params.deferSnapshot
+              ? { selectionChanged: true, snapshotDeferred: true }
+              : fixture.snapshot;
+          } else {
+            const fixtureHistoryMatches = fixture.history?.provider === message.params.provider
+              && fixture.history?.threadId === message.params.threadId
+              && fixture.history?.streamId === streamId;
+            const history = fixtureHistoryMatches ? fixture.history : {
+              provider: message.params.provider,
+              threadId: message.params.threadId,
+              streamId,
+              items: [], start: 0, end: 0, total: 0, messageTotal: 0,
+              nextBefore: null, version: "empty",
+            };
+            result = message.action === "task-history"
+              ? history
+              : { history, snapshot: fixture.snapshot };
+          }
         } else if (message.action === "upload-attachment") {
           fixture.uploadSequence += 1;
           localStorage.setItem("fixture:upload-sequence", String(fixture.uploadSequence));
@@ -421,13 +470,18 @@ async function openFixture(page, {
     authorityAvailable: recoveryAuthorityAvailable,
     holdAuthority: holdRecoveryAuthority,
     attachmentOpenFailure: attachmentStorageOpenFailure,
-    transportSurface: surface, direct: directTransport,
+    transportSurface: surface, direct: directTransport, followSelection,
   });
   const uploads = new Map();
+  const origin = localWeb ? "http://127.0.0.1" : "http://agent-hub.test";
   await page.route("**/*", async (route) => {
     const requestUrl = new URL(route.request().url());
-    if (requestUrl.hostname !== "agent-hub.test") {
+    if (requestUrl.origin !== origin) {
       await route.abort();
+      return;
+    }
+    if (localWeb && requestUrl.pathname === "/api/local-session") {
+      await route.fulfill({ status: 204 });
       return;
     }
     if (requestUrl.pathname === "/api/attachment-upload") {
@@ -495,20 +549,36 @@ async function openFixture(page, {
       return;
     }
     if (requestUrl.pathname === "/api/snapshot") {
-      const value = await page.evaluate(() => window.__agentHubFixture.snapshot);
+      let value;
+      try { value = await page.evaluate(() => window.__agentHubFixture.snapshot); }
+      catch (error) {
+        if (!String(error.message).includes("Execution context was destroyed")) throw error;
+        await route.abort("aborted");
+        return;
+      }
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(value) });
       return;
     }
     if (requestUrl.pathname === "/api/control") {
       const message = route.request().postDataJSON();
-      const outcome = await page.evaluate((request) => new Promise((resolve) => {
+      let outcome;
+      try {
+        outcome = await page.evaluate((request) => new Promise((resolve) => {
         const listener = (event) => {
           if (event.data?.type !== "agenthub:control-result" || event.data.id !== request.commandId) return;
           window.removeEventListener("message", listener); resolve(event.data);
         };
         window.addEventListener("message", listener);
         window.__fixtureBridge.postMessage({ ...request, id: request.commandId, transport: "http" });
-      }), message);
+        }), message);
+      } catch (error) {
+        // A real document reload retires its pending read listeners. Abort that
+        // fixture transport, never fabricate an accepted business response.
+        if (!["snapshot", "task-history", "select-task", "runtime-health"].includes(message.action)
+          || !String(error.message).includes("Execution context was destroyed")) throw error;
+        await route.abort("aborted");
+        return;
+      }
       await route.fulfill({ status: outcome.ok === false ? 400 : 200, contentType: "application/json", body: JSON.stringify(outcome) });
       return;
     }
@@ -526,7 +596,8 @@ async function openFixture(page, {
     }
     if (requestUrl.pathname === "/") {
       const source = assetOverrides["index.html"] ?? await readFile(new URL("index.html", webAppRoot), "utf8");
-      const body = source
+      const themedSource = themeRegistry ? renderThemeHtml(source, themeRegistry) : source;
+      const body = themedSource
         .replace(/\s*<script src="https:\/\/telegram\.org\/[^>]+><\/script>/u, "")
         .replace(/\s*<script src="\/browser-device-auth\.js" defer><\/script>/u, "")
         .replace("<!-- agent-hub-theme-catalog -->", `<script type="application/json" data-theme-catalog>${TEST_THEME_CATALOG}</script>`);
@@ -552,7 +623,7 @@ async function openFixture(page, {
       await route.fulfill({ status: 404, body: "Not found" });
     }
   });
-  await page.goto("http://agent-hub.test/", { waitUntil: "load" });
+  await page.goto(`${origin}/${initialHash}`, { waitUntil: "load" });
   if (expectedTaskId) {
     try {
       await page.waitForFunction((taskId) => document.querySelector(`[data-stream-task-id='${taskId}']`), expectedTaskId, {

@@ -3,24 +3,19 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 
-import { RELEASE_WORKFLOW_DEVELOPER_RULES } from "../../src/domain/workspace-release-workflow.mjs";
 
 async function workflowApi() {
   const source = await readFile(
-    new URL("../../assets/web-app/workspace-release-workflow.js", import.meta.url),
+    new URL("../../assets/web-app/workspace-task-workflow.js", import.meta.url),
     "utf8",
   );
   const window = {};
   vm.runInNewContext(source, { window });
-  return window.AgentHubWorkspaceReleaseWorkflow;
+  return window.AgentHubWorkspaceTaskWorkflow;
 }
 
-test("provider release instructions retain their English language contract", () => {
-  assert.ok(RELEASE_WORKFLOW_DEVELOPER_RULES.trim());
-  assert.doesNotMatch(RELEASE_WORKFLOW_DEVELOPER_RULES, /[А-Яа-яЁё]/u);
-});
 
-test("release workflow renders every rule as a visible tooltip paragraph", async () => {
+test("Task workflow renders every rule as a visible tooltip paragraph", async () => {
   const workflow = await workflowApi();
   let children = [{ textContent: "Stale tooltip" }];
   const container = {

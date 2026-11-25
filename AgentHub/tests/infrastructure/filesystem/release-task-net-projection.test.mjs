@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { releaseTaskNetProjections } from "../../../src/infrastructure/filesystem/release-task-net-projection.mjs";
-import { ReleaseGitWorkspaceService } from "../../../src/infrastructure/filesystem/release-git-workspace.mjs";
+import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
 
 const exec = promisify(execFile);
 async function fixture(t, revisions = 2) {
@@ -71,7 +71,7 @@ test("retained 16-integration projection proof does not admit its historical dev
   const proofs = await releaseTaskNetProjections({ tasks: [f.task], baseCommit: f.main, git: f.git });
   assert.equal(proofs.get("task")?.parent, f.main);
   assert.deepEqual(proofs.get("task").paths, ["README.md", "app.txt"]);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(f.root, "data") });
   await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: f.main, planRevision: "net-16", frozenTasks: [f.task],
   }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
@@ -91,7 +91,7 @@ test("historical sibling-base proof does not authorize a non-descendant native T
   const task = { ...f.task, baseCommit: equivalentBase };
   const proofs = await releaseTaskNetProjections({ tasks: [task], baseCommit: approved, git: f.git });
   assert.equal(proofs.get(task.taskId)?.orderPreserving, true);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data-equivalent-base") });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(f.root, "data-equivalent-base") });
   await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: approved,
     planRevision: "path-equivalent-base", frozenTasks: [task],
@@ -111,7 +111,7 @@ test("foreign unpublished same-file ancestry cannot enter net projection or bypa
   await f.integrate(f.task.resultCommit);
   await f.git(["checkout", "main"]);
   assert.equal((await releaseTaskNetProjections({ tasks: [f.task], baseCommit: f.main, git: f.git })).size, 0);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(f.root, "data") });
   await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: f.main, planRevision: "foreign", frozenTasks: [f.task],
   }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
@@ -187,7 +187,7 @@ test("retained reopened projection proofs cannot grant fresh native admission to
   const proofs = await releaseTaskNetProjections({ tasks, baseCommit: reopened.approved, git: f.git });
   assert.deepEqual([...proofs.keys()], ["task", "maintenance"]);
   assert.deepEqual(proofs.get("maintenance").paths, ["fix.txt"]);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(f.root, "data") });
   await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: reopened.approved, planRevision: "reopened", frozenTasks: tasks,
   }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
@@ -209,7 +209,7 @@ test("published integration metadata cannot strip unselected ancestry from a nat
     tasks: [reopened.task], baseCommit: reopened.approved, git: f.git,
   })).size, 0);
   const expectedMain = await f.git(["show", `${reopened.approved}:app.txt`]);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data") });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(f.root, "data") });
   await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: reopened.approved,
     planRevision: "published-integration", frozenTasks: [reopened.task],
@@ -262,7 +262,7 @@ test("retained interval-safe projection cannot authorize a combined native resul
   const proofs = await releaseTaskNetProjections({ tasks, baseCommit: f.main, git: f.git });
   assert.equal(proofs.get("task")?.orderPreserving, true);
   assert.equal(Math.max(...f.task.integrations.map(({ order }) => order)), 3);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(f.root, "data-interval") });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(f.root, "data-interval") });
   await assert.rejects(service.prepareCandidate({
     projectRoot: f.primary, approvedBaseCommit: f.main, planRevision: "interval-safe", frozenTasks: tasks,
   }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
@@ -449,7 +449,7 @@ test("native release rejects unselected dev baggage and accepts the exact owned 
     ],
   };
   assert.equal((await releaseTaskNetProjections({ tasks: [task], baseCommit: approved, git })).size, 0);
-  const service = new ReleaseGitWorkspaceService({ dataDir: path.join(root, "data") });
+  const service = new TaskIntegrationGitService({ dataDir: path.join(root, "data") });
   await assert.rejects(service.prepareCandidate({
     projectRoot: primary, approvedBaseCommit: approved, planRevision: "unselected-dev-side", frozenTasks: [task],
   }), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });

@@ -20,6 +20,8 @@ import { isCodexAutoCompactionTurnId } from "../../domain/codex-internal-turn.mj
 import { interstreamDisplayText, interstreamOriginAuthor, normalizeInterstreamOrigin } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
 import { taskRunIsActive, updateTaskRunTitle } from "../../domain/task-runs.mjs";
+import { codexRolloutLatestAnswer } from "../../providers/codex/codex-turn-answers.mjs";
+import { normalizedCodexResponseAnnotationReferences } from "../../domain/codex-response-annotation.mjs";
 
 const RENAMED_TURN_WINDOW_MS = 5 * 60 * 1000;
 
@@ -362,8 +364,15 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
       .filter((message) => message.text || message.attachments?.length || message.attachmentSources?.length);
     const users = projectedMessages.filter((message) => message.role === "user");
     const finalAnswer = String(finalMessages[id] ?? "").trim();
-    const latestAnswer = String(latestMessages[id] ?? "").trim();
+    const latestAnswer = codexRolloutLatestAnswer(activity, id);
     const answer = finalAnswer || latestAnswer;
+    // The activity owner has already projected the marker text. Keep its
+    // paired coordinates instead of reparsing the readable "Цитата N" labels.
+    const responseAnnotationReferences = normalizedCodexResponseAnnotationReferences(
+      !finalAnswer && activity.latestAgentMessages?.[id]
+        ? activity.latestAgentMessages[id].responseAnnotationReferences
+        : activity.responseAnnotationReferences?.[id],
+    );
     const generatedImages = (Array.isArray(generatedImageSources[id])
       ? generatedImageSources[id]
       : []).filter((item) => ["generated-path", "display-path"].includes(item?.type))
@@ -377,11 +386,13 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
     ? [...projectedMessages]
       : [{ itemId: `${id}:rollout-user:placeholder`, role: "user", text: prompt }];
     if (answer) {
+      const responseItem = !completed ? activity.latestAgentMessages?.[id] : null;
       messages.push({
-        itemId: `${id}:rollout-agent:${completed ? "final" : "latest"}`,
+        itemId: responseItem?.id || `${id}:rollout-agent:${completed ? "final" : "latest"}`,
         role: "agent",
         text: answer,
-        ...(completed ? { phase: "final_answer" } : {}),
+        ...(completed ? { phase: "final_answer" } : responseItem ? { phase: responseItem.phase } : {}),
+        responseAnnotationReferences: structuredClone(responseAnnotationReferences),
         ...(generatedImages.length ? { attachmentSources: generatedImages } : {}),
       });
     } else if (generatedImages.length) {
@@ -398,6 +409,7 @@ export function codexRolloutHistory(activity = {}, { userAuthor = "" } = {}) {
       id,
       prompt,
       answer,
+      responseAnnotationReferences: structuredClone(responseAnnotationReferences),
       status: completed ? "completed" : active ? "inProgress" : "stopped",
       active,
       completed,
@@ -574,13 +586,25 @@ export class TaskViewController {
         === String(identity?.threadId ?? "").toLowerCase();
   }
 
-  async readHistory(binding, { completedOnly = false, cachedOnly = false, limit = null, repairSubagentTurnIds = [], tracePage = null } = {}) {
+  async readHistory(binding, { completedOnly = false, cachedOnly = false, limit = null, repairSubagentTurnIds = [], tracePage = null, traceTiming } = {}) {
     const d = this.deps;
     if (tracePage) {
       if (binding.provider !== "codex") throw new Error("Trace detail is only available for Codex");
-      const file = await d.findCodexRolloutPath?.(binding.threadId, "");
-      if (!file) throw new Error("Trace source unavailable");
-      return d.readCodexTracePage(file, tracePage);
+      const started = performance.now();
+      let file;
+      try {
+        file = await d.findCodexRolloutPath?.(binding.threadId, "");
+        if (!file) throw new Error("Trace source unavailable");
+      } catch (error) {
+        traceTiming?.("trace-source-locate", "failed", performance.now() - started);
+        throw error;
+      }
+      traceTiming?.("trace-source-locate", "succeeded", performance.now() - started);
+      return d.readCodexTracePage(file, tracePage, traceTiming && ((timing, outcome) => {
+        if (!timing) return;
+        traceTiming("trace-worker-wait", "succeeded", timing.queueWaitMs);
+        traceTiming("trace-source-read", outcome, timing.readMs);
+      }));
     }
     const task = this.task(binding, binding.chatId);
     const detachedThread = d.workspaceCatalogStore?.thread?.({

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { markProviderTurnRequested } from "../../../src/domain/task-runs.mjs";
 
 import {
   configureRuntimeDatabase,
@@ -298,3 +299,93 @@ test("legacy deferred intake is dual-read and migrated into the command ledger",
   assert.deepEqual(restoredItem, migratedItem);
 });
 
+test("exact dispatch is durable independently of the global snapshot and refuses a conflicting writer", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "hub-dispatch-"));
+  const { messageCommandLedgerPath } = await import("../../../src/infrastructure/persistence/message-command-ledger-store.mjs");
+  const command = messageCommandFixture({ item: { temporaryFiles: ["original-attachment"] } });
+  const other = messageCommandFixture({
+    clientUserMessageId: "independent-command",
+    itemId: "other-item",
+    item: { threadId: "other-thread" },
+  });
+  const store = new RuntimeStateStore({ dataDir });
+  let reopened;
+  context.after(async () => {
+    await store.close();
+    await reopened?.close();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+  await store.save({ marker: "prior snapshot" });
+  for (const input of [command, other]) await store.saveDeferredIntake({ ...input, destination: "queued" });
+  const otherBefore = store.messageCommand(other.item.clientUserMessageId);
+  const item = {
+    ...command.item,
+    dispatchingAt: "2026-08-24T06:00:04.000Z",
+    deliveryTarget: { provider: "codex", threadId: "next-thread", streamId: "next-stream" },
+  };
+  const conflict = { code: "ERR_DEFERRED_DISPATCH_CONFLICT" };
+  assert.throws(() => store.reserveDeferredDispatch({ ...item, threadId: "foreign-thread" }, command.receipt), conflict);
+  assert.throws(() => store.reserveDeferredDispatch(item, {
+    ...command.receipt, result: { ...command.receipt.result, providerAccepted: true },
+  }), conflict);
+  assert.throws(() => store.reserveDeferredDispatch({ ...item, manualPaused: true }, command.receipt), conflict);
+  assert.equal(store.reserveDeferredDispatch({ ...item, clientUserMessageId: "legacy" }, null), false);
+
+  const blocker = new DatabaseSync(messageCommandLedgerPath(dataDir));
+  try {
+    blocker.exec("BEGIN IMMEDIATE");
+    assert.throws(() => store.reserveDeferredDispatch(item, command.receipt), /database is locked/u);
+    assert.equal(store.messageCommand(item.clientUserMessageId).state, "queued");
+  } finally {
+    blocker.close();
+  }
+
+  const run = {
+    id: "exact-run", provider: "codex", threadId: item.threadId, status: "running",
+    clientUserMessageId: item.clientUserMessageId,
+  };
+  const releaseSnapshot = holdRuntimeWriteLock(dataDir);
+  const snapshot = store.save({ marker: "next snapshot", payload: "x".repeat(1_000_000) });
+  try {
+    assert.equal(store.reserveDeferredDispatch(item, command.receipt), true);
+    assert.equal(readRawRuntimeState(dataDir).marker, "prior snapshot");
+    assert.deepEqual(store.messageCommand(other.item.clientUserMessageId), otherBefore);
+    assert.throws(() => store.reserveDeferredDispatch(item, command.receipt), conflict);
+    assert.equal(store.checkpointDeferredRun({ ...run }), false, "direct provider launch uses its existing fence");
+    item.dispatchingRunId = run.id;
+    assert.throws(() => store.checkpointDeferredRun({ ...run, threadId: "another-thread" }, item), conflict);
+    assert.equal(store.checkpointDeferredRun(run, item), true);
+    assert.equal(store.read().activeRuns[0].id, run.id);
+    markProviderTurnRequested(run);
+    assert.equal(store.checkpointDeferredRun(run), true);
+    assert.equal(store.read().activeRuns[0].providerStart.state, "requesting");
+  } finally {
+    releaseSnapshot();
+    await snapshot;
+  }
+  await store.close();
+
+  reopened = new RuntimeStateStore({ dataDir });
+  const restored = await reopened.load();
+  const row = reopened.messageCommand(item.clientUserMessageId);
+  const restoredItem = restored.value.queuedInputs.find(entry => entry.id === item.id);
+  assert.equal(row.state, "dispatching");
+  assert.equal(restoredItem.dispatchingAt, item.dispatchingAt);
+  assert.deepEqual(restoredItem.deliveryTarget, item.deliveryTarget);
+  assert.deepEqual(restoredItem.temporaryFiles, item.temporaryFiles);
+  assert.equal(restoredItem.clientUserMessageId, item.clientUserMessageId);
+  assert.equal(restoredItem.dispatchingRunId, run.id);
+  assert.deepEqual(restored.value.activeRuns, [run]);
+  const acceptedRun = {
+    ...run, turnId: "provider-turn",
+    providerStart: { ...run.providerStart, state: "accepted-awaiting-first-event", turnId: "provider-turn" },
+  };
+  await reopened.save({ activeRuns: [acceptedRun] });
+  assert.deepEqual(reopened.read().activeRuns, [acceptedRun]);
+  assert.equal(reopened.messageCommand(item.clientUserMessageId).state, "started");
+  const final = {
+    ...command.receipt, result: { accepted: true, steered: true, turnId: "provider-turn" },
+  };
+  await reopened.save({ activeRuns: [], desktopMessageReceipts: [final] });
+  assert.deepEqual(reopened.read().activeRuns, []);
+});

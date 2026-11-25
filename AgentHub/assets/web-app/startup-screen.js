@@ -2,7 +2,7 @@ import {
   createVisibilityBoundAnimation,
   createStartupDisconnectedModel,
   createStartupScreenModel,
-  restartWaitFailed,
+  restartWaitSettled,
   formatStartupElapsed,
   shouldShowStartupScreen,
 } from "./startup-screen-model.js";
@@ -45,6 +45,7 @@ screen.innerHTML = `
           <span class="hub-startup-meta-separator"></span>
           <span class="hub-startup-stage-count">0 из 0 этапов</span>
         </div>
+        <p class="hub-startup-connection-status"></p>
       </div>
     </section>
     <section class="hub-startup-completed">
@@ -84,6 +85,7 @@ const eyebrow = screen.querySelector(".hub-startup-eyebrow");
 const title = screen.querySelector(".hub-startup-title");
 const timer = screen.querySelector(".hub-startup-timer");
 const stageCount = screen.querySelector(".hub-startup-stage-count");
+const connectionStatus = screen.querySelector(".hub-startup-connection-status");
 const completedSection = screen.querySelector(".hub-startup-completed");
 const completedList = screen.querySelector(".hub-startup-completed-list");
 const queueSection = screen.querySelector(".hub-startup-queue");
@@ -134,6 +136,7 @@ let segments = [];
 let renderedCompleted = [];
 let renderedQueue = "";
 let currentModel = null;
+let confirmedModel = null;
 let currentOperationId = "";
 let modelGeneration = 0;
 let hadStartup = false;
@@ -144,6 +147,11 @@ let stopped = false;
 let lastStartupStartedAtMs = 0;
 let restartExpected = false;
 let waitingSinceMs = 0;
+let healthEpoch = 0;
+let activeHealth = null;
+let refreshPending = false;
+let workingObservation = null;
+let workingPaintStarted = 0;
 
 const ACTIVE_POLL_MS = 500;
 const READY_POLL_MS = 1_500;
@@ -264,6 +272,10 @@ function applyModel(model) {
   timer.textContent = model.elapsed;
   stageCount.textContent = model.stageLabel
     ?? `${model.stageNumber} из ${model.stageTotal} этапов`;
+  connectionStatus.textContent = model.connectionStatus ?? "";
+  if (model.stale && Number(model.lastConfirmedAtMs) > 0) {
+    connectionStatus.textContent += ` Последний ответ: ${new Date(model.lastConfirmedAtMs).toLocaleTimeString("ru-RU")}.`;
+  }
   errorsList.replaceChildren(...(model.failedOperations ?? []).map((operation) => {
     const detail = document.createElement("p");
     detail.textContent = `${operation.label}: ${operation.error || "Этап не завершён. Повторите или перезапустите Хаб."}`;
@@ -279,6 +291,36 @@ function applyModel(model) {
   root.dataset.hubStartupScreen = model.failed ? "failed" : "visible";
   screen.hidden = false;
   horizonAnimation.start();
+  recordProjectedPaint(model);
+}
+
+function recordProjectedPaint(model) {
+  const observation = model.healthObservation;
+  if (!observation || model.connectionLost) return;
+  try {
+    const paintedGeneration = modelGeneration;
+    const hidden = screen.hidden;
+    window.AgentHubCommandTrace?.afterPaint("ui-render", "startup-health-paint", observation.started, observation.id,
+      { httpRequestId: observation.id, clientAssetRevision: "startup-stale.v2" },
+      () => ({ outcome: paintedGeneration === modelGeneration && !stopped && screen.hidden === hidden ? "succeeded" : "cancelled",
+        metadata: { render: paintedGeneration === modelGeneration ? "current" : "superseded" } }));
+  } catch { /* Diagnostics are not startup authority. */ }
+}
+
+function recordFirstWorkingPaint() {
+  const observation = workingObservation;
+  const trace = window.AgentHubCommandTrace;
+  if (!observation || observation.pending || !trace || stopped || !screen.hidden
+    || root.dataset.connection !== "online" || document.hidden) return;
+  const epoch = healthEpoch;
+  observation.pending = trace.afterPaint("ui-render", "startup-first-working-paint", observation.navigationStarted,
+    observation.id, { httpRequestId: observation.id, clientAssetRevision: "startup-stale.v2" },
+    null, () => !stopped && epoch === healthEpoch && workingObservation === observation
+      && screen.hidden && root.dataset.connection === "online",
+    outcome => {
+      observation.pending = false;
+      if (outcome === "succeeded" && workingObservation === observation) workingObservation = null;
+    });
 }
 
 function revealCurrentOperation() {
@@ -319,7 +361,19 @@ function hideScreen() {
 
 function scheduleRefresh(delayMs) {
   window.clearTimeout(pollTimer);
+  if (stopped) return;
+  if (activeHealth) { refreshPending = true; return; }
   pollTimer = window.setTimeout(refresh, delayMs);
+}
+
+function invalidateHealth() {
+  healthEpoch += 1;
+  workingObservation = null;
+  activeHealth?.controller.abort();
+  activeHealth = null;
+  refreshPending = false;
+  window.clearTimeout(pollTimer);
+  clearConnectionTimer();
 }
 
 function clearConnectionTimer() {
@@ -327,12 +381,20 @@ function clearConnectionTimer() {
   connectionTimer = 0;
 }
 
+function recordHealth(action, started, request, outcome = "succeeded", metadata = {}) {
+  if (!request.id || !request.trace && outcome === "succeeded") return;
+  try {
+    window.AgentHubCommandTrace?.record("ui-control", action, performance.now() - started, request.id,
+      { httpRequestId: request.id, clientAssetRevision: "startup-stale.v2", ...metadata }, Date.now(), outcome);
+  } catch { /* A diagnostic failure cannot alter health or UI ownership. */ }
+}
+
 function showDisconnectedState({ force = false, responding = false } = {}) {
   // A delayed/failed health read does not revoke a previously proven ready
   // runtime. The ordinary connection banner owns connection diagnostics.
-  if (currentModel?.ready && !restartExpected) return;
+  if (confirmedModel?.ready && !restartExpected) return;
   waitingSinceMs ||= Date.now();
-  const disconnectedModel = createStartupDisconnectedModel(currentModel, {
+  const disconnectedModel = createStartupDisconnectedModel(confirmedModel, {
     restarting: restartExpected,
     responding,
     sinceMs: waitingSinceMs,
@@ -342,28 +404,72 @@ function showDisconnectedState({ force = false, responding = false } = {}) {
 
 async function refresh() {
   if (stopped) return;
+  if (activeHealth) { refreshPending = true; return; }
+  const request = { epoch: healthEpoch, controller: new AbortController(), id: window.AgentHubCommandTrace?.newId() ?? null,
+    trace: !confirmedModel?.ready || restartExpected };
+  const started = performance.now();
+  let outcome = "failed";
+  activeHealth = request;
+  refreshPending = false;
+  const isCurrent = () => !stopped && activeHealth === request && request.epoch === healthEpoch;
   let delay = ACTIVE_POLL_MS;
   clearConnectionTimer();
-  connectionTimer = window.setTimeout(showDisconnectedState, CONNECTION_STALE_MS);
+  connectionTimer = window.setTimeout(() => { if (isCurrent()) showDisconnectedState(); }, CONNECTION_STALE_MS);
   try {
     let health;
     const readAuthenticated = window.__agentHubStartupRuntimeHealth;
     if (typeof readAuthenticated === "function") {
-      try { health = await readAuthenticated(); } catch { /* Public fallback grants no error disclosure. */ }
+      const authStarted = performance.now();
+      try {
+        health = await readAuthenticated(request.id);
+        recordHealth("startup-health-authenticated", authStarted, request,
+          typeof health?.ready === "boolean" ? "succeeded" : "failed");
+      } catch {
+        recordHealth("startup-health-authenticated", authStarted, request, "failed");
+        // The unauthenticated fallback grants no error disclosure.
+      }
+      if (!isCurrent()) return;
     }
-    if (!health || typeof health.ready !== "boolean") {
-      const response = await fetch("/health", { cache: "no-store" });
+    if (typeof health?.ready !== "boolean") {
+      const headersStarted = performance.now();
+      const url = request.id ? `/health?clientTraceId=${encodeURIComponent(request.id)}` : "/health";
+      const response = await fetch(url, { cache: "no-store", signal: request.controller.signal });
+      recordHealth("startup-health-headers", headersStarted, request, response.ok ? "succeeded" : "failed", { statusCode: response.status });
+      if (!isCurrent()) return;
       if (!response.ok) throw new Error(`health ${response.status}`);
-      health = await response.json();
+      const bodyStarted = performance.now();
+      try {
+        health = await response.json();
+        recordHealth("startup-health-body", bodyStarted, request);
+      } catch (error) {
+        recordHealth("startup-health-body", bodyStarted, request, "failed",
+          { failureKind: error?.name === "AbortError" ? "aborted" : "error" });
+        throw error;
+      }
     }
+    if (!isCurrent()) return;
     clearConnectionTimer();
-    if (restartExpected && restartWaitFailed(health, waitingSinceMs)) {
+    if (typeof health?.ready !== "boolean") throw new Error("Missing readiness");
+    const observedGeneration = Number(health?.startup?.startedAtMs) || 0;
+    const hasStages = Boolean(health?.startup?.operations?.length);
+    const olderGeneration = observedGeneration > 0 && observedGeneration < lastStartupStartedAtMs;
+    const incompleteProgress = !health.ready && !hasStages && confirmedModel?.operations?.length && !confirmedModel.ready
+      && (!observedGeneration || observedGeneration <= lastStartupStartedAtMs);
+    if (olderGeneration || incompleteProgress) {
+      outcome = "cancelled";
+      showDisconnectedState();
+      return;
+    }
+    outcome = "succeeded";
+    if (restartExpected && restartWaitSettled(health, waitingSinceMs)) {
       restartExpected = false;
       waitingSinceMs = 0;
       hideScreen();
       hadStartup = false;
     }
     const model = createStartupScreenModel(health);
+    request.trace ||= !model.ready;
+    model.healthObservation = request.trace ? { id: request.id, started } : null;
     const failures = model.ready ? (model.operations ?? []).filter((operation) => operation.state === "failed") : [];
     diagnostics.hidden = failures.length === 0;
     diagnosticSummary.textContent = failures.length
@@ -375,20 +481,27 @@ async function refresh() {
     }));
     diagnosticRetry.disabled = recoveryPending;
     const replacementStartup = restartExpected
-      && !model.ready
       && lastStartupStartedAtMs > 0
-      && Number(model.startedAtMs) !== Number(lastStartupStartedAtMs);
+      && observedGeneration > lastStartupStartedAtMs;
     if (replacementStartup) restartExpected = false;
     if (!restartExpected) waitingSinceMs = 0;
     if (restartExpected) {
       showDisconnectedState({ force: true, responding: true });
     } else if (model.ready) {
+      const newGeneration = lastStartupStartedAtMs > 0 && observedGeneration > lastStartupStartedAtMs;
+      if (newGeneration) workingObservation = null;
+      if (request.id && (!confirmedModel?.ready || request.trace || newGeneration) && !workingObservation) {
+        workingObservation = { id: request.id, navigationStarted: workingPaintStarted };
+      }
+      confirmedModel = model;
       currentModel = model;
-      lastStartupStartedAtMs = model.startedAtMs;
+      lastStartupStartedAtMs = observedGeneration || lastStartupStartedAtMs;
       hadStartup = false;
       window.clearTimeout(hideTimer);
       hideTimer = 0;
       hideScreen();
+      recordProjectedPaint(model);
+      recordFirstWorkingPaint();
       delay = READY_POLL_MS;
     } else if (!model.available) {
       hideScreen();
@@ -401,41 +514,59 @@ async function refresh() {
       hideScreen();
       delay = READY_POLL_MS;
     } else {
+      if (confirmedModel?.ready) workingObservation = null;
       hadStartup = true;
-      lastStartupStartedAtMs = model.startedAtMs;
+      lastStartupStartedAtMs = observedGeneration || lastStartupStartedAtMs;
+      confirmedModel = model;
       showModel(model);
       window.clearTimeout(hideTimer);
       hideTimer = 0;
     }
   } catch {
+    if (!isCurrent()) return;
     clearConnectionTimer();
     showDisconnectedState();
     delay = RETRY_POLL_MS;
+  } finally {
+    recordHealth("startup-health-read", started, request, isCurrent() ? outcome : "cancelled");
+    if (isCurrent()) {
+      clearConnectionTimer();
+      activeHealth = null;
+      scheduleRefresh(refreshPending ? 0 : delay);
+    }
   }
-  scheduleRefresh(delay);
 }
 
 window.addEventListener("agenthub:connection-state", (event) => {
   const status = String(event.detail?.status ?? "");
   if (status === "restarting") {
+    if (!restartExpected) {
+      invalidateHealth();
+      workingPaintStarted = performance.now();
+      waitingSinceMs = Date.now();
+    }
     restartExpected = true;
     hadStartup = true;
     window.clearTimeout(hideTimer);
     hideTimer = 0;
     showDisconnectedState({ force: true });
+    scheduleRefresh(0);
     return;
   }
-  if (status === "online" && restartExpected) {
-    restartExpected = false;
-    waitingSinceMs = 0;
-    scheduleRefresh(0);
+  if (status === "online") {
+    queueMicrotask(recordFirstWorkingPaint);
+    if (restartExpected) scheduleRefresh(0);
   }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) recordFirstWorkingPaint();
 });
 
 function updateTimer() {
   if (!currentModel || screen.hidden) return;
   if (currentModel.connectionLost) {
-    if (currentModel.waitingSinceMs) timer.textContent = formatStartupElapsed(currentModel.waitingSinceMs);
+    if (!currentModel.stale && currentModel.waitingSinceMs) timer.textContent = formatStartupElapsed(currentModel.waitingSinceMs);
     return;
   }
   if (!currentModel.finished && currentModel.startedAtMs > 0) timer.textContent = formatStartupElapsed(currentModel.startedAtMs);
@@ -486,6 +617,7 @@ void refresh();
 
 window.addEventListener("pagehide", () => {
   stopped = true;
+  invalidateHealth();
   horizonAnimation.destroy();
   window.clearTimeout(hideTimer);
   window.clearTimeout(pollTimer);

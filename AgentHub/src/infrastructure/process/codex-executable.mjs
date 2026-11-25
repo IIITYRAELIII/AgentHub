@@ -4,17 +4,37 @@ import { createReadStream } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { inspectCodexExecutableBundle } from "./codex-executable-bundle.mjs";
+import { CODEX_REQUIRED_HELPER_MISSING, inspectCodexExecutableBundle,
+  isCodexBundleSignatureRejectionMessage, sameCodexBundleIdentity } from "./codex-executable-bundle.mjs";
 
 const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
 const CODEX_VERSION_OUTPUT = /\bcodex-cli\s+(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/i;
 const MAX_PROCESS_OUTPUT_BYTES = 64 * 1024;
+const CODEX_EXECUTABLE_SIGNATURE_REJECTED = "CODEX_EXECUTABLE_SIGNATURE_REJECTED";
+export const CODEX_CANDIDATE_MISSING = "CODEX_CANDIDATE_MISSING";
+const installPathMissing = error => ["ENOENT", "ENOTDIR"].includes(error?.code);
+
+function definitiveDiscoveryRejection(error) {
+  if (error?.code === "CODEX_BUNDLE_UNAVAILABLE") return error.reason === CODEX_REQUIRED_HELPER_MISSING;
+  return [CODEX_CANDIDATE_MISSING, CODEX_EXECUTABLE_SIGNATURE_REJECTED].includes(error?.code);
+}
+
+export function isCodexExecutableSignatureRejectionMessage(message) {
+  return typeof message === "string"
+    && /^Codex executable signature is not trusted \((?:Valid|UnknownError|NotSigned|HashMismatch|NotTrusted|NotSupportedFileFormat|Incompatible|unknown)\)$/u.test(message);
+}
+
+export function isCodexPreflightRejectionMessage(message) {
+  return isCodexExecutableSignatureRejectionMessage(message)
+    || message === "Codex executable inspection failed (ENOENT)"
+    || message === "Codex executable inspection failed (ENOTDIR)";
+}
 
 export function codexExecutableRejectionMessage(error) {
   const message = String(error?.message ?? error ?? "");
-  if (/^Process timed out after \d{1,9} ms$/.test(message)
+  if (isCodexBundleSignatureRejectionMessage(message) || /^Process timed out after \d{1,9} ms$/.test(message)
     || /^Process exited with code=(?:-?\d{1,12}|null) signal=(?:SIG[A-Z0-9]{1,12}|none)$/.test(message)
-    || /^Codex executable signature is not trusted \((?:Valid|UnknownError|NotSigned|HashMismatch|NotTrusted|NotSupportedFileFormat|Incompatible|unknown)\)$/.test(message)
+    || isCodexExecutableSignatureRejectionMessage(message)
     || [
       "Codex executable escapes its official install root",
       "Codex executable candidate is not a file",
@@ -34,7 +54,6 @@ export function codexExecutableRejectionMessage(error) {
       "Codex bundle contains a reparse member",
       "Codex bundle member canonical path changed",
       "Codex executable changed during bundle verification",
-      "Codex bundle member changed during signature verification",
     ].includes(message)) return message;
   if (["ENOENT", "ENOTDIR", "EACCES", "EPERM", "EIO", "EBUSY", "ELOOP", "EINVAL", "UNKNOWN"].includes(error?.code)) {
     return `Codex executable inspection failed (${error.code})`;
@@ -231,13 +250,19 @@ export async function verifyRecordedCodexExecutable(candidate, {
   statImpl = stat,
   hashFile = sha256File,
   inspectBundle = inspectCodexExecutableBundle,
-  verifySignature = verifyOpenAiAuthenticode,
   readFeatures = readCodexExecutableFeatures,
+  acquireInspectionCustody,
   executableArgs = [],
 } = {}) {
   if (platform !== "win32") throw new Error("Recorded Codex executable verification is Windows-only");
   if (!validRecordedCodexIdentity(candidate)) throw new Error("Recorded Codex executable identity is invalid");
-  const canonicalPath = await realpathImpl(candidate.path);
+  let canonicalPath;
+  try {
+    canonicalPath = await realpathImpl(candidate.path);
+  } catch (error) {
+    if (!installPathMissing(error)) throw error;
+    throw Object.assign(new Error(codexExecutableRejectionMessage(error)), { code: CODEX_CANDIDATE_MISSING });
+  }
   const layout = officialCodexInstallRoots({ environment }).find((entry) => entry.source === candidate.source);
   if (!layout) throw new Error("Recorded Codex executable does not match its official install layout");
   const canonicalRoot = await realpathImpl(layout.root);
@@ -260,8 +285,9 @@ export async function verifyRecordedCodexExecutable(candidate, {
   const info = await statImpl(canonicalPath);
   if (!info.isFile()) throw new Error("Codex executable candidate is not a file");
   if (await hashFile(canonicalPath) !== candidate.sha256) throw new Error("Recorded Codex executable SHA-256 changed");
-  const bundle = await inspectBundle(candidate, { hashFile, verifySignature, readFeatures, executableArgs, installRoot: canonicalRoot });
-  if (candidate.bundle && bundle?.digest !== candidate.bundle.digest) {
+  const bundle = await inspectBundle({ ...candidate, path: canonicalPath }, { hashFile, readFeatures, executableArgs,
+    acquireInspectionCustody, installRoot: canonicalRoot, expectedBundle: candidate.bundle });
+  if (candidate.bundle && !sameCodexBundleIdentity(bundle, candidate.bundle)) {
     throw Object.assign(new Error("Recorded Codex bundle identity changed"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
   }
   return bundle ? { ...candidate, bundle } : candidate;
@@ -271,6 +297,7 @@ export async function enumerateOfficialCodexPaths({
   environment = process.env,
   platform = process.platform,
   readdirImpl = readdir,
+  onIncomplete = () => {},
 } = {}) {
   if (platform !== "win32") return [];
   const candidates = [];
@@ -278,7 +305,8 @@ export async function enumerateOfficialCodexPaths({
     let entries;
     try {
       entries = await readdirImpl(layout.root, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      if (!installPathMissing(error)) onIncomplete();
       continue;
     }
     for (const entry of entries) {
@@ -302,10 +330,17 @@ export async function inspectOfficialCodexCandidate(candidate, {
   trustedCandidates = [],
   inspectBundle = inspectCodexExecutableBundle,
   readFeatures = readCodexExecutableFeatures,
+  acquireInspectionCustody,
   executableArgs = [],
 } = {}) {
-  const canonicalRoot = await realpathImpl(candidate.installRoot);
-  const canonicalPath = await realpathImpl(candidate.executable);
+  let canonicalRoot, canonicalPath;
+  try {
+    canonicalRoot = await realpathImpl(candidate.installRoot);
+    canonicalPath = await realpathImpl(candidate.executable);
+  } catch (error) {
+    if (!installPathMissing(error)) throw error;
+    throw Object.assign(new Error(codexExecutableRejectionMessage(error)), { code: CODEX_CANDIDATE_MISSING });
+  }
   if (!pathInsideOrSame(canonicalPath, canonicalRoot)) throw new Error("Codex executable escapes its official install root");
   const info = await statImpl(canonicalPath);
   if (!info.isFile()) throw new Error("Codex executable candidate is not a file");
@@ -315,7 +350,8 @@ export async function inspectOfficialCodexCandidate(candidate, {
     && entry.source === candidate.source && entry.sha256 === hashBeforeSignature);
   if (trusted) {
     const current = { ...trusted, path: canonicalPath };
-    const bundle = await inspectBundle(current, { hashFile, verifySignature, readFeatures, executableArgs, installRoot: canonicalRoot });
+    const bundle = await inspectBundle(current, { hashFile, readFeatures, executableArgs,
+      acquireInspectionCustody, installRoot: canonicalRoot });
     return bundle ? { ...current, bundle } : current;
   }
   const signature = await verifySignature(canonicalPath);
@@ -323,22 +359,27 @@ export async function inspectOfficialCodexCandidate(candidate, {
   if (hashBeforeSignature !== hashAfterSignature) {
     throw new Error("Codex executable changed during signature verification");
   }
-  if (!signature?.valid) throw new Error(`Codex executable signature is not trusted (${signature?.status ?? "unknown"})`);
-  const version = await readVersion(canonicalPath);
-  const hashAfterVersion = await hashFile(canonicalPath);
-  if (hashAfterSignature !== hashAfterVersion) {
-    throw new Error("Codex executable changed during version verification");
-  }
+  if (!signature?.valid) throw Object.assign(new Error(`Codex executable signature is not trusted (${signature?.status ?? "unknown"})`),
+    { code: CODEX_EXECUTABLE_SIGNATURE_REJECTED });
+  let version;
+  const beforeFeatures = async () => {
+    version = await readVersion(canonicalPath);
+    if (!parseCodexVersion(version)) throw new Error("Codex executable returned an unsupported version");
+    if (hashAfterSignature !== await hashFile(canonicalPath)) {
+      throw new Error("Codex executable changed during version verification");
+    }
+  };
   const inspected = {
     path: canonicalPath,
-    version,
-    sha256: hashAfterVersion,
+    sha256: hashAfterSignature,
     publisher: signature.publisher,
     signatureStatus: signature.status,
     source: candidate.source,
   };
-  const bundle = await inspectBundle(inspected, { hashFile, verifySignature, readFeatures, executableArgs, installRoot: canonicalRoot });
-  return bundle ? { ...inspected, bundle } : inspected;
+  const bundle = await inspectBundle(inspected, { hashFile, readFeatures, executableArgs,
+    beforeFeatures, acquireInspectionCustody, installRoot: canonicalRoot });
+  if (!parseCodexVersion(version)) throw new Error("Codex executable returned an unsupported version");
+  return { ...inspected, version, ...(bundle ? { bundle } : {}) };
 }
 
 /**
@@ -353,10 +394,15 @@ export async function discoverOfficialCodexExecutables({
   realpathImpl = realpath,
   ...options
 } = {}) {
-  if (platform !== "win32") return { candidates: [], rejected: [] };
-  const discovered = await enumerateCandidates({ platform, ...options });
+  if (platform !== "win32") return { candidates: [], rejected: [], inspectionComplete: false };
+  let inspectionComplete = true;
+  const discovered = await enumerateCandidates({ platform, ...options, onIncomplete: () => { inspectionComplete = false; } });
   const candidates = [];
   const rejected = [];
+  const reject = (candidate, error, observedMissing = false) => {
+    if (!observedMissing && !definitiveDiscoveryRejection(error)) inspectionComplete = false;
+    rejected.push({ path: candidate.executable, source: candidate.source, error: codexExecutableRejectionMessage(error) });
+  };
   for (const candidate of discovered) {
     if (selectedPath !== null) {
       let matchesSelected = false;
@@ -370,7 +416,7 @@ export async function discoverOfficialCodexExecutables({
         }
       } catch (error) {
         if (matchesSelected || path.resolve(candidate.executable).toLowerCase() === path.resolve(selectedPath).toLowerCase()) {
-          rejected.push({ path: candidate.executable, source: candidate.source, error: codexExecutableRejectionMessage(error) });
+          reject(candidate, error, installPathMissing(error));
         }
         continue;
       }
@@ -378,7 +424,7 @@ export async function discoverOfficialCodexExecutables({
     try {
       candidates.push(await inspectCandidate(candidate, { ...options, realpathImpl }));
     } catch (error) {
-      rejected.push({ path: candidate.executable, source: candidate.source, error: codexExecutableRejectionMessage(error) });
+      reject(candidate, error);
     }
     if (selectedPath !== null) break;
   }
@@ -386,7 +432,7 @@ export async function discoverOfficialCodexExecutables({
     const versionOrder = compareCodexVersions(right.version, left.version);
     return versionOrder || left.path.localeCompare(right.path, "en", { sensitivity: "base" });
   });
-  return { candidates, rejected };
+  return { candidates, rejected, inspectionComplete };
 }
 
 export async function findVscodeCodexExecutable(options = {}) {

@@ -5,8 +5,38 @@ import path from "node:path";
 
 // A bounded source inventory, never a copy, cleanup or dependency preparation.
 export async function readClaimCustodyWip(root, paths) {
-  if (!Array.isArray(paths) || !paths.length || paths.length > 16 || new Set(paths).size !== paths.length) {
+  if (!Array.isArray(paths) || paths.length > 16 || new Set(paths).size !== paths.length) {
     throw new Error("Exact bounded WIP paths are required");
+  }
+  if (!paths.length) {
+    // [] is an explicit absence declaration, never a missing/default inventory.
+    // Git and dependency namespaces retain their separate existing owners.
+    // Other aliases cannot prove absence and must not hide ignored Task WIP.
+    let entries = 0;
+    async function absent(directory, depth = 0) {
+      if (depth > 32 || ++entries > 10000) throw new Error("WIP custody inventory exceeds its budget");
+      const before = await lstat(directory);
+      if (!before.isDirectory() || before.isSymbolicLink()) throw new Error("Cannot prove WIP absence through an aliased source");
+      const names = (await readdir(directory)).sort();
+      for (const name of names) {
+        if (++entries > 10000) throw new Error("WIP custody inventory exceeds its budget");
+        const folded = name.toLowerCase();
+        if (folded === "wip") throw new Error("Undeclared WIP exists in the managed source");
+        if (folded === ".git" || folded === "node_modules") continue;
+        const file = path.join(directory, name);
+        const entry = await lstat(file);
+        if (entry.isSymbolicLink()) throw new Error("Cannot prove WIP absence through an undeclared link");
+        if (entry.isDirectory()) await absent(file, depth + 1);
+      }
+      const after = await lstat(directory);
+      if (!after.isDirectory() || after.isSymbolicLink() || after.ino !== before.ino || after.dev !== before.dev
+          || after.mtimeMs !== before.mtimeMs
+          || JSON.stringify(names) !== JSON.stringify((await readdir(directory)).sort())) {
+        throw new Error("WIP directory changed during absence capture");
+      }
+    }
+    await absent(root);
+    return { digest: createHash("sha256").update("[]").digest("hex"), records: [] };
   }
   const normalized = paths.map(p => typeof p === "string" ? path.relative(root, path.resolve(root, p)).replaceAll("\\", "/") : "");
   for (const [index, name] of normalized.entries()) {

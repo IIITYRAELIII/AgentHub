@@ -6,8 +6,7 @@ import {
   restartRequestProjection,
   RUNTIME_RESTART_SCOPE,
 } from "../domain/maintenance-operation.mjs";
-import { preparePackageRestart, packageRestartInput, packageResumeInput, packageHandoffBinding, assertOldPackageCurrent } from "../runtime/runtime-package-handoff.mjs";
-import { packageBindingDigest } from "../infrastructure/filesystem/runtime-package-target.mjs";
+import { packageRestartInput, packageResumeInput, packageHandoffBinding, packageBindingDigest } from "../domain/runtime-package-identity.mjs";
 
 function normalizedTarget(value) {
   const streamId = String(value?.streamId ?? "").trim();
@@ -39,7 +38,8 @@ export class RestartRequestService {
     scheduleRestart = (callback) => setTimeout(callback, 0).unref(),
     nowIso = () => new Date().toISOString(),
     logger = console,
-    preparePackage = (input) => preparePackageRestart(input, { dataDir: operationStore.dataDir }),
+    preparePackage,
+    assertOldPackageCurrent,
   }) {
     if (!operationStore) throw new TypeError("operationStore is required");
     if (typeof currentTarget !== "function") throw new TypeError("currentTarget is required");
@@ -63,6 +63,7 @@ export class RestartRequestService {
       nowIso,
       logger,
       preparePackage,
+      assertOldPackageCurrent,
     });
   }
 
@@ -319,6 +320,7 @@ export class RestartRequestService {
       return { accepted: false, operationId, status: previous.status, phase: previous.phase };
     }
     if (this.isStopping()) throw new Error("Runtime is already stopping");
+    if (typeof this.preparePackage !== "function") throw new TypeError("Package preparation port is required");
     const packageHandoff = await this.preparePackage(input);
     const blockingCount = this.blockingWorkCount();
     const notification = this.#notification({ messageId: null, minimumUpdateOffset: this.updateOffset(),
@@ -357,12 +359,15 @@ export class RestartRequestService {
     }
     if (this.#performing.has(operationId) || this.controllerIsPerforming() || this.isStopping()) throw new Error("Original package attempt has not drained");
     this.operationStore.assertPackageContinuation(previous, request);
+    if (typeof this.preparePackage !== "function" || typeof this.assertOldPackageCurrent !== "function") {
+      throw new TypeError("Package preparation and current verification ports are required");
+    }
     const packageHandoff = await this.preparePackage(input);
     const binding = packageHandoffBinding({ operationId, kind: "restart", metadata: { packageHandoff } });
     for (const [key, expected] of Object.entries(request.expectedCurrent)) {
       if (binding.old[key] !== expected) throw new Error("Package continuation current identity changed");
     }
-    await assertOldPackageCurrent(binding, { requireInstance: true });
+    await this.assertOldPackageCurrent(binding, { requireInstance: true });
     const blockingCount = this.blockingWorkCount();
     const notification = this.#notification({ messageId: null, minimumUpdateOffset: this.updateOffset(),
       notifyTelegram: false, blockingCount });

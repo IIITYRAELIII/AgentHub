@@ -85,6 +85,50 @@ html[data-theme="nexus"] {
 
 html[data-theme="nexus"] body::before { content: none; }
 
+html[data-theme="nexus"] .queue-item:has(.queue-action) {
+  background: linear-gradient(105deg, #022559, #02285c 55%, #002c80);
+  border-color: #15c8ef;
+}
+html[data-theme="nexus"] .queue-actions .queue-action {
+  background: #021936;
+  border-color: #12a9dd;
+}
+html[data-theme="nexus"] .queue-action:hover:not(:disabled) {
+  background: #0a3157;
+}
+html[data-theme="nexus"] .activity-read-pair,
+html[data-theme="nexus"] .activity-read-button { border-color: #1c5395; }
+html[data-theme="nexus"] .activity-read-button { background: #031024; }
+
+/* The SVG owns the rim while a card is running or selected. Keep its
+   backing opaque even when the selected stream moves to recent activity. */
+html[data-theme="nexus"] .activity-stream-item:is([data-running], [data-current]) {
+  --accent-line: transparent;
+  --shell-stream-card-border: 1px solid transparent;
+  --shell-stream-tab-background: #051935;
+  --shell-stream-tab-active-background: #071e39;
+  --shell-stream-card-background: transparent;
+  --shell-stream-card-shadow: none;
+  background: var(--shell-stream-tab-background);
+}
+html[data-theme="nexus"] .activity-stream-item[data-current] {
+  background: var(--shell-stream-tab-active-background);
+}
+html[data-theme="nexus"][data-view="chat"] .activity-stream-item:is([data-running], [data-current]),
+html[data-theme="nexus"][data-view="chat"] .activity-stream-item:is([data-running], [data-current]) > .stream-tab-card {
+  border-color: transparent;
+}
+html[data-theme="nexus"] .activity-stream-item:is([data-running], [data-current]) > .stream-tab-card {
+  background: transparent;
+  box-shadow: none;
+}
+html[data-theme="nexus"] .activity-run-frame {
+  stroke: #15c8f5;
+}
+html[data-theme="nexus"] .activity-stream-item[data-running] .stream-run-track {
+  stroke: #19e1fb;
+}
+
 /* Small glints travel on traced edges, clipped to those same narrow paths.
    The scene shares the original image's viewport cover projection. */
 html[data-theme="nexus"] .nexus-contour-light {
@@ -108,6 +152,11 @@ html[data-theme="nexus"] .nexus-contour-scene {
   height: 941px;
   transform-origin: 0 0;
   transform: scale(var(--nexus-scene-scale));
+  mask-size: 100% 100%;
+  mask-repeat: no-repeat;
+}
+html[data-theme="nexus"] .nexus-ribbon-track {
+  position: absolute;
   mask-size: 100% 100%;
   mask-repeat: no-repeat;
 }
