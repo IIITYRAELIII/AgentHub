@@ -12426,14 +12426,19 @@ html[data-view="background"] .background-view {
   outline-offset: 2px;
 }
 
-.msg-response-citation.is-fallback {
-  cursor: default;
+.msg-response-citation.is-fallback,
+.msg-response-citation.is-fallback:hover {
+  background: none;
+  border: none;
+  cursor: inherit;
+  display: inline;
+  padding: 0;
+  transform: none;
+  width: auto;
 }
 
-.msg-response-citation.is-fallback:hover {
-  background: color-mix(in srgb, var(--surface-1) 86%, transparent);
-  border-color: var(--accent-line);
-  transform: none;
+li > .msg-response-citation:not(.is-fallback) {
+  margin-bottom: 0.25rem;
 }
 
 .msg-response-citation-label {

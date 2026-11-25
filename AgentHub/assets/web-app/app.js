@@ -7718,13 +7718,10 @@ function traceCitationPresentation(group, identity) {
   const currentLive = identity && live && MessageView.messageKey({ ...identity, role: "agent" })
     === MessageView.messageKey({ ...live, role: "agent" });
   const preceding = ownerIndex >= 0 ? messages.slice(0, ownerIndex) : currentLive ? messages : [];
-  const message = { ...identity, ...presentation, role: "agent",
-    ...(group.responseAnnotationTarget ? { responseAnnotationReferences: (presentation.responseAnnotationReferences ?? [])
-      .map(reference => ({ ...reference, target: group.responseAnnotationTarget })) } : {}),
-  };
+  const message = { ...identity, ...presentation, role: "agent" };
   return { ...group, responseAnnotationPresentation: { ...presentation,
     responseCitationPresentations: MessageView.responseCitationPresentations(
-      [...preceding, message], preceding.length,
+      [...preceding, message], preceding.length, group.responseAnnotationTarget,
     ),
   } };
 }
@@ -8230,29 +8227,72 @@ function renderResponseAnnotations(body, message) {
   return true;
 }
 
+function renderResponseCitation(citation) {
+  const control = MessageView.responseCitationControl(citation);
+  return el(control.tagName, {
+    class: control.className,
+    ...(control.interactive ? {
+      type: "button",
+      "data-response-citation-index": String(control.index),
+      "data-response-citation-target": control.targetMessageKey,
+      title: control.quote ? `Перейти к цитате: ${control.quote}` : "Перейти к цитате",
+    } : {}),
+  }, [
+    el("span", { class: "msg-response-citation-label", text: control.label }),
+    control.quote ? el("span", { class: "msg-response-citation-quote", text: control.quote }) : null,
+  ]);
+}
+
 function renderResponseCitations(message) {
-  const citations = Array.isArray(message?.responseCitationPresentations)
-    ? message.responseCitationPresentations
-    : [];
-  if (!citations.length) return null;
-  return el("div", { class: "msg-response-citations", "aria-label": "Цитаты ответа" }, citations.map((citation) => {
-    const control = MessageView.responseCitationControl(citation);
-    const node = el(control.tagName, {
-      class: control.className,
-      ...(control.interactive ? {
-        type: "button",
-        "data-response-citation-index": String(control.index),
-        "data-response-citation-target": control.targetMessageKey,
-        title: control.quote ? `Перейти к цитате: ${control.quote}` : "Перейти к цитате",
-      } : {}),
-    }, [
-      el("span", { class: "msg-response-citation-label", text: control.label }),
-      control.quote
-        ? el("span", { class: "msg-response-citation-quote", text: control.quote })
-        : null,
-    ]);
-    return node;
-  }));
+  const citations = Array.isArray(message?.responseCitationPresentations) ? message.responseCitationPresentations : [];
+  return citations.length
+    ? el("div", { class: "msg-response-citations", "aria-label": "Цитаты ответа" }, citations.map(renderResponseCitation))
+    : null;
+}
+
+function renderResponseListCitations(content, text, segments, legacyReferences, fileContext) {
+  // Substitute the exact owned positions, then parse the Markdown once. The
+  // slots stay inside their list items instead of splitting the list at a card.
+  let prefix = "\uE000";
+  while (text.includes(prefix)) prefix += "\uE000";
+  const suffix = "\uE001";
+  const citations = [];
+  let restoreBodyLine = false;
+  const markdown = segments.map((segment, index) => {
+    if (segment.citation) {
+      citations.push(segment.citation);
+      return `${prefix}${citations.length - 1}${suffix}`;
+    }
+    let part = segment.text;
+    if (restoreBodyLine && /^\n[ \t]*\S/u.test(part)
+      && !/^\n[ \t]*(?:(?:[-+*]|\d+\.)[ \t]|#{1,6}[ \t]|>|\x60{3}|~{3})/u.test(part)) {
+      part = part.replace(/^\n[ \t]*/u, " ");
+    }
+    restoreBodyLine = Boolean(segments[index + 1]?.citation
+      && /(^|\n)[ \t]*(?:[-+*]|\d+\.)[ \t]+\n$/u.test(part));
+    return restoreBodyLine ? part.slice(0, -1) : part;
+  }).join("");
+  renderMarkdown(content, MessageView.withoutResponseCitationFallbacks(markdown, legacyReferences), fileContext, "agent");
+
+  const slots = new RegExp(`${prefix}(\\d+)${suffix}`, "gu");
+  const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.data.includes(prefix)) textNodes.push(node);
+  }
+  for (const node of textNodes) {
+    const fragment = document.createDocumentFragment();
+    let offset = 0;
+    for (const match of node.data.matchAll(slots)) {
+      const citation = citations[Number(match[1])];
+      fragment.append(node.data.slice(offset, match.index));
+      fragment.append(node.parentElement.closest("a, button, code, pre")
+        ? citation.label : renderResponseCitation(citation));
+      offset = match.index + match[0].length;
+    }
+    fragment.append(node.data.slice(offset));
+    node.replaceWith(fragment);
+  }
 }
 
 function renderAgentResponseBody(body, message, text, fileContext) {
@@ -8262,7 +8302,9 @@ function renderAgentResponseBody(body, message, text, fileContext) {
   const content = el("div", { class: "msg-response-content" });
   const visualizationOwner = visualizationResponseOwners.get(body);
   if (visualizationOwner) visualizationResponseOwners.set(content, visualizationOwner);
-  if (segments.some((segment) => segment.citation)) {
+  if (segments.some(segment => segment.citation) && /^[ \t]*(?:[-+*]|\d+\.)[ \t]+/mu.test(text)) {
+    renderResponseListCitations(content, text, segments, legacyReferences, fileContext);
+  } else if (segments.some(segment => segment.citation)) {
     for (const segment of segments) {
       if (segment.citation) content.append(renderResponseCitations({ responseCitationPresentations: [segment.citation] }));
       else if (segment.text.trim()) {
