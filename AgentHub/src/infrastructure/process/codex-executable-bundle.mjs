@@ -76,11 +76,15 @@ export async function inspectCodexExecutableBundle(candidate, {
     });
   });
   files.sort((left, right) => left.name.localeCompare(right.name, "en"));
-  if (expectedBundle && (!validCodexBundle(expectedBundle) || !sameBundleFiles(files, expectedBundle.files))) {
+  const recordedMainName = verifiedMainSha256 === undefined ? undefined : path.basename(candidate.path);
+  if ((recordedMainName && !files.some(file => file.name === recordedMainName))
+      || (expectedBundle && (!validCodexBundle(expectedBundle) || !sameBundleFiles(files, expectedBundle.files)))) {
     throw Object.assign(new Error("Recorded Codex bundle identity changed"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
   }
   // Probe the executable only while the complete verified bundle is held.
-  const custody = await measure("inspectionCustodyMs", () => acquireInspectionCustody({ installRoot, root, files }));
+  const custody = await measure("inspectionCustodyMs", () => acquireInspectionCustody({
+    installRoot, root, files, ...(recordedMainName ? { recordedMainName } : {}),
+  }));
   let retained = false;
   try {
     custody.assertAlive();

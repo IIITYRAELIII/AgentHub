@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -240,7 +240,7 @@ test("unsigned rg remains eligible in discovery, preflight and cold startup with
   assert.equal(featureChecks, beforeCold.featureChecks + 3);
 });
 
-test("a fresh recorded main digest avoids a second JS read but native custody rechecks replaced bytes", {
+test("recorded selection reuses the fresh main digest, rejects native-detected replacement, and recovers absence", {
   skip: process.platform !== "win32",
 }, async context => {
   const stateFile = await fixture(context);
@@ -264,14 +264,14 @@ test("a fresh recorded main digest avoids a second JS read but native custody re
   const recorded = { path: main, sha256: digest(original), publisher, source: "desktop", version: "0.152.0",
     bundle: { schemaVersion: 1, installRoot: await realpath(installRoot), root, files, codeModeHost: false,
       digest: codexBundleDigest(files, false) } };
-  let replaceAfterRead = false;
+  let afterMainRead;
   let featureProbes = 0;
   const reads = [];
   const options = { environment,
     async hashFile(file) {
       reads.push(file);
       const sha256 = digest(await readFile(file));
-      if (replaceAfterRead && file === main) await writeFile(main, "inert replacement");
+      if (file === main) await afterMainRead?.();
       return sha256;
     },
     async readFeatures() { featureProbes++; return { codeModeHost: false }; },
@@ -280,11 +280,37 @@ test("a fresh recorded main digest avoids a second JS read but native custody re
   assert.deepEqual(reads, [main, helper]);
   assert.equal(featureProbes, 1);
 
-  replaceAfterRead = true;
-  await assert.rejects(verifyRecordedCodexExecutable(recorded, options), { code: "CODEX_BUNDLE_UNAVAILABLE" });
+  await writeFile(stateFile, JSON.stringify({ schemaVersion: 1, active: recorded, lastKnownGood: recorded }));
+  let discoveryCalls = 0;
+  let recoveryChecks = 0;
+  const ownerOptions = {
+    stateFile,
+    verifyRecorded: (entry, inspection) => verifyRecordedCodexExecutable(entry, { ...inspection, ...options }),
+    discover: async () => { discoveryCalls++; return { candidates: [], rejected: [] }; },
+    canRecoverUnavailableSelection: () => { recoveryChecks++; return false; },
+    runCanary: async () => assert.fail("no verified replacement"),
+  };
+  afterMainRead = () => writeFile(main, "inert replacement");
+  const changed = new CodexExecutableUpdateService(ownerOptions);
+  await assert.rejects(changed.selectForStart(), /Codex executable changed during bundle verification/u);
   assert.deepEqual(reads.slice(2), [main, helper]);
   assert.equal(featureProbes, 1);
+  assert.equal(changed.diagnostics().status, "selection-rejected");
+  assert.equal(changed.diagnostics().reason, "recorded-identity-unverified");
+  assert.equal(discoveryCalls, 0);
+  assert.equal(recoveryChecks, 0);
+  assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).lastKnownGood, recorded);
+
+  // Failed native custody released the files. A recorded executable that
+  // disappears after its first read still uses recovery/discovery.
   await writeFile(main, original);
+  afterMainRead = () => unlink(main);
+  const missing = new CodexExecutableUpdateService(ownerOptions);
+  await assert.rejects(missing.selectForStart(), /No trusted installed official Codex/u);
+  assert.equal(missing.diagnostics().status, "no-trusted-candidate");
+  assert.equal(discoveryCalls, 1);
+  assert.equal(recoveryChecks, 1);
+  assert.equal(featureProbes, 1);
 });
 
 for (const policy of [
