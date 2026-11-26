@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { planTurnDurationRecovery } from "../domain/turn-duration-recovery.mjs";
+import { terminalCompletionTime } from "../domain/turn-completion-time.mjs";
 
 import {
   IMAGE_GENERATION_ESTIMATE_CREDITS,
@@ -240,6 +241,40 @@ export class WorkLogUsageStore {
     }, { load: false, pointRead: true });
   }
 
+  recoverTurnCompletion(evidence, { expectedCompletedAt, apply = false } = {}) {
+    return this.#repository.enqueue(async () => {
+      const expectedRevision = apply ? await this.#repository.currentRevision() : null;
+      const record = await this.#repository.getRecord(evidence);
+      if (!record || evidence.provider !== "codex"
+        || (record.runId && evidence.runId && record.runId !== evidence.runId)
+        || !terminalCompletionTime(evidence.completedAt, record.startedAt)
+        || Date.parse(evidence.completedAt) >= Date.parse(expectedCompletedAt)) {
+        return { eligible: false, applied: false };
+      }
+      const recovery = {
+        originalCompletedAt: expectedCompletedAt,
+        completedAt: evidence.completedAt,
+        terminalRevision: evidence.terminalRevision,
+        sourceRevision: evidence.sourceRevision,
+        providerCompletedAt: evidence.providerCompletedAt || null,
+      };
+      const result = { eligible: true, applied: false, recovery, projectRoot: record.projectRoot };
+      if (record.completedAt === evidence.completedAt) {
+        // Recovery can already have run through the pending outbox, or a
+        // previous apply may have stopped after the source row was written.
+        return { ...result, unchanged: true };
+      }
+      if (record.completedAt !== expectedCompletedAt || record.observedAt !== expectedCompletedAt) {
+        return { eligible: false, applied: false };
+      }
+      if (!apply) return result;
+      await this.#repository.upsertRecords([{
+        ...record, completedAt: evidence.completedAt, completionRecovery: recovery,
+      }], { expectedRevision });
+      return { ...result, applied: true, projectionPending: true };
+    }, { load: false, pointRead: true });
+  }
+
   async #projectionSource() {
     const current = await this.#repository.payload();
     const rateLimits = String(current?.html ?? "").match(
@@ -420,7 +455,8 @@ export class WorkLogUsageStore {
       defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
     }) : null;
     const recordCompletedAtMs = Date.parse(status?.record?.completedAt ?? "");
-    const exactIndex = status?.indexed === true
+    const undated = status?.record?.provider === "codex" && status.record.completedAt === "";
+    const exactIndex = undated ? status?.indexed === false : status?.indexed === true
       && Number.isFinite(recordCompletedAtMs)
       && status?.index?.completedAtMs === recordCompletedAtMs;
     return {

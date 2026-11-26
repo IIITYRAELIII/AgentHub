@@ -334,6 +334,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
         limitSamples: mergeUsageLimitSamples(record?.limitSamples),
         startedAt: String(record?.startedAt ?? ""),
         ...(record?.durationRecovery ? { durationRecovery: structuredClone(record.durationRecovery) } : {}),
+        ...(record?.completionRecovery ? { completionRecovery: structuredClone(record.completionRecovery) } : {}),
         completedAt: String(record?.completedAt ?? ""),
         observedAt: String(record?.observedAt ?? ""),
         status,
@@ -3443,6 +3444,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
       const pointMs = turnUsageTimeMs(record, normalizedTimeMode);
       return activity.some((interval) => pointMs >= interval.from && pointMs < interval.to);
     });
+  const undatedUsage = { turnCount: 0, credits: 0, quotaUnits: 0, unpricedCount: 0 };
   const records = [
     ...localTurns.map((record) => ({ record, source: "local" })),
     ...syncedTurns.map((record) => ({ record, source: "other-device" })),
@@ -3470,6 +3472,16 @@ export function buildWorkLogUsageHistory(turns = {}, {
         (record?.usageReported === false && breakdown.total <= 0)
         || (!breakdown.priced && breakdown.total <= 0)
       );
+      if (!Number.isFinite(pointMs)) {
+        if (normalizedRange === "all" && !filterByActiveIntervals && source === "local"
+          && record.provider === "codex" && record.completedAt === "") {
+          undatedUsage.turnCount += 1;
+          undatedUsage.credits += Math.max(0, Number(breakdown.total) || 0);
+          undatedUsage.quotaUnits += quota.total;
+          if (!priced) undatedUsage.unpricedCount += 1;
+        }
+        return null;
+      }
       return {
         pointMs,
         credits: Math.max(0, Number(breakdown.total) || 0),
@@ -3697,6 +3709,7 @@ export function buildWorkLogUsageHistory(turns = {}, {
     ...(requestedStreamId ? { streamId: requestedStreamId } : {}),
     totalCredits,
     totalQuotaUnits,
+    ...(undatedUsage.turnCount ? { undatedUsage } : {}),
     quotaCalibrationVersion: QUOTA_CALIBRATION_VERSION,
     totalTimedQuotaUnits,
     totalApiEstimateCredits,

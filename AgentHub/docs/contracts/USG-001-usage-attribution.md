@@ -146,6 +146,12 @@ still a verifier for guessing it, so hashing is not a sanitizer here.
 
 Re-observing an unchanged fact is idempotent. Merge of two records with one id
 keeps the earlier `observedAt` and never widens attribution.
+A Codex completion with no verified finish time remains in the local ledger.
+Its accounted usage is shown separately in all-time usage as undated and does
+not enter a dated bucket, duration or the dated sync format. Addressable finish
+time repair keeps the turn and fact identity and preserves observed usage and
+account fields.
+
 Terminal projection recovery may recreate a missing deterministic `turn` fact
 from the exact durable journal record under the configured local device and
 runtime-home identities. It does not copy account fields into that fact and

@@ -43,6 +43,7 @@ export function createRunCompletionComposition({
   revokeRunAdmission,
   turnEndNotifications,
   runJournal,
+  providerTurnTelemetryStore,
   lastSeenTaskTurnIds,
   codexTurnStarts,
   discardContextCompactionRun,
@@ -106,6 +107,7 @@ export function createRunCompletionComposition({
   const terminalCommits = new TerminalTurnCommitService({
     store: terminalStore,
     messageCommands: runtimeStateStore,
+    readTerminalTelemetry: (identity) => providerTurnTelemetryStore?.terminalEvidence(identity),
     commandTrace,
   });
 
@@ -119,6 +121,7 @@ export function createRunCompletionComposition({
     flushTurnProjections: (...args) => runJournal.flushTurnProjections(...args),
     ensureTurnUsageFact: (...args) => runJournal.ensureTurnUsageFact(...args),
     readTurnProjection: (...args) => runJournal.turnProjectionStatus(...args),
+    recoverTurnCompletion: (...args) => runJournal.recoverTurnCompletion(...args),
     finalizeRunDelivery,
     rememberLastMessage: (...args) => runJournal.rememberLastMessage(...args),
     rememberSeenTurn: (task, turnId) => {

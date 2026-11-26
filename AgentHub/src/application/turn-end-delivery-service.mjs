@@ -1,6 +1,7 @@
 import { turnEndKey } from "./turn-end-notifications.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 import { normalizeServiceTier, normalizeTokenUsage } from "../domain/token-usage.mjs";
+import { terminalCompletionTime } from "../domain/turn-completion-time.mjs";
 
 const DEFAULT_PROJECTION_RETRY_BASE_MS = 250;
 const DEFAULT_PROJECTION_RETRY_MAX_MS = 30_000;
@@ -94,6 +95,7 @@ export class TurnEndDeliveryService {
     flushTurnProjections = null,
     ensureTurnUsageFact = null,
     readTurnProjection = null,
+    recoverTurnCompletion = null,
     finalizeRunDelivery = null,
     rememberLastMessage,
     rememberSeenTurn,
@@ -118,6 +120,7 @@ export class TurnEndDeliveryService {
     this.flushTurnProjections = flushTurnProjections;
     this.ensureTurnUsageFact = ensureTurnUsageFact;
     this.readTurnProjection = readTurnProjection;
+    this.recoverTurnCompletion = recoverTurnCompletion;
     this.finalizeRunDelivery = finalizeRunDelivery;
     this.rememberLastMessage = rememberLastMessage;
     this.rememberSeenTurn = rememberSeenTurn;
@@ -267,6 +270,16 @@ export class TurnEndDeliveryService {
     return { ...result, delivered: true };
   }
 
+  async recoverJournalCompletion(identity, { expectedCompletedAt, apply = false } = {}) {
+    if (!this.recoverTurnCompletion || identity?.provider !== "codex"
+      || !terminalCompletionTime(expectedCompletedAt)) return { eligible: false, applied: false };
+    const evidence = await this.terminalCommits?.completionTimeEvidence(identity, { verifyTelemetry: true });
+    if (!evidence?.completedAt || evidence.sourceRevision === evidence.terminalRevision) {
+      return { eligible: false, applied: false };
+    }
+    return this.recoverTurnCompletion(evidence, { expectedCompletedAt, apply });
+  }
+
   async deliverOutbox(item, { waitForProjection = null, projectionOnly = false } = {}) {
     if (!item || !this.terminalCommits) return false;
     const key = turnEndKey(item);
@@ -295,6 +308,15 @@ export class TurnEndDeliveryService {
           let projection = this.readTurnProjection
             ? await this.#measure("terminal-projection-readback", claimed, () => this.readTurnProjection(completion))
             : null;
+          if (claimed.provider === "codex" && !terminalCompletionTime(completion.completedAt, completion.startedAt)) {
+            const evidence = await this.terminalCommits.completionTimeEvidence?.(claimed);
+            completion.completedAt = evidence?.completedAt || "";
+            if (!completion.completedAt && projection?.record?.completedAt) {
+              // Preserve an already dated journal row when the legacy terminal
+              // supplies no time. Addressable repair requires stronger evidence.
+              completion.completedAt = projection.record.completedAt;
+            }
+          }
           if (!projectionRecordMatches(projection, completion, notificationBody)) {
             await this.#measure("terminal-history-persist", claimed, async () => {
               const historyProjection = await this.persistHistory(history, {

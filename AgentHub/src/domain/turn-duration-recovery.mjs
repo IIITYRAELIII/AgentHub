@@ -40,7 +40,9 @@ export function durationRecoveryForRecord(record) {
   const evidence = record?.durationRecovery;
   if (evidence?.version !== 1 || !sameIdentity(record, evidence)
     || evidence.originalStartedAt !== record.startedAt
-    || evidence.originalCompletedAt !== record.completedAt) return null;
+    || (evidence.originalCompletedAt !== record.completedAt
+      && !(record.completionRecovery?.completedAt === record.completedAt
+        && record.completionRecovery.originalCompletedAt === evidence.originalCompletedAt))) return null;
   return evidence;
 }
 

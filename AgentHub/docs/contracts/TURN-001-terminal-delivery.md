@@ -212,6 +212,20 @@ terminal.
   An already-complete projection is acknowledged without rewriting richer
   display metadata or account attribution. Projection-only recovery never
   repeats the provider turn, command trace or Telegram delivery.
+- Ordinary Codex terminal revisions retain the completion time of the same
+  exact provider, thread and turn, including when the in-memory completion is
+  gone. Recovery of an older outbox revision with a missing time reads the
+  latest valid prior revision of that identity, then exact provider terminal
+  telemetry. A verified later status correction still owns its own time.
+  Observation, retry and commit clocks are separate from completion time.
+- The configured `TurnEndDeliveryService.recoverJournalCompletion` supports a
+  read-only preview and an explicit addressable apply for a legacy Codex
+  terminal revision with missing time. The caller pins the current terminal
+  revision and the exact erroneous journal timestamp. The existing journal
+  owner preserves the original timestamp in provenance, updates the same
+  local usage fact and rebuilds the affected day indexes. Retries can finish
+  the projection after an interrupted apply. The operation does not reopen
+  the outbox or replay provider, history, command or Telegram effects.
 - Transient SQLite busy/locked and journal-revision conflicts receive one
   runtime-scoped, bounded single-flight retry with capped backoff. Conflict
   recovery re-reads the exact projection before another write. A retry of an

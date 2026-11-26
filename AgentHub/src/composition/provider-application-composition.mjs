@@ -274,6 +274,7 @@ export async function createProviderApplicationComposition({
     revokeRunAdmission: (run) => claudeRunAdmission.revoke(run),
     turnEndNotifications,
     runJournal,
+    providerTurnTelemetryStore,
     lastSeenTaskTurnIds: runtimeData.lastSeenTaskTurnIds,
     codexTurnStarts: codexObservability.turnStarts,
     discardContextCompactionRun: api.discardContextCompactionRun,

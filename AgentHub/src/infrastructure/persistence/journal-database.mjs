@@ -277,7 +277,8 @@ function normalizedRecord(record, key = "", options = {}) {
 function recordRow(record, key = "", options = {}) {
   const normalized = normalizedRecord(record, key, options);
   if (!normalized) return null;
-  const completedAtMs = Date.parse(normalized.completedAt || normalized.startedAt || "");
+  const undated = normalized.provider === "codex" && normalized.completedAt === "";
+  const completedAtMs = undated ? NaN : Date.parse(normalized.completedAt || normalized.startedAt || "");
   const observedAtMs = Date.parse(normalized.observedAt || normalized.completedAt || normalized.startedAt || "");
   return {
     record: normalized,

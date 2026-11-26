@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { terminalCompletionTime } from "../../domain/turn-completion-time.mjs";
 import { consistentInterstreamRecordIdentity } from "../../domain/interstream-message.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
@@ -274,6 +275,24 @@ function selectOutbox(database, key) {
   `).get(key.provider, key.threadId, key.turnId, Number(key.terminalRevision)));
 }
 
+function selectCompletionTime(database, terminal, startedAt = terminal?.payload?.completion?.startedAt) {
+  if (!terminal) return null;
+  const completedAt = terminalCompletionTime(terminal.payload?.completion?.completedAt, startedAt);
+  if (completedAt) return { completedAt, revision: terminal.terminalRevision };
+  const earlier = database.prepare(`
+    SELECT terminal_revision AS revision, json_extract(payload_json, '$.completion.completedAt') AS completedAt
+    FROM provider_turn_terminal_outbox
+    WHERE provider = ? AND thread_id = ? AND turn_id = ? AND terminal_revision < ?
+      AND json_type(payload_json, '$.completion.completedAt') = 'text'
+    ORDER BY terminal_revision DESC
+  `).iterate(terminal.provider, terminal.threadId, terminal.turnId, terminal.terminalRevision);
+  for (const row of earlier) {
+    const time = terminalCompletionTime(row.completedAt, startedAt);
+    if (time) return { completedAt: time, revision: Number(row.revision) };
+  }
+  return null;
+}
+
 export class ProviderTurnTerminalStore {
   #dataDir;
   #mutations = new AsyncSqliteMutationQueue();
@@ -334,6 +353,17 @@ export class ProviderTurnTerminalStore {
         database.exec("BEGIN IMMEDIATE");
         const current = selectTerminal(database, key);
         const currentOutbox = current ? selectOutbox(database, current) : null;
+        const completion = basePayload.completion;
+        if (key.provider === "codex" && completion && !Array.isArray(completion)
+          && typeof completion === "object") {
+          const incomingTime = terminalCompletionTime(completion.completedAt, completion.startedAt);
+          const previous = selectCompletionTime(database, current);
+          const retainedTime = terminalCompletionTime(previous?.completedAt, completion.startedAt);
+          // A repeat after restart can obtain a fresh observation from the
+          // in-memory registry. Only a new turn or an exact correction owns it.
+          completion.completedAt = terminalStatusCorrection || !current ? incomingTime : retainedTime;
+          if (lastMessage) lastMessage.updatedAt = completion.completedAt;
+        }
         const storedTelegramIntent = ["intent", "uncertain"].includes(
           currentOutbox?.channels?.telegram?.state,
         ) ? currentOutbox.channels.telegram.intent : null;
@@ -507,6 +537,31 @@ export class ProviderTurnTerminalStore {
       const database = this.#database();
       try { return selectTerminal(database, key); } finally { database.close(); }
     });
+  }
+
+  completionTime(value) {
+    const key = identity(value);
+    const revision = Number(value?.terminalRevision);
+    if (key.provider !== "codex" || !Number.isSafeInteger(revision) || revision < 1) return null;
+    const database = openRuntimeDatabase(this.#dataDir, { readOnly: true });
+    try {
+      // The terminal and previous revision are read under the same SQLite snapshot.
+      database.exec("BEGIN");
+      const terminal = selectTerminal(database, key);
+      if (terminal?.terminalRevision !== revision) return null;
+      const storedTime = selectCompletionTime(database, terminal);
+      return {
+        ...key,
+        terminalRevision: revision,
+        startedAt: terminal.payload?.completion?.startedAt ?? "",
+        runId: terminal.payload?.completion?.runId ?? "",
+        status: terminal.status,
+        completedAt: storedTime?.completedAt ?? "",
+        sourceRevision: storedTime?.revision ?? null,
+      };
+    } finally {
+      database.close();
+    }
   }
 
   pending({ limit = 100 } = {}) {

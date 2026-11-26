@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { normalizeProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
+import { terminalCompletionTime } from "../domain/turn-completion-time.mjs";
 import { stat } from "node:fs/promises";
 
 import { legacyTaskRunKeys, taskRunKey } from "../domain/task-runs.mjs";
@@ -215,7 +216,8 @@ export class RunJournalService {
       mcpCalls: completion.mcpCalls,
       toolMetricsKnown: completion.toolMetricsKnown,
       startedAt: completion.startedAt,
-      completedAt: completion.completedAt,
+      completedAt: completion.provider === "codex" && Number.isSafeInteger(completion.terminalRevision)
+        ? terminalCompletionTime(completion.completedAt, completion.startedAt) : completion.completedAt,
       status: completion.status,
       deferProjection,
       projectRoot: project.path,
@@ -266,6 +268,21 @@ export class RunJournalService {
       projectionProjectRoots: projectRoots,
       traceCommandId: completions[0]?.clientUserMessageId || "",
     });
+  }
+
+  async recoverTurnCompletion(evidence, options) {
+    const recovery = await this.usageStore.recoverTurnCompletion(evidence, options);
+    if (!options.apply || !recovery.eligible) return recovery;
+    await this.ensureTurnUsageFact(evidence);
+    const projection = await this.flushTurnProjections([{ projectRoot: recovery.projectRoot }]);
+    if (projection?.projectionError || (!projection?.projected && projection?.reason !== "unchanged")) {
+      throw new Error(`journal completion repair projection incomplete: ${projection?.projectionError || projection?.reason || "unconfirmed"}`);
+    }
+    const readback = await this.turnProjectionStatus(evidence);
+    if (!readback?.current || readback.record?.completedAt !== evidence.completedAt) {
+      throw new Error("journal completion repair readback incomplete");
+    }
+    return { ...recovery, projectionPending: false };
   }
 
   ensureTurnUsageFact(completion) {
