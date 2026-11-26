@@ -5055,6 +5055,7 @@ function openWorkspaceMessageSearch(requestedWorkspaceId = "") {
 }
 
 function closeWorkspaceMessageSearch({ restoreFocus = true } = {}) {
+  emit("workspace-search:cancel-open");
   state.workspaceMessageSearch.open = false;
   clearTimeout(workspaceMessageSearchIndexPollTimer);
   renderWorkspaceMessageSearch();
@@ -5092,6 +5093,7 @@ function requestWorkspaceMessageSearch({ append = false } = {}) {
 workspaceMessageSearchToggle?.addEventListener("click", openWorkspaceMessageSearch);
 workspaceMessageSearchClose?.addEventListener("click", () => closeWorkspaceMessageSearch());
 workspaceMessageSearchInput?.addEventListener("input", () => {
+  emit("workspace-search:cancel-open");
   clearTimeout(workspaceMessageSearchTimer);
   workspaceMessageSearchTimer = window.setTimeout(() => requestWorkspaceMessageSearch(), 250);
 });
@@ -6665,10 +6667,17 @@ function restoreRetainedChatScroll(snapshot) {
   window.requestAnimationFrame(apply);
 }
 
-function renderedMessageTarget({ turnId, itemId } = {}) {
+function matchesMessageTarget(message, { turnId, itemId, provider, threadId, role } = {}) {
+  return String(message.turnId ?? "") === String(turnId ?? "")
+    && String(message.itemId ?? "") === String(itemId ?? "")
+    && (!provider || message.provider === provider)
+    && (!threadId || message.threadId === threadId)
+    && (!role || message.role === role);
+}
+
+function renderedMessageTarget(identity) {
   return [...chatLog.querySelectorAll("[data-item-id]")].find((node) => (
-    String(node.dataset.turnId ?? "") === String(turnId ?? "")
-    && String(node.dataset.itemId ?? "") === String(itemId ?? "")
+    matchesMessageTarget(node.dataset, identity)
   )) ?? null;
 }
 
@@ -6681,13 +6690,14 @@ function focusRenderedMessage(identity, { behavior = "smooth" } = {}) {
   });
   const scrollController = chatScrollControllers.get(chatScroll);
   const navigationGeneration = scrollController?.beginExactNavigation();
-  target.setAttribute("data-pin-highlight", "");
+  const highlight = identity.workspaceSearch ? "data-search-match" : "data-pin-highlight";
+  target.setAttribute(highlight, "");
   target.tabIndex = -1;
   target.scrollIntoView({ block: "center", behavior });
   target.focus({ preventScroll: true });
   scrollController?.completeExactNavigation(navigationGeneration);
-  if (messagePinStatus) messagePinStatus.textContent = "Закреплённое сообщение показано";
-  window.setTimeout(() => target.removeAttribute("data-pin-highlight"), 4_000);
+  if (messagePinStatus && !identity.workspaceSearch) messagePinStatus.textContent = "Закреплённое сообщение показано";
+  window.setTimeout(() => target.removeAttribute(highlight), 4_000);
   return true;
 }
 
@@ -6990,6 +7000,15 @@ function renderMessagesContent({
       visibleLimit = allMessages.length - index;
       state.messageRenderLimits.set(taskId, visibleLimit);
     }
+  }
+  const searchIndex = exactNavigation?.workspaceSearch
+    ? allMessages.findIndex((message) => message.provider === exactNavigation.provider
+      && message.threadId === exactNavigation.threadId && message.turnId === exactNavigation.turnId)
+    : -1;
+  const searchLimit = searchIndex >= 0 ? allMessages.length - searchIndex : 0;
+  if (searchLimit > visibleLimit) {
+    visibleLimit = searchLimit;
+    state.messageRenderLimits.set(taskId, visibleLimit);
   }
   const messages = MessageView.messageTailWindow(allMessages, visibleLimit);
   renderHistoryLoader();
@@ -7995,7 +8014,7 @@ function renderMessage(message, { readOnly = false, task = currentTask() } = {})
     "data-item-id": message.itemId ?? "",
     "data-message-key": message.messageKey ?? "",
     "data-delivery-state": message.deliveryState ?? "",
-    "data-provider": String(task?.provider ?? "none"),
+    "data-provider": String(message.provider ?? task?.provider ?? "none"),
     ...(maintenance && message.measurementKind === "estimated"
       ? { title: String(message.maintenanceDetail ?? "Предварительная оценка провайдера после свёртки") }
       : {}),
@@ -12234,7 +12253,7 @@ const AgentHub = {
     if (!sameMessages) state.messages.set(taskId, next);
     mobileDialogs?.sync();
     if (taskId === state.selectedId) {
-      if (sameMessages && selectedSurfaceOwned) {
+      if (sameMessages && selectedSurfaceOwned && !exactNavigation.workspaceSearch) {
         const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         focusRenderedMessage(exactNavigation, { behavior: reducedMotion ? "auto" : "smooth" });
       } else {
@@ -12362,9 +12381,7 @@ const AgentHub = {
     const received = Array.isArray(payload?.results) ? payload.results : [];
     search.results = append ? [...search.results, ...received] : received;
     search.total = Math.max(0, Number(payload?.total) || 0);
-    search.nextOffset = Number.isSafeInteger(Number(payload?.nextOffset))
-      ? Number(payload.nextOffset)
-      : null;
+    search.nextOffset = Number.isSafeInteger(payload?.nextOffset) ? payload.nextOffset : null;
     search.indexing = payload?.indexing ?? null;
     search.loading = false;
     search.error = "";

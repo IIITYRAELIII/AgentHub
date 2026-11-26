@@ -264,6 +264,7 @@ const {
   historyContainsLatestAnswer,
   historyRefreshSourceRequired,
   historyMatchesIdentity,
+  identityKey,
   historicalMessagesForDisplay,
   hubErrorMessage,
   httpControlError,
@@ -904,7 +905,32 @@ function reconciledMessages(taskIdValue) {
   });
   // Live snapshots, durable history and the optimistic receipt can arrive in
   // either order. Re-run idempotent deduplication after all three were merged.
-  return chronologicalMessages(projectCanonicalMessages(visible), completionBoundariesByTask.get(taskIdValue));
+  const canonical = projectCanonicalMessages(visible);
+  const { searchHit, searchContext, searchOrder } = focusedHistoryWindowByTask.get(taskIdValue) ?? {};
+  if (searchContext?.length && !canonical.some((message) => message.provider === searchHit.provider
+    && message.threadId === searchHit.threadId && message.turnId === searchHit.turnId)) {
+    canonical.push(...projectCanonicalMessages(searchContext));
+  }
+  const boundaries = completionBoundariesByTask.get(taskIdValue);
+  const hitKey = searchHit ? identityKey(searchHit) : "";
+  if (!hitKey || canonical.some((message) => identityKey(message) === hitKey)) {
+    return chronologicalMessages(canonical, boundaries);
+  }
+  // The exact hit may have been folded into the final answer. Its position in
+  // the stored turn can distinguish it even when both items share a timestamp.
+  const hitPosition = searchOrder.get(hitKey);
+  if (hitPosition != null) {
+    const ordered = chronologicalMessages(canonical, boundaries);
+    const next = ordered.findIndex((message) => searchOrder.get(identityKey(message)) > hitPosition);
+    const previous = next < 0
+      ? ordered.findLastIndex((message) => searchOrder.get(identityKey(message)) < hitPosition)
+      : -1;
+    if (next >= 0 || previous >= 0) {
+      ordered.splice(next >= 0 ? next : previous + 1, 0, searchHit);
+      return ordered;
+    }
+  }
+  return chronologicalMessages([...canonical, searchHit], boundaries);
 }
 
 function deferredEntriesForTask(snapshot, taskIdValue) {
@@ -3191,7 +3217,7 @@ function focusedHistoryMessages(focusedTurn) {
 
 function displayedHistory(id, base = historyWindowByTask.get(id) ?? []) {
   const focused = focusedHistoryWindowByTask.get(id);
-  return focused ? mergeNewestHistory(base, focused.messages) : base;
+  return focused && !focused.searchHit ? mergeNewestHistory(base, focused.messages) : base;
 }
 
 function displayHistoryRanges(id, ranges) {
@@ -3235,7 +3261,7 @@ function reconcileFocusedHistoryWindows(pins) {
   if (!Array.isArray(pins)) return [];
   const changed = [];
   for (const [id, focused] of focusedHistoryWindowByTask) {
-    if (pins.some((pin) => pinMatchesFocusedHistory(pin, focused))) continue;
+    if (focused.searchHit || pins.some((pin) => pinMatchesFocusedHistory(pin, focused))) continue;
     if (clearFocusedHistoryWindow(id)) changed.push(id);
   }
   return changed;
@@ -3372,7 +3398,16 @@ function applyOpened(result, {
     return;
   }
   const retainsPinnedFocus = Boolean(result.focusedTurn && exactNavigation?.pinId);
-  const newest = historyMessages(history, retainsPinnedFocus ? null : result.focusedTurn);
+  if (exactNavigation?.searchHit) {
+    focusedHistoryWindowByTask.set(id, {
+      searchHit: exactNavigation.searchHit,
+      searchContext: exactNavigation.searchContext,
+      searchOrder: exactNavigation.searchOrder,
+    });
+  } else if (selectTask && focusedHistoryWindowByTask.get(id)?.searchHit) {
+    clearFocusedHistoryWindow(id);
+  }
+  const newest = historyMessages(history, retainsPinnedFocus || exactNavigation?.searchHit ? null : result.focusedTurn);
   const existingPage = historyPageByTask.get(id);
   const previousPage = existingPage && sameIdentity(existingPage.identity, history) ? existingPage : null;
   if (retainsPinnedFocus) setFocusedHistoryWindow(id, result, exactNavigation);
@@ -5984,7 +6019,13 @@ agentHub.on("workspace-search:query", ({ workspaceId, query, offset, limit, appe
     agentHub.toast(message);
   });
 });
+let workspaceSearchOpening = null;
+agentHub.on("workspace-search:cancel-open", () => {
+  if (workspaceSearchOpening && currentNavigation(workspaceSearchOpening)) beginNavigation();
+  workspaceSearchOpening = null;
+});
 agentHub.on("workspace-search:open", (result) => {
+  if (workspaceSearchOpening?.id === result.id && currentNavigation(workspaceSearchOpening)) return null;
   const params = {
     workspaceId: result.workspaceId,
     streamId: result.streamId,
@@ -5994,20 +6035,54 @@ agentHub.on("workspace-search:open", (result) => {
     turnThreadId: result.turnThreadId,
     turnId: result.turnId,
     itemId: result.itemId,
+    role: result.role,
     limit: 20,
   };
-  return runNavigation(
-    { streamId: params.streamId, provider: params.provider, threadId: params.taskThreadId },
-    () => control("workspace-message-open", params),
-    (opened) => {
-      applyOpened(opened);
-      agentHub.closeWorkspaceMessageSearch({ restoreFocus: false });
-      document.querySelector("[data-view-button='chat']")?.click();
-      replaceRoute("#/chat/"
-        + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
-        + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
-    },
-  );
+  const exactNavigation = {
+    provider: params.provider, threadId: params.taskThreadId, turnId: params.turnId,
+    itemId: params.itemId, role: params.role, workspaceSearch: true,
+  };
+  const identity = { streamId: params.streamId, provider: params.provider, threadId: params.taskThreadId };
+  const opening = runNavigation(identity, async () => {
+    const opened = await control("workspace-message-open", params);
+    const message = opened?.focusedMessage;
+    // The history envelope follows the Stream head. The addressed item can
+    // belong to a different provider or an earlier Thread of that Stream.
+    if (opened?.history?.streamId !== params.streamId || !message
+      || message.provider !== params.provider || message.threadId !== params.taskThreadId
+      || message.turnThreadId !== params.turnThreadId || message.turnId !== params.turnId
+      || message.itemId !== params.itemId || message.role !== params.role) {
+      throw new Error("Agent Hub вернул другое сообщение из поиска.");
+    }
+    const hitKey = identityKey(exactNavigation);
+    const searchHit = focusedHistoryMessages(opened.focusedTurn).find((item) => identityKey(item) === hitKey);
+    if (!searchHit) throw new Error("Не удалось открыть сообщение из поиска.");
+    const candidate = opened.history.focusedItem;
+    const focused = candidate?.id === params.turnId && candidate.provider === params.provider
+      && candidate.threadId === params.taskThreadId ? candidate : null;
+    const searchContext = focused
+      ? historyMessages({ items: [focused] }).map(({ historyOrder, ...item }) => item)
+      : [];
+    const searchOrder = new Map();
+    for (const [index, item] of (focused?.messages ?? []).entries()) {
+      const key = identityKey({ ...exactNavigation, itemId: item.itemId, role: item.role });
+      if (key) searchOrder.set(key, index);
+    }
+    return { opened, searchHit, searchContext, searchOrder, history: opened.history };
+  }, ({ opened, searchHit, searchContext, searchOrder }) => {
+    workspaceSearchOpening = null;
+    agentHub.closeWorkspaceMessageSearch({ restoreFocus: false });
+    agentHub.showSelectedTask();
+    replaceRoute("#/chat/"
+      + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
+      + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
+    applyOpened(opened, { exactNavigation: { ...exactNavigation, searchHit, searchContext, searchOrder } });
+  });
+  const request = { id: result.id, generation: navigationIntents.capture() };
+  workspaceSearchOpening = request;
+  return opening.finally(() => {
+    if (workspaceSearchOpening === request) workspaceSearchOpening = null;
+  });
 });
 agentHub.on("context:compact", () => runAction(async () => {
   const result = await control("compact-context", exactSelectedTaskParams());

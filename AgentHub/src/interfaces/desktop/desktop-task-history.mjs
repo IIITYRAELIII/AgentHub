@@ -801,6 +801,26 @@ export function createDesktopTaskHistoryFactory({
       rawPage = orderedHistory.slice(start, end);
     }
     const pageSources = rawPage.map((item) => historySources.get(item));
+    const focusTurnId = String(params.focusTurnId ?? "").trim();
+    const focusSource = focusTurnId && threadBindings.find((thread) => (
+      thread.provider === provider && thread.threadId === selectedThreadId
+    ));
+    let focusIndex = focusSource ? rawPage.findIndex((turn, index) => (
+      turn.id === focusTurnId && pageSources[index]?.provider === provider
+      && pageSources[index]?.threadId === selectedThreadId
+    )) : -1;
+    let focusOutsidePage = false;
+    if (focusSource && focusIndex < 0 && typeof historyReader.readTurn === "function") {
+      const turn = await measure("history-local-read", () => historyReader.readTurn({
+        provider, threadId: selectedThreadId, turnId: focusTurnId,
+      }));
+      if (turn?.id === focusTurnId) {
+        focusIndex = rawPage.length;
+        focusOutsidePage = true;
+        rawPage = [...rawPage, turn];
+        pageSources.push(focusSource);
+      }
+    }
     // SQL already supplies these turns. The previous hydration can supply
     // imported attachments, but replaying its messages would duplicate legacy requests.
     const cachedAttachments = pagedHistory ? rawPage.map((item, index) =>
@@ -1107,17 +1127,30 @@ export function createDesktopTaskHistoryFactory({
         });
       }),
     }));
-    const fitted = sync("history-fit-page", () => responseBudget.fit(payload, {
-      ...(deferProviderRefresh ? {
+    const focused = focusIndex >= 0 ? payload.items[focusIndex] : null;
+    if (focusOutsidePage) payload.items.pop();
+    const fitted = sync("history-fit-page", () => {
+      const fitOptions = deferProviderRefresh ? {
         preferCompleteTail: true,
         knownFinal: params.knownFinal ?? entry.latestFinal,
         reservedBytes: Buffer.byteLength(',"version":""') + HISTORY_VERSION_LENGTH,
-      } : {}),
-      maxBytes: Math.min(
+      } : {};
+      const maxBytes = Math.min(
         Math.max(Number(params.maxResponseBytes) || 3_500_000, 64 * 1_024),
         3_500_000,
-      ),
-    }));
+      );
+      if (!focused) return responseBudget.fit(payload, { ...fitOptions, maxBytes });
+      // The selected turn has a bounded share of the same transport budget.
+      const focus = responseBudget.fit({ items: [focused] }, {
+        maxBytes: Math.min(256 * 1_024, maxBytes / 2),
+      });
+      const focusPayload = { focusedItem: focus.items[0] };
+      const history = responseBudget.fit(payload, {
+        ...fitOptions,
+        maxBytes: maxBytes - Buffer.byteLength(JSON.stringify(focusPayload), "utf8"),
+      });
+      return { ...history, ...focusPayload };
+    });
     const version = sync("history-version", () => createHash("sha256")
       .update(JSON.stringify(fitted))
       .digest("base64url")
