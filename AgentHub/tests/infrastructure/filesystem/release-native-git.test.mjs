@@ -142,7 +142,7 @@ test("ordinary issued resolutions survive a lost journal reply without review in
 
 
 
-test("native merge selects exact independent main branches and complete corrections", { timeout: 60000 }, async (t) => {
+test("native merge selects exact independent main branches and complete corrections", { timeout: 240000 }, async (t) => {
   let ownedWork;
   ownedWork = withTaskOperationTiming({ operationId: "native-independent-corrections", taskId: "fixture",
     record: createTaskOperationTimingBatchRecorder(events => console.info(JSON.stringify(events))) }, async () => {

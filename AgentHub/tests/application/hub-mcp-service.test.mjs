@@ -41,10 +41,8 @@ import { messageRequestFingerprint } from "../../src/infrastructure/persistence/
 import { CommandTraceSpanStore } from "../../src/infrastructure/persistence/command-trace-span-store.mjs";
 
 async function releaseDeliveryFixture(t) {
-  let deliver;
   const traces = [];
   const { service, token } = await fixture(t, {
-    releaseOperations: { setEventDelivery(value) { deliver = value; } },
     recordCommandTrace: value => traces.push(value),
   });
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "hub-release-delivery-"));
@@ -129,11 +127,15 @@ async function releaseDeliveryFixture(t) {
       messageFingerprint: await messageRequestFingerprint(params) });
   });
   t.after(async () => { ledger.close(); await rm(dataDir, { recursive: true, force: true }); });
-  const event = { operationId: "release-original", revision: 7, eventKind: "operation.progress",
-    createdAt: new Date().toISOString(),
-    streamId: "stream-1", threadId: "thread-1", payload: { state: "validate", nextAction: "validate candidate" } };
-  return { event, active, store, controller, coordinator, service, token, providerCalls, providerReceipts, admissions, traces,
-    deliver: (value = event) => deliver(value),
+  const noticeText = "Continue with the checked release candidate";
+  return { active, store, controller, coordinator, service, token, providerCalls, providerReceipts, admissions, traces, noticeText,
+    deliver: async ({ requestId = "release-original:continue", text = noticeText } = {}) => {
+      const result = await service.call("hub_stream_message_send", {
+        context_token: token, request_id: requestId, confirm_send: true,
+        stream_id: "stream-1", text, mode: "steer",
+      });
+      return result.delivery;
+    },
     ledger: () => ledger,
     setRun: value => { run = value; }, setBlocked: value => { blocked = value; },
     setProvider: value => { providerBehavior = value; },
@@ -222,9 +224,11 @@ test("release notifications steer the active turn through durable intake before 
   assert.equal(f.providerCalls.length, 0, "intake acknowledgement is not provider acceptance");
   assert.equal(f.ledger().get(ack.clientUserMessageId).state, "queued");
   let release;
-  f.setProvider(() => new Promise(resolve => { release = resolve; }));
+  let entered;
+  const providerEntered = new Promise(resolve => { entered = resolve; });
+  f.setProvider(() => new Promise(resolve => { release = resolve; entered(); }));
   const dispatch = f.controller.process(ack.id);
-  await new Promise(resolve => setImmediate(resolve));
+  await providerEntered;
   assert.equal(f.providerCalls.length, 1, "active turn need not finish before provider dispatch");
   assert.equal(f.ledger().get(ack.clientUserMessageId).state, "dispatching");
   assert.equal(f.providerReceipts.has(ack.clientUserMessageId), false);
@@ -234,47 +238,42 @@ test("release notifications steer the active turn through durable intake before 
   assert.equal(receipt.result.steered, true);
   assert.equal(receipt.result.turnId, f.active.turnId);
   assert.equal(f.active.status, "running");
-  assert.equal(f.providerCalls[0].id, "release:release-original:7:operation.progress");
+  assert.equal(f.providerCalls[0].id, "mcp:release-original:continue");
   assert.equal(f.providerCalls[0].input, f.admissions[0].params.text);
-  assert.equal(f.admissions[0].context.source, "release-operation");
-  assert.deepEqual(f.admissions[0].context.messageOrigin, { kind: "release-operation", sourceThreadId: "thread-1" });
-  assert.deepEqual(JSON.parse(f.admissions[0].params.text.split("\n")[1]), {
-    operationId: f.event.operationId, revision: 7, eventKind: f.event.eventKind, ...f.event.payload,
-  });
+  assert.equal(f.admissions[0].context.source, "mcp");
+  assert.equal(f.admissions[0].context.messageOrigin.kind, "interstream");
+  assert.equal(f.admissions[0].context.messageOrigin.sourceThreadId, "thread-1");
+  assert.equal(f.admissions[0].context.messageOrigin.requestId, "release-original:continue");
+  assert.ok(f.admissions[0].params.text.endsWith(f.noticeText));
   assert.ok(f.traces.some(value => value.commandId === ack.clientUserMessageId && value.stage === "durable-intake-enqueue"));
   assert.ok(f.traces.some(value => value.commandId === ack.clientUserMessageId && value.stage === "dispatch" && value.outcome === "succeeded"));
-  assert.ok(f.traces.some(value => value.commandId === ack.clientUserMessageId && value.stage === "release-event-created"
-    && value.observedAtMs === Date.parse(f.event.createdAt)));
-  assert.ok(f.traces.some(value => value.stage === "release-event-intake" && value.outcome === "succeeded"
-    && value.metadata.intakeAccepted && !value.metadata.providerAccepted && value.metadata.steerPending));
   await f.deliver(); await f.controller.process(ack.id);
   assert.equal(f.providerCalls.length, 1, "outbox duplicate must retain original provider effect");
 });
 
-test("release notifications keep outcome and content privacy when diagnostics or intake fail", async t => {
+test("release continuation keeps intake failure and its content out of command traces", async t => {
   const f = await releaseDeliveryFixture(t);
   const failure = Object.assign(new Error("private event body must not be logged"), { code: "EVENT_TEST_FAILURE" });
   f.service.setStreamMessenger(async () => { throw failure; });
   await assert.rejects(f.deliver(), error => error === failure);
-  const result = f.traces.find(value => value.stage === "release-event-intake" && value.outcome === "unknown");
-  assert.equal(result.commandId, "release:release-original:7:operation.progress");
-  assert.equal(result.metadata.errorCode, failure.code);
+  assert.equal(f.ledger().get("mcp:release-original:continue"), null);
+  assert.equal(f.providerCalls.length, 0);
   assert.equal(JSON.stringify(f.traces).includes(failure.message), false);
-  assert.equal(JSON.stringify(f.traces).includes(f.event.payload.nextAction), false);
+  assert.equal(JSON.stringify(f.traces).includes(f.noticeText), false);
   f.service.recordCommandTrace = () => { throw new Error("diagnostic sink unavailable"); };
-  await assert.rejects(f.deliver(), error => error === failure);
+  await assert.rejects(f.deliver({ requestId: "second-refused:continue" }), error => error === failure);
   const receipt = { accepted: true, steerPending: true, providerAccepted: false };
   f.service.setStreamMessenger(async () => receipt);
-  assert.equal(await f.deliver(), receipt);
+  assert.deepEqual(await f.deliver({ requestId: "healthy-attempt:continue" }), receipt);
 });
 
-test("release notifications persist creation, intake and provider dispatch under the original event ID", async t => {
+test("release continuation persists intake and dispatch under the original message ID", async t => {
   const f = await releaseDeliveryFixture(t);
   const ack = await f.deliver();
   await f.controller.process(ack.id);
   const failure = Object.assign(new Error("private transport failure"), { code: "EVENT_DELIVERY_FAILED" });
   f.service.setStreamMessenger(async () => { throw failure; });
-  await assert.rejects(f.deliver(), error => error === failure);
+  await assert.rejects(f.deliver({ requestId: "failed-attempt:continue" }), error => error === failure);
   const directory = await mkdtemp(path.join(os.tmpdir(), "release-event-trace-"));
   let traceStore = new CommandTraceSpanStore({ databaseFile: path.join(directory, "traces.sqlite") });
   try {
@@ -282,13 +281,11 @@ test("release notifications persist creation, intake and provider dispatch under
     await traceStore.close();
     traceStore = new CommandTraceSpanStore({ databaseFile: path.join(directory, "traces.sqlite") });
     const rows = await traceStore.readCommandTimeline(ack.clientUserMessageId);
-    assert.ok(rows.some(row => row.stage === "release-event-created" && row.observedAtMs === Date.parse(f.event.createdAt)));
-    assert.ok(rows.some(row => row.stage === "release-event-intake" && row.metadata.steerPending && !row.metadata.providerAccepted));
+    assert.ok(rows.some(row => row.stage === "durable-intake-enqueue" && row.outcome === "queued"));
     assert.ok(rows.some(row => row.stage === "dispatch" && row.outcome === "succeeded"));
-    assert.ok(rows.some(row => row.stage === "release-event-intake" && row.outcome === "unknown"
-      && row.metadata.errorCode === failure.code));
+    assert.equal((await traceStore.readCommandTimeline("mcp:failed-attempt:continue")).length, 0);
     assert.equal(JSON.stringify(rows).includes(failure.message), false);
-    assert.equal(JSON.stringify(rows).includes(f.event.payload.nextAction), false);
+    assert.equal(JSON.stringify(rows).includes(f.noticeText), false);
     assert.ok(rows.every(row => row.commandId === ack.clientUserMessageId));
   } finally { await traceStore.close(); await rm(directory, { recursive: true, force: true }); }
 });
@@ -342,7 +339,7 @@ test("release notifications reconcile a lost accepted steer reply without replay
     f.providerReceipts.set(request.clientUserMessageId, { accepted: true, steered: true,
       clientUserMessageId: request.clientUserMessageId, runId: f.active.id,
       threadId: f.active.threadId, turnId: f.active.turnId });
-    throw Object.assign(new Error("lost provider reply"), { uncertain: true });
+    throw Object.assign(new Error("lost provider reply"), { deliveryOutcome: "unknown" });
   });
   await f.controller.process(ack.id);
   assert.equal(f.providerCalls.length, 1);
@@ -356,24 +353,21 @@ test("release notifications reconcile a lost accepted steer reply without replay
   assert.equal(f.providerCalls.length, 1);
 });
 
-test("release notifications preserve every event while ordinary explicit queue remains queued", async t => {
+test("distinct release continuations leave ordinary explicit queue waiting", async t => {
   const f = await releaseDeliveryFixture(t);
   const user = await f.coordinator.acceptClientInput({ input: "user next turn",
     target: f.active, clientUserMessageId: "user-explicit-queue", followUpMode: "queue" });
   assert.equal(user.queued, true);
-  for (const [offset, eventKind] of ["operation.progress", "operation.waiting", "operation.completed"].entries()) {
-    const event = { ...f.event, revision: 10 + offset, eventKind };
-    const ack = await f.deliver(event);
+  const attempts = ["release-attempt-one", "release-attempt-two", "release-attempt-three"];
+  for (const attempt of attempts) {
+    const ack = await f.deliver({ requestId: attempt + ":continue" });
     assert.equal(ack.steerPending, true);
     await f.controller.process(ack.id);
     assert.equal(f.ledger().get(ack.clientUserMessageId).result.steered, true);
   }
   assert.equal(f.providerCalls.length, 3);
   assert.equal(f.store.queued.get(user.id).clientUserMessageId, "user-explicit-queue");
-  assert.deepEqual(f.providerCalls.map(call => call.id), [
-    "release:release-original:10:operation.progress", "release:release-original:11:operation.waiting",
-    "release:release-original:12:operation.completed",
-  ]);
+  assert.deepEqual(f.providerCalls.map(call => call.id), attempts.map(attempt => "mcp:" + attempt + ":continue"));
 });
 
 function claimOnlyTaskGit(overrides = {}) {
@@ -430,7 +424,6 @@ async function fixture(context, {
   releaseWorkflowEnabled = false,
   taskGitWorkspacesFactory = null,
   taskOperationReconciliation = null,
-  releaseOperations = null,
   measureOperation = measureTaskOperation,
   recordCommandTrace = () => {},
   beforeRemoveDirectory = async () => {},
@@ -816,7 +809,7 @@ async function fixture(context, {
     measureOperation,
     recordCommandTrace,
     workspaceCatalog, taskBoard, workLog, attachmentDirectory, secret: "secret",
-    taskGitWorkspaces, taskOperationReconciliation, releaseOperations,
+    taskGitWorkspaces, taskOperationReconciliation,
     releasePlanner: {
       plan: async (workspaceId) => {
         releasePlanWorkspaceIds.push(workspaceId);

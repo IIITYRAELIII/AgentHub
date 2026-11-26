@@ -41,7 +41,8 @@ async function commit(root, message) {
   return git(root, ["rev-parse", "HEAD"]);
 }
 async function fixture(t, owningTaskId = "11111111-1111-4111-8111-111111111111", owningTaskRevision = 2, agreedOrigin = false, ownPublishedOrigin = false, versionedRuntime = false, { joinOwnedWork = null } = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "hub-native-adoption-"));
+  // Keep the runtime fixture and native Job proof within the Windows path limit.
+  const root = await mkdtemp(path.join(os.tmpdir(), "na-"));
   t.after(async () => {
     await joinOwnedWork?.();
     await rm(root, { recursive: true, force: true });

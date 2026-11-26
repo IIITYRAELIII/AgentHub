@@ -19,7 +19,7 @@ import { TaskBoardStore } from "../../../src/infrastructure/persistence/task-boa
 
 const exec = promisify(execFile);
 async function fixture(t, directory = null) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "hub-native-queries-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "nq-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const calls = [];
   const git = async (args, options = {}) => {

@@ -388,7 +388,7 @@ test("automatic Await preparation composes accepted code without running release
     "plan", "guard-primary", "release-integrations", "prepare-candidate", "plan",
   ]);
   assert.equal(calls.find(([name]) => name === "prepare-candidate")[1].preserveFrozen, true);
-  assert.equal(calls.find(([name]) => name === "prepare-candidate")[1].approvedBaseCommit, "main-head");
+  assert.equal(calls.find(([name]) => name === "prepare-candidate")[1].approvedBaseCommit, "published-head");
 });
 
 test("prospective composition validation does not promote candidates or commit acceptance", async () => {
@@ -415,7 +415,7 @@ test("prospective composition validation does not promote candidates or commit a
   service.releaseGitWorkspaces.validateCandidate = async (options) => {
     validations += 1;
     assert.equal(options.planRevision, "prospective");
-    assert.equal(options.approvedBaseCommit, "main-head");
+    assert.equal(options.approvedBaseCommit, "published-head");
     assert.equal(options.commitPrepared, undefined);
     await options.validateBeforeCommit();
     return { status: "validated", tree: "selected-tree", baseCommit: options.approvedBaseCommit };
@@ -583,11 +583,11 @@ test("ordinary native Await persists agreed main independently of historical ado
   };
   const envelope = {
     schemaVersion: 1, kind: "agreed-main-native-git-v1",
-    publishedBaseCommit: PUBLISHED, agreedMainCommit: ADOPTED,
+    publishedBaseCommit: PUBLISHED, agreedMainCommit: ADOPTED, compositionBaseCommit: PUBLISHED,
   };
   await service.prepareAwaitSet({ workspaceId: "workspace-1" });
   const prepared = calls.find(([name]) => name === "prepare-candidate")[1];
-  assert.equal(prepared.approvedBaseCommit, ADOPTED);
+  assert.equal(prepared.approvedBaseCommit, PUBLISHED);
   assert.deepEqual(prepared.baseProvenance, envelope);
 
   let validated = null;
@@ -596,6 +596,7 @@ test("ordinary native Await persists agreed main independently of historical ado
     return { status: "validated", tree: "tree", baseCommit: options.approvedBaseCommit };
   };
   await service.prepareAwaitSet({ workspaceId: "workspace-1", validateOnly: true });
+  assert.equal(validated.approvedBaseCommit, PUBLISHED);
   assert.deepEqual(validated.baseProvenance, envelope);
   assert.equal(derivations, 2);
 
@@ -606,7 +607,8 @@ test("ordinary native Await persists agreed main independently of historical ado
   calls.length = 0;
   await service.prepareAwaitSet({ workspaceId: "workspace-1" });
   assert.deepEqual(calls.find(([name]) => name === "prepare-candidate")[1].baseProvenance,
-    { schemaVersion: 1, kind: "agreed-main-native-git-v1", publishedBaseCommit: PUBLISHED, agreedMainCommit: PUBLISHED });
+    { schemaVersion: 1, kind: "agreed-main-native-git-v1", publishedBaseCommit: PUBLISHED,
+      agreedMainCommit: PUBLISHED, compositionBaseCommit: PUBLISHED });
   assert.equal(derivations, 2);
   assert.equal(projectRoot, path.resolve("D:/repo"));
 });

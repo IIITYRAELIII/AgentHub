@@ -427,7 +427,7 @@ async function git(cwd, ...args) {
 }
 
 async function repository(context) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-task-git-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "tg-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   await git(root, "init", "-b", "main");
   await git(root, "config", "core.autocrlf", "false");
@@ -2504,6 +2504,7 @@ test("a clean managed Task worktree resolves its declared test dependency locall
   };
   await writeFile(path.join(agentHubRoot, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
   await writeFile(path.join(agentHubRoot, "package-lock.json"), `${JSON.stringify(lock, null, 2)}\n`, "utf8");
+  await writeFile(path.join(agentHubRoot, ".npmrc"), "fund=false\n", "utf8");
   await writeFile(path.join(nestedRoot, "package.json"), "{\"name\":\"nested\",\"private\":true}\n", "utf8");
   await writeFile(path.join(nestedRoot, "package-lock.json"), "{\"name\":\"nested\",\"lockfileVersion\":3,\"packages\":{\"\":{\"name\":\"nested\",\"private\":true}}}\n", "utf8");
   await writeFile(path.join(publicTests, "stream-tabs-controller.test.mjs"), [
@@ -2515,7 +2516,7 @@ test("a clean managed Task worktree resolves its declared test dependency locall
     "});",
     "",
   ].join("\n"), "utf8");
-  await git(root, "add", "AgentHub/package.json", "AgentHub/package-lock.json", "AgentHub/tests/public/stream-tabs-controller.test.mjs", "AgentHub/tools/nested/package.json", "AgentHub/tools/nested/package-lock.json");
+  await git(root, "add", "AgentHub/.npmrc", "AgentHub/package.json", "AgentHub/package-lock.json", "AgentHub/tests/public/stream-tabs-controller.test.mjs", "AgentHub/tools/nested/package.json", "AgentHub/tools/nested/package-lock.json");
   await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "dom test fixture");
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
@@ -2632,7 +2633,9 @@ test("unproven owned npm tree stop fences dependency preparation and the next ow
   };
   await writeFile(path.join(agentHubRoot, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
   await writeFile(path.join(agentHubRoot, "package-lock.json"), `${JSON.stringify(lock, null, 2)}\n`, "utf8");
-  await git(root, "add", "AgentHub/package.json", "AgentHub/package-lock.json");
+  // Exercise the Task-local owner. Shared npm has its own guard coverage.
+  await writeFile(path.join(agentHubRoot, ".npmrc"), "fund=false\n", "utf8");
+  await git(root, "add", "AgentHub/.npmrc", "AgentHub/package.json", "AgentHub/package-lock.json");
   await git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "owned npm");
   const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));

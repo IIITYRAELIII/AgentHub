@@ -21,7 +21,8 @@ async function git(cwd, ...args) {
   return String((await exec("git", args, { cwd, windowsHide: true })).stdout).trim();
 }
 async function fixture(t) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "hub-conflict-lifecycle-"));
+  // The native Windows Job proof adds a full digest and an atomic-write suffix.
+  const root = await mkdtemp(path.join(os.tmpdir(), "ah-cl-"));
   const primary = path.join(root, "primary");
   await mkdir(primary);
   await git(primary, "init", "--initial-branch=main");

@@ -458,8 +458,16 @@ test("actual preparation admits one legacy prepared seed and still refuses missi
   const corrected = await f.result("B", "B-new.txt", "new\n");
   let ordinaryMerges = 0;
   const spawn = childProcess.spawn;
+  const gitArguments = (executable, args) => {
+    if (String(executable) === "git") return args;
+    if (args[0] === "--run-owned-task-job" && path.basename(String(args[6])).toLowerCase() === "git.exe") {
+      return args.slice(7);
+    }
+    return [];
+  };
   childProcess.spawn = function (executable, args, ...options) {
-    if (String(executable) === "git" && args.includes("merge") && args.includes("--no-ff")) ordinaryMerges++;
+    const command = gitArguments(executable, args);
+    if (command.includes("merge") && command.includes("--no-ff")) ordinaryMerges++;
     return Reflect.apply(spawn, this, [executable, args, ...options]);
   };
   syncBuiltinESMExports();
@@ -479,7 +487,8 @@ test("actual preparation admits one legacy prepared seed and still refuses missi
   let authorityValid = true, drifted = false;
   childProcess.spawn = function (executable, args, ...options) {
     const child = Reflect.apply(spawn, this, [executable, args, ...options]);
-    if (String(executable) === "git" && args.includes("fetch") && args.some(x => String(x).includes("retained-"))) {
+    const command = gitArguments(executable, args);
+    if (command.includes("fetch") && command.some(x => String(x).includes("retained-"))) {
       child.once("close", () => { authorityValid = false; drifted = true; });
     }
     return child;

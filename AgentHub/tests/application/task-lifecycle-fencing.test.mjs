@@ -535,8 +535,6 @@ test("Await composes PreRelease before it commits acceptance and keeps the prior
       },
     },
   });
-  service.setReleaseOperationWake((taskId) => calls.push(`wake:${taskId}`));
-
   const result = await service.updateWorkflowStatus({
     taskId: task.id,
     status: "awaiting_implementation",
@@ -558,9 +556,9 @@ test("Await composes PreRelease before it commits acceptance and keeps the prior
   });
 
   assert.deepEqual(calls, [
-    "lock:workspace-1", "begin", "repo", "validate", "prepare", "commit", "wake:task-await",
+    "lock:workspace-1", "begin", "repo", "validate", "prepare", "commit",
     "lock:workspace-1", "begin", "repo", "validate", "fail",
-    "lock:workspace-1", "begin", "repo", "validate", "prepare", "commit", "wake:task-await",
+    "lock:workspace-1", "begin", "repo", "validate", "prepare", "commit",
   ]);
   assert.equal(task.workflowStatus, "awaiting_implementation");
   assert.equal(result.releaseCandidate.status, "prepared");

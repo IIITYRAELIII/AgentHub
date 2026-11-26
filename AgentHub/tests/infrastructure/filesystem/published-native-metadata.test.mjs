@@ -20,7 +20,7 @@ async function commit(root, message) {
   return git(root, "rev-parse", "HEAD");
 }
 async function fixture(t) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "hub-published-metadata-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "pm-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const primary = path.join(root, "primary"); await mkdir(primary);
   await git(primary, "init", "--initial-branch=main");

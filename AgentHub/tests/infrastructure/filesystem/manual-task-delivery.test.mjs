@@ -970,7 +970,7 @@ test("manual completion pins and preserves an unrepresented legacy repository an
     manual_preview_arguments: original, confirm_reconcile: true };
   await assert.rejects(f.call("hub_task_operation_reconcile", { ...reconcile, request_id: "not-preview", manual_preview_arguments: { ...original, confirm_cleanup: true } }), /read-only/u);
   assert.equal(f.catalog.mcpOperation(original.request_id).status, "unknown");
-  await assert.rejects(f.call("hub_task_operation_reconcile", { ...reconcile, request_id: "wrong-hash", expected_arguments_hash: "0".repeat(64) }), /read-only/u);
+  await assert.rejects(f.call("hub_task_operation_reconcile", { ...reconcile, request_id: "wrong-hash", expected_arguments_hash: "0".repeat(64) }), /Original operation arguments differ/u);
   assert.equal((await f.call("hub_task_operation_reconcile", { ...reconcile, request_id: "address-preview" })).outcome, "NO_EFFECT");
   assert.equal(f.catalog.mcpOperation(original.request_id).status, "failed");
   const retained = [{ project_root: historical.projectRoot, head_commit: legacyHead }];
