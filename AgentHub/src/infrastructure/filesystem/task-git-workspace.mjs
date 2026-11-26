@@ -1,5 +1,5 @@
 import { assertTaskOperationExecuting, interruptibleTaskLease, taskOperationExecution } from "../process/task-operation-interruption-context.mjs";
-import { ownedGitArguments, withPreparationGitIsolation } from "./preparation-git-isolation.mjs";
+import { assertPlainIsolationPath, ownedGitArguments, withPreparationGitIsolation } from "./preparation-git-isolation.mjs";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
@@ -678,6 +678,9 @@ async function assertNoTaskChangelogChanges(root) {
   ], { cwd: root });
   if (dirty) throw new Error("Task worktrees exclude CHANGELOG.md; preserve these local changes outside the Task before continuing");
 }
+
+const staleOrdinaryTestStage = Symbol("stale ordinary Test stage");
+const ordinaryTestPreparation = Symbol("ordinary Test preparation");
 
 export class TaskGitWorkspaceService {
   #contourExternalEffects;
@@ -1490,6 +1493,10 @@ export class TaskGitWorkspaceService {
   // the one shared immutable-object writer. A dead lease is not child retirement.
   createNativeObjectStore(input) {
     this.#assertAvailable("createNativeObjectStore");
+    return this.#createNativeObjectStore(input);
+  }
+
+  #createNativeObjectStore(input, guardScope = "repository") {
     const { sourceRoot, lease, store, assertCurrent = async () => {} } = input;
     requiredGuardLease(lease);
     const repositoryRoot = canonicalPath(sourceRoot);
@@ -1498,7 +1505,7 @@ export class TaskGitWorkspaceService {
     const objects = new OwnedNativeObjectStore({ dataDir: this.dataDir, ...(store ? { store } : {}),
       assertCurrent: async () => { await (poolOwner ?? lease).assertOwned(); await assertCurrent(); },
       gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd,
-        lease: poolOwner ?? lease, guardRepositoryRoot: repositoryRoot }),
+        lease: poolOwner ?? lease, guardRepositoryRoot: repositoryRoot, guardScope }),
       withLease: operation => withInterprocessLocks([path.join(this.dataDir, "native-git-objects")], async poolLease => {
         await this.#assertNoProcessTreeGuard(poolScope);
         poolOwner = this.#guardedLease(poolScope, combinedLease(lease, poolLease));
@@ -1581,6 +1588,60 @@ export class TaskGitWorkspaceService {
     this.#assertAvailable("withTaskRepositoryRecoveryLock");
     await requiredGuardLease(taskLease).assertOwned();
     return this.#withDevLock(canonicalPath(repositoryRoot), taskLease, operation);
+  }
+
+  async withOrdinaryTestRepository(params, operation) {
+    this.#assertAvailable("withOrdinaryTestRepository");
+    const { taskId, projectRoot, lease, operationId } = params;
+    await requiredGuardLease(lease).assertOwned();
+    const root = this.#claimNamespace(normalizedTaskId(taskId))?.source.repositoryRoot ?? await repositoryRoot(projectRoot);
+    const finish = (snapshot = null, stage = null) => this.#withDevLock(root, lease, owner =>
+      measureTaskOperation("test-dev-owned", () => operation(owner, () =>
+        this.snapshotAndMergeOwned({ ...params, lease: owner, [ordinaryTestPreparation]: { snapshot, stage } }))));
+    if (params.expectedResultReferences?.length
+        || await this.pendingNativeIntegrationOwned({ taskId, projectRoot: root, operationId, lease })) {
+      // Prior result reuse and original recovery keep their exact owner path.
+      return finish();
+    }
+
+    await this.#assertTaskReleaseWait(taskId, root);
+    const snapshot = await this.snapshotOwned(params);
+    if (!snapshot.changedFiles.length) return finish(snapshot);
+    const file = this.#nativeIntegrationFile(taskId, root, operationId);
+    let recorded = false;
+    for (;;) {
+      assertTaskOperationExecuting();
+      const record = await this.#withClearDevLock(root, lease, owner =>
+        measureTaskOperation("test-dev-inputs", async () => {
+          params.validateOrdinaryTask?.();
+          await this.#importCustodySnapshotOwned(snapshot, owner);
+          const dev = await this.#prepareDevOwned(root, root, owner);
+          const captured = await this.#prepareNativeIntegrationRecord(snapshot, dev, { operationId, lease: owner });
+          // The SAME original must remain recoverable even if Hub stops
+          // before the detached merge returns. No dev effect is admitted here.
+          await owner.assertOwned();
+          await mkdir(path.dirname(file), { recursive: true });
+          const intent = { ...captured, detachedOrdinaryTest: true };
+          if (recorded) await this.#replaceNativeIntegrationRecord(file, intent);
+          else await writeSelectedRecord(file, intent);
+          recorded = true;
+          return captured;
+        }));
+      await measureTaskOperation("test-detached-stage", async () => {
+        try {
+          await this.#nativeIntegrationComposition(record, lease, { ordinaryStage: "detached" });
+        } catch (error) {
+          // Only the current dev owner can admit this capture as a Task conflict.
+          if (error.code !== "RELEASE_NATIVE_MERGE_CONFLICT") throw error;
+        }
+      });
+      try {
+        return await finish(snapshot, this.#nativeIntegrationStaging(record).root);
+      } catch (error) {
+        if (error !== staleOrdinaryTestStage) throw error;
+        recordTaskOperationTiming("test-detached-stage-stale");
+      }
+    }
   }
 
   #guardedLease(scopeId, lease) {
@@ -4523,15 +4584,23 @@ export class TaskGitWorkspaceService {
     });
   }
 
-  async #nativeIntegrationComposition(record, lease, { historicalOnly = false } = {}) {
+  async #nativeIntegrationComposition(record, lease, { historicalOnly = false, ordinaryStage = null } = {}) {
     const snapshot = record.snapshot;
     const { root, identity } = this.#nativeIntegrationStaging(record);
     if (record.objectStorage && JSON.stringify(record.objectStorage) !== JSON.stringify(nativeObjectStorageDescriptor())) {
       throw new Error("Native Test object storage identity changed");
     }
-    const ownedGitAt = (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
+    // The ordinary stage writes only its private checkout and the separately
+    // locked object pool. Keep their process fences without blocking source refs.
+    const guardScope = ordinaryStage === "detached" ? "task" : "repository";
+    if (ordinaryStage) {
+      if (record.target || !record.objectStorage) throw new Error("Detached Test requires fresh owned object storage");
+      await assertPlainIsolationPath(path.join(root, "repository", ".git"));
+    }
+    const ownedGitAt = (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease, guardScope,
       guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 });
-    const objectStore = record.objectStorage ? this.createNativeObjectStore({ sourceRoot: snapshot.repositoryRoot, lease }) : null;
+    const objectStore = record.objectStorage
+      ? this.#createNativeObjectStore({ sourceRoot: snapshot.repositoryRoot, lease }, guardScope) : null;
     const retirementDatabase = record.target && await lstat(path.join(this.dataDir, "runtime.sqlite")).catch(error => {
       if (error.code === "ENOENT") return null; throw error;
     });
@@ -4561,11 +4630,18 @@ export class TaskGitWorkspaceService {
 
       deliveredHead: record.target ?? null,
       provisionNativeObjects: objectStore ? input => objectStore.provision(input) : null,
+      verifyNativeObjects: ordinaryStage ? input => objectStore.assertConsumer(input) : null,
       gitAt: ownedGitAt,
-      readJson: pathname => readFile(pathname, "utf8").then(JSON.parse, error => {
-        if (error.code === "ENOENT") return null;
-        throw error;
-      }),
+      readJson: async pathname => {
+        const state = await readFile(pathname, "utf8").then(JSON.parse, error => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
+        if (ordinaryStage === "cutover" && (!state?.objectStorage || state.provisioningObjects)) {
+          throw new Error("Detached Test object preparation changed before dev cutover");
+        }
+        return state;
+      },
       writeJson: async (pathname, value) => {
         const temporary = `${pathname}.${randomUUID()}.tmp`;
         await writeSelectedRecord(temporary, value);
@@ -4670,9 +4746,37 @@ export class TaskGitWorkspaceService {
         ...(publishedMetadata ? [publishedMetadata.commit] : [])], adoptions };
   }
 
+  async #replaceNativeIntegrationRecord(file, record) {
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    await writeSelectedRecord(temporary, record);
+    await rename(temporary, file);
+  }
+
+  async #prepareNativeIntegrationRecord(snapshot, dev, { lease, operationId,
+    nativeAbsorptionInput, nativeAbsorptionHistory, expectedTaskRevision, initialNativeTest }) {
+    const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, lease, undefined,
+      Boolean(nativeAbsorptionInput || nativeAbsorptionHistory));
+    await assertNativeTaskHistories({
+      git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }),
+      baseCommit: dev.mainCommit,
+      historyAuthority,
+      tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit,
+        ...(nativeAbsorptionInput || nativeAbsorptionHistory
+          ? { nativeAbsorptionInput: nativeAbsorptionInput ?? nativeAbsorptionHistory.absorptionInput } : {}) }],
+    });
+    return { version: 1, kind: "native-task-integration-v1", operationId, phase: "prepared",
+      snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit,
+      objectStorage: nativeObjectStorageDescriptor(),
+      nativeHistoryAuthority: historyAuthority.binding,
+      ...(initialNativeTest ? { initialNativeTest } : {}),
+      ...(nativeAbsorptionInput || nativeAbsorptionHistory ? { expectedTaskRevision,
+        ...(nativeAbsorptionInput ? { nativeAbsorptionInput } : {}),
+        ...(nativeAbsorptionHistory ? { nativeAbsorptionHistory } : {}) } : {}) };
+  }
+
   async #mergeIntoDevOwned(snapshot, { lease, operationId = null, nativeAbsorptionInput = null,
     nativeAbsorptionHistory = null, expectedTaskRevision = null, validateAbsorption = null,
-    initialNativeTest = null, validateInitialNativeTest = null }) {
+    initialNativeTest = null, validateInitialNativeTest = null, ordinaryTestStage = null, validateOrdinaryTask = null }) {
     this.#assertAvailable("mergeIntoDevOwned");
     await requiredGuardLease(lease).assertOwned();
     await this.#assertNoProcessTreeGuard(snapshot.taskId);
@@ -4685,6 +4789,18 @@ export class TaskGitWorkspaceService {
       let record = await this.pendingNativeIntegrationOwned({ taskId: snapshot.taskId,
         projectRoot: snapshot.repositoryRoot, operationId, lease: ownedLease });
       let dev;
+      const detached = record?.detachedOrdinaryTest === true;
+      if (detached) {
+        if (record.phase !== "prepared" || record.target != null || record.targetTree != null || record.stageRoot != null
+            || initialNativeTest || nativeAbsorptionInput || nativeAbsorptionHistory
+            || record.initialNativeTest || record.nativeAbsorptionInput || record.nativeAbsorptionHistory) {
+          throw new Error("Detached Test original has unexpected committed or specialized evidence");
+        }
+        snapshot = record.snapshot;
+        // With no admitted target the original snapshot can be prepared
+        // against current dev. A journal with a target never takes this path.
+        record = null;
+      }
       if (initialNativeTest) await validateInitialNativeTest({ record });
       if (record) {
         if (JSON.stringify(record.initialNativeTest ?? null) !== JSON.stringify(initialNativeTest)) throw new Error("Initial native Test original Git binding changed");
@@ -4711,31 +4827,20 @@ export class TaskGitWorkspaceService {
           validateAbsorption();
           await this.#assertSelectedAbsorptionGit(nativeAbsorptionInput, snapshot.repositoryRoot, ownedLease);
         }
-        const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, ownedLease, undefined,
-          Boolean(nativeAbsorptionInput || nativeAbsorptionHistory));
-        await assertNativeTaskHistories({
-          git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease: ownedLease }),
-          baseCommit: dev.mainCommit,
-          historyAuthority,
-          tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit,
-            ...(nativeAbsorptionInput || nativeAbsorptionHistory
-              ? { nativeAbsorptionInput: nativeAbsorptionInput ?? nativeAbsorptionHistory.absorptionInput } : {}) }],
-        });
-        record = { version: 1, kind: "native-task-integration-v1", operationId, phase: "prepared",
-          snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit,
-          objectStorage: nativeObjectStorageDescriptor(),
-          nativeHistoryAuthority: historyAuthority.binding,
-          ...(initialNativeTest ? { initialNativeTest } : {}),
-          ...(nativeAbsorptionInput || nativeAbsorptionHistory ? { expectedTaskRevision,
-            ...(nativeAbsorptionInput ? { nativeAbsorptionInput } : {}),
-            ...(nativeAbsorptionHistory ? { nativeAbsorptionHistory } : {}) } : {}) };
+        record = await this.#prepareNativeIntegrationRecord(snapshot, dev, { lease: ownedLease, operationId,
+          nativeAbsorptionInput, nativeAbsorptionHistory, expectedTaskRevision, initialNativeTest });
+        if (ordinaryTestStage && !samePath(ordinaryTestStage, this.#nativeIntegrationStaging(record).root)) {
+          throw staleOrdinaryTestStage;
+        }
         await mkdir(path.dirname(file), { recursive: true });
-        await writeSelectedRecord(file, record);
+        if (detached) await this.#replaceNativeIntegrationRecord(file, { ...record, detachedOrdinaryTest: true });
+        else await writeSelectedRecord(file, record);
       }
       const git = (args, cwd = dev.projectRoot, options = {}) => this.#runOwned(args, { ...options, cwd, lease: ownedLease,
         guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 });
       const sourceFence = async () => {
         await ownedLease.assertOwned();
+        validateOrdinaryTask?.();
         if (record.nativeHistoryAuthority) {
           const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, ownedLease, record.nativeHistoryAuthority);
           await assertNativeTaskHistories({ git: (args, options = {}) => git(args, snapshot.repositoryRoot, options),
@@ -4767,7 +4872,8 @@ export class TaskGitWorkspaceService {
       await sourceFence();
       {
         try {
-          const composition = await this.#nativeIntegrationComposition(record, ownedLease);
+          const composition = await this.#nativeIntegrationComposition(record, ownedLease,
+            { ordinaryStage: ordinaryTestStage ? "cutover" : null });
           record.target = composition.head;
           record.targetTree = composition.tree;
           record.stageRoot = composition.root;
@@ -5102,6 +5208,7 @@ export class TaskGitWorkspaceService {
 
   async snapshotAndMergeOwned(params = {}) {
     this.#assertAvailable("snapshotAndMergeOwned");
+    const prepared = params[ordinaryTestPreparation];
     await requiredGuardLease(params.lease).assertOwned();
     await this.#assertNoProcessTreeGuard(params.taskId);
     if (params.initialNativeTest) await params.validateInitialNativeTest();
@@ -5120,7 +5227,7 @@ export class TaskGitWorkspaceService {
       if (reused) return reused;
     }
     const pendingNative = params.operationId ? await this.pendingNativeIntegrationOwned({ ...params, projectRoot: repoRoot }) : null;
-    const snapshot = pendingNative?.snapshot ?? await this.snapshotOwned(params);
+    const snapshot = pendingNative?.snapshot ?? prepared?.snapshot ?? await this.snapshotOwned(params);
     await params.lease.assertOwned();
     if (!snapshot.changedFiles.length) {
       const dev = await this.#withClearDevLock(snapshot.repositoryRoot, params.lease, (ownedLease) => (
@@ -5146,7 +5253,8 @@ export class TaskGitWorkspaceService {
       nativeAbsorptionInput: params.nativeAbsorptionInput, expectedTaskRevision: params.expectedTaskRevision,
       nativeAbsorptionHistory: params.nativeAbsorptionHistory,
       initialNativeTest: params.initialNativeTest, validateInitialNativeTest: params.validateInitialNativeTest,
-      validateAbsorption: params.validateAbsorption });
+      validateAbsorption: params.validateAbsorption, ordinaryTestStage: prepared?.stage,
+      validateOrdinaryTask: params.validateOrdinaryTask });
     if (integration.integrated) {
       await params.lease.assertOwned();
       await this.#withClearDevLock(snapshot.repositoryRoot, params.lease, (ownedLease) => (

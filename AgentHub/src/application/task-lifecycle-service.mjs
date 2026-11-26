@@ -14,6 +14,9 @@ import { nativeTestMetadataDrift, sameTaskWorkflowState } from "../domain/native
 import { mcpArgumentsHash } from "../domain/mcp-arguments-hash.mjs";
 import { taskGitIdentityHash } from "../domain/task-git-reference.mjs";
 
+const needsAwaitOwnership = Symbol("needs Await ownership");
+const ordinaryTestSources = new Set(["new", "in_progress", "blocked", "testing"]);
+
 export class TaskIntegrationRejectedError extends Error {
   constructor(cause) {
     super(cause.message, { cause });
@@ -226,12 +229,26 @@ export class TaskLifecycleService {
       if (options.status !== "done") throw Error("Manual delivery proof applies only to workflow Done");
       return this.#updateWorkflowStatusLocked(options);
     }
-    const workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
+    let workspace = task.workspaceId ? this.workspaceCatalog.workspace(task.workspaceId) : null;
     if (workspace?.settings?.releaseWorkflowEnabled !== true) {
       return this.#updateWorkflowStatusLocked(options);
     }
     if (!this.releasePreflight) {
       throw new Error("Release preflight is unavailable; workflow status was not changed");
+    }
+    if (String(options.status ?? "").trim() === "testing" && ordinaryTestSources.has(task.workflowStatus)
+        && !options.selectedAbsorptionHandoff && !options.operationEvidence?.initialNativeTest
+        && this.taskGitWorkspaces?.withOrdinaryTestRepository) {
+      const result = await this.#updateWorkflowStatusLocked(options,
+        { releaseWorkflow: true, ordinaryTestWorkspaceId: workspace.id });
+      if (result !== needsAwaitOwnership) return result;
+      // The Task may have entered Await while this invocation was queued.
+      // Drop Task ownership before taking the Workspace lease in its usual order.
+      const current = this.#task(options.taskId);
+      workspace = current.workspaceId ? this.workspaceCatalog.workspace(current.workspaceId) : null;
+      if (workspace?.settings?.releaseWorkflowEnabled !== true) {
+        return this.#updateWorkflowStatusLocked(options);
+      }
     }
     let entered = false, result;
     try {
@@ -872,24 +889,30 @@ export class TaskLifecycleService {
     expectedRevision = null, expectedWorkflowStatus = null, operationEvidence = null,
     admissionReceipt = null, manualDelivery = null,
     selectedAbsorptionHandoff: handoffInput = null,
-  } = {}, { releaseWorkflow = false } = {}) {
+  } = {}, { releaseWorkflow = false, ordinaryTestWorkspaceId = null } = {}) {
     const handoff = selectedAbsorptionHandoff(handoffInput);
     if (handoff && (!releaseWorkflow || status !== "testing" || expectedRevision == null
         || expectedWorkflowStatus !== "in_progress")) throw new Error("Native absorption requires exact Test admission");
     const operation = (lease = {}) => {
       const task = this.#task(taskId);
+      if (ordinaryTestWorkspaceId != null && (
+        task.workspaceId !== ordinaryTestWorkspaceId
+        || this.workspaceCatalog.workspace(task.workspaceId)?.settings?.releaseWorkflowEnabled !== true
+        || !ordinaryTestSources.has(task.workflowStatus)
+      )) return needsAwaitOwnership;
       const refs = (task.gitReferences ?? []).filter(ref => samePath(ref.projectRoot, projectRoot || this.#projectRoot(task)));
       const prior = !handoff && releaseWorkflow && status === "testing" && refs.length === 1
         ? this.taskBoard.selectedCompositionForRelease({ taskId, projectRoot: refs[0].projectRoot,
           resultCommit: refs[0].resultCommit })?.selectedComposition : null;
       const history = prior?.kind === "native-task-integration-v1" ? prior.absorptionHistory ?? prior : null;
+      if (ordinaryTestWorkspaceId != null && history) return needsAwaitOwnership;
       return this.#updateWorkflowStatusWithLease({
         taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
         admissionReceipt, manualDelivery,
         operationEvidence: handoff ? { ...(operationEvidence ?? {}), nativeAbsorptionInput:
           this.#selectedAbsorptionBinding(task, handoffInput, operationId) }
           : history ? { ...(operationEvidence ?? {}), nativeAbsorptionHistory: history } : operationEvidence,
-      }, { releaseWorkflow, lease });
+      }, { releaseWorkflow, lease, ordinaryTest: ordinaryTestWorkspaceId != null });
     };
     return handoff
       ? this.taskGitWorkspaces.withTaskLocks([taskId, handoff.declaration.sourceTaskId], operation, { guardTaskId: taskId })
@@ -915,7 +938,7 @@ export class TaskLifecycleService {
     admissionReceipt = null, manualDelivery = null,
 
     initialNativeTestSource = null, initialNativeTestRecovery = false, nativeAwaitRecovery = null,
-  } = {}, { releaseWorkflow = false, lease = {} } = {}) {
+  } = {}, { releaseWorkflow = false, lease = {}, ordinaryTest = false } = {}) {
       const task = this.#task(taskId);
       const workflowStatus = String(status ?? "").trim();
       const revisionChanged = expectedRevision != null && task.revision !== Number(expectedRevision);
@@ -1197,7 +1220,10 @@ export class TaskLifecycleService {
         if (!selectedProjectRoot || !this.taskGitWorkspaces) {
           throw new Error("Task Git workspace is unavailable; workflow status was not changed");
         }
-        const { snapshot, integration } = await this.taskGitWorkspaces.snapshotAndMergeOwned({
+        const validateOrdinaryTask = ordinaryTest ? () => {
+          if (!sameTaskWorkflowState(this.#task(task.id), task)) throw new Error("Task changed while Test was prepared");
+        } : null;
+        const testInput = {
           operationId,
           taskId: task.id,
           taskNumber: task.taskNumber,
@@ -1206,79 +1232,87 @@ export class TaskLifecycleService {
           summary: task.title,
           expectedResultReferences: task.workflowStatus === "testing" ? task.gitReferences ?? [] : null,
           nativeAbsorptionInput, nativeAbsorptionHistory, expectedTaskRevision: task.revision, validateAbsorption,
-          initialNativeTest, validateInitialNativeTest,
-
-          lease,
-        });
-        if (!integration.resultProved || !integration.integrated) {
-          if (integration.devRestored === true && integration.conflicts?.length) {
-            const failure = new TaskIntegrationConflictError({
-              taskId: task.id, operationId, projectRoot: snapshot.projectRoot,
-              resultCommit: snapshot.headCommit, devCommit: integration.dev.headCommit,
-              conflicts: integration.conflicts, devRestored: true,
-              nativeConflictRoot: integration.nativeConflictRoot,
-            });
-            await this.#assertOwned(lease);
-            await this.#mutation(() => this.taskBoard.failLifecycleTransition(operationId, failure), operationId);
-            const terminal = this.taskBoard.lifecycleTransition(operationId);
-            if (terminal?.phase !== "failed" || terminal.taskId !== task.id || terminal.error !== failure.message.slice(0, 4000)) {
-              throw new Error("Task conflict outcome could not be confirmed");
+          initialNativeTest, validateInitialNativeTest, validateOrdinaryTask,
+        };
+        const integrate = async (lease, merge = () => this.taskGitWorkspaces.snapshotAndMergeOwned({ ...testInput, lease })) => {
+          validateOrdinaryTask?.();
+          const { snapshot, integration } = await merge();
+          if (!integration.resultProved || !integration.integrated) {
+            if (integration.devRestored === true && integration.conflicts?.length) {
+              const failure = new TaskIntegrationConflictError({
+                taskId: task.id, operationId, projectRoot: snapshot.projectRoot,
+                resultCommit: snapshot.headCommit, devCommit: integration.dev.headCommit,
+                conflicts: integration.conflicts, devRestored: true,
+                nativeConflictRoot: integration.nativeConflictRoot,
+              });
+              await this.#assertOwned(lease);
+              await this.#mutation(() => this.taskBoard.failLifecycleTransition(operationId, failure), operationId);
+              const terminal = this.taskBoard.lifecycleTransition(operationId);
+              if (terminal?.phase !== "failed" || terminal.taskId !== task.id || terminal.error !== failure.message.slice(0, 4000)) {
+                throw new Error("Task conflict outcome could not be confirmed");
+              }
+              throw failure;
             }
-            throw failure;
+            throw new Error(integration.error || "Task result was not integrated into dev");
           }
-          throw new Error(integration.error || "Task result was not integrated into dev");
-        }
-        await this.#assertOwned(lease);
-        const gitWorkspaceResult = {
-          branch: snapshot.branch,
-          projectRoot: snapshot.projectRoot,
-          baseCommit: snapshot.baseCommit,
-          headCommit: snapshot.headCommit,
-        };
-        const gitIntegrationResult = {
-          outcome: integration.outcome,
-          integrated: true,
-          alreadyIntegrated: integration.alreadyIntegrated === true,
-          devBranch: integration.dev?.branch ?? "dev",
-          devHeadCommit: integration.dev?.headCommit ?? null,
-          conflicts: [],
-          error: null,
-        };
-        const terminal = (nativeDescriptor = null) => this.#mutation(() => this.taskBoard.commitWorkflowTransition({
-          operationId,
-          gitReferences: [{
-            projectRoot: snapshot.repositoryRoot,
-            resultCommit: snapshot.headCommit,
+          await this.#assertOwned(lease);
+          const gitWorkspaceResult = {
             branch: snapshot.branch,
-          }],
-          ...binding,
-          evidence: {
-            ...(operationEvidence ?? {}),
+            projectRoot: snapshot.projectRoot,
+            baseCommit: snapshot.baseCommit,
+            headCommit: snapshot.headCommit,
+          };
+          const gitIntegrationResult = {
             outcome: integration.outcome,
-            resultCommit: snapshot.headCommit,
+            integrated: true,
+            alreadyIntegrated: integration.alreadyIntegrated === true,
+            devBranch: integration.dev?.branch ?? "dev",
             devHeadCommit: integration.dev?.headCommit ?? null,
-            ...(nativeDescriptor ? { selectedCompositionRequired: true, selectedComposition: nativeDescriptor } : {}),
-            response: {
-              gitWorkspace: gitWorkspaceResult, gitIntegration: gitIntegrationResult,
-              ...(affectsAwait ? { releaseCandidate: {
-                status: "pending", reason: "Await result changed; candidate preparation requires readback or retry",
-              } } : {}),
+            conflicts: [],
+            error: null,
+          };
+          const terminal = (nativeDescriptor = null) => this.#mutation(() => this.taskBoard.commitWorkflowTransition({
+            operationId,
+            gitReferences: [{
+              projectRoot: snapshot.repositoryRoot,
+              resultCommit: snapshot.headCommit,
+              branch: snapshot.branch,
+            }],
+            ...binding,
+            evidence: {
+              ...(operationEvidence ?? {}),
+              outcome: integration.outcome,
+              resultCommit: snapshot.headCommit,
+              devHeadCommit: integration.dev?.headCommit ?? null,
+              ...(nativeDescriptor ? { selectedCompositionRequired: true, selectedComposition: nativeDescriptor } : {}),
+              response: {
+                gitWorkspace: gitWorkspaceResult, gitIntegration: gitIntegrationResult,
+                ...(affectsAwait ? { releaseCandidate: {
+                  status: "pending", reason: "Await result changed; candidate preparation requires readback or retry",
+                } } : {}),
+              },
             },
-          },
-        }), operationId);
-        const current = this.taskGitWorkspaces.withNativeIntegrationTerminalOwned
-          ? await this.taskGitWorkspaces.withNativeIntegrationTerminalOwned(snapshot,
-            { operationId, lease, nativeAbsorptionInput, nativeAbsorptionHistory, validateAbsorption,
-              initialNativeTest, validateInitialNativeTest }, terminal)
-          : await terminal();
-        return {
-          task: current,
-          gitWorkspace: gitWorkspaceResult,
-          gitIntegration: gitIntegrationResult,
-          ...(affectsAwait ? {
-            releaseCandidate: { status: "invalidated", reason: "Await result changed" },
-          } : {}),
+          }), operationId);
+          const current = this.taskGitWorkspaces.withNativeIntegrationTerminalOwned
+            ? await this.taskGitWorkspaces.withNativeIntegrationTerminalOwned(snapshot,
+              { operationId, lease, nativeAbsorptionInput, nativeAbsorptionHistory, validateAbsorption,
+                initialNativeTest, validateInitialNativeTest }, terminal)
+            : await terminal();
+          return {
+            task: current,
+            gitWorkspace: gitWorkspaceResult,
+            gitIntegration: gitIntegrationResult,
+            ...(affectsAwait ? {
+              releaseCandidate: { status: "invalidated", reason: "Await result changed" },
+            } : {}),
+          };
         };
+        // Keep this repository's exact dev ref and checkout stable from the
+        // Git effect through its terminal proof and durable Task commit.
+        return ordinaryTest
+          ? await this.taskGitWorkspaces.withOrdinaryTestRepository(
+            { ...testInput, lease }, integrate)
+          : await integrate(lease);
       } catch (error) {
         if (["TASK_WITHDRAWAL_UNKNOWN", "AWAIT_ACCEPTANCE_UNKNOWN", "AWAIT_PREPARATION_UNKNOWN", "TASK_NATIVE_INTEGRATION_UNKNOWN"].includes(error?.code)) throw error;
         if (releaseWorkflow && workflowStatus === "testing" && this.taskGitWorkspaces.pendingNativeIntegrationOwned) {

@@ -4,7 +4,7 @@ import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 const context = new AsyncLocalStorage();
 const MAX_DETAIL_SPANS = 512;
 // Fixed diagnostic classes only; no argv, paths or caller-provided stage labels.
-const AGGREGATE_AWAITS = new Set(["lock-owner-readdir-await", "lock-owner-read-await"]);
+const AGGREGATE_AWAITS = new Set(["lock-owner-readdir-await", "lock-owner-read-await", "native:object-alias-owner"]);
 const AGGREGATE_STAGES = new Set([...AGGREGATE_AWAITS, "git-child", "owned-command", "lease-assert", "process-guard",
   "release:planner:canonical-read", "release:planner:selected-authority", "release:planner:git-evidence", "release:planner:projection",
   "dependency-project", "dependency-inventory", "dependency-full-proof", "dependency-npm",
@@ -13,6 +13,7 @@ const AGGREGATE_STAGES = new Set([...AGGREGATE_AWAITS, "git-child", "owned-comma
   "native-retire:archive-lease-wait", "native-retire:archive-intake", "native-retire:archive-verification", "native-retire:native-call",
   "native:object-pool", "native:object-import", "native:object-inventory", "native:object-pack-indexes", "native:object-aliases",
   "native:object-closure", "native:object-connectivity", "native:merge", "native:prefix-recheck",
+  "test-dev-inputs", "test-detached-stage", "test-dev-owned",
   "repository-guards", "release:git-command", "release:git-input", "release:base-evidence",
   "release:integration-evidence", "native:history-authority", "native:task-histories",
   "native:cutover", "native:promotion-authority", "lock-native-bootstrap", "lock-native-publish",
