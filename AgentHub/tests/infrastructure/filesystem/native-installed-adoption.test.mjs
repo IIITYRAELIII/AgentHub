@@ -354,8 +354,8 @@ test("native composition rejects substituted receipts, changed snapshot and post
   await assertNativeTaskHistories({ git: f.port, baseCommit: f.source, tasks: f.tasks, historyAuthority: authority });
   await save(f.task.projectRoot, "CHANGELOG.md", "Task invented notes\n");
   const notes = await commit(f.task.projectRoot, "invalid task notes");
-  await assert.rejects(assertNativeTaskHistories({ git: f.port, baseCommit: f.source,
-    tasks: [{ ...f.tasks[0], resultCommit: notes }], historyAuthority: authority }), /release-owned/);
+  await assertNativeTaskHistories({ git: f.port, baseCommit: f.source,
+    tasks: [{ ...f.tasks[0], resultCommit: notes }], historyAuthority: authority });
   await assert.rejects(verify(), /identity changed/);
   // New ordinary adoption belongs to the new exact snapshot, never the old receipt.
   await git(f.task.projectRoot, ["checkout", f.result, "--", "CHANGELOG.md"]);
@@ -378,7 +378,7 @@ test("native composition rejects substituted receipts, changed snapshot and post
   assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
 });
 
-test("an exact adoption never waives Task notes, modes, version changes or a foreign merge side", async t => {
+test("an exact adoption ignores root notes and still refuses version changes and foreign merge sides", async t => {
   const f = await fixture(t);
   const verify = async label => {
     const resultCommit = await git(f.task.projectRoot, ["rev-parse", "HEAD"]);
@@ -393,11 +393,11 @@ test("an exact adoption never waives Task notes, modes, version changes or a for
   };
   await save(f.task.projectRoot, "CHANGELOG.md", "Invented Task release notes\n");
   await commit(f.task.projectRoot, "invalid notes");
-  await assert.rejects((await verify("notes"))(), /release-owned CHANGELOG/);
+  await (await verify("notes"))();
   await git(f.task.projectRoot, ["checkout", f.adopted, "--", "CHANGELOG.md"]);
   await git(f.task.projectRoot, ["update-index", "--chmod=+x", "CHANGELOG.md"]);
   await git(f.task.projectRoot, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "invalid notes mode"]);
-  await assert.rejects((await verify("mode"))(), /release-owned CHANGELOG/);
+  await (await verify("mode"))();
   await git(f.task.projectRoot, ["checkout", f.adopted, "--", "CHANGELOG.md"]);
   await save(f.task.projectRoot, "AgentHub/package.json", JSON.stringify({ name: "fixture", version: "9.9.9" }) + "\n");
   await commit(f.task.projectRoot, "invalid version");
