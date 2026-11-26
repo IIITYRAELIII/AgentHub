@@ -535,7 +535,7 @@ test("release service closure proves exact published manifest and Done result wi
 
 test("published duplicate proof requires exact clean published main and survivor lineage", async (context) => {
   const { root } = await repositoryWithOrigin(context);
-  const dataDir = path.join(root, "..", `${path.basename(root)}-published-duplicate-data`);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-data`);
   context.after(() => rm(dataDir, { recursive: true, force: true }));
   let publication = null;
   const service = new TaskGitWorkspaceService({ dataDir, readPublication: async () => publication });
@@ -1864,7 +1864,9 @@ test("release adoption requires a selected Task result and stays pinned when ori
     /already has different content/u,
   );
 
-  await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
+  const retainedDev = await git(fixture.root, "rev-parse", "dev");
+  assert.equal((await fixture.service.mergeIntoDev(fixture.snapshot)).integrated, true);
+  assert.equal(await git(fixture.root, "rev-parse", "dev"), retainedDev);
   const adopted = await fixture.service.assertExplicitUpstreamAdoption({
     projectRoot: fixture.root,
     acceptedLocalMainCommit: localMain,
@@ -2097,14 +2099,25 @@ test("release integration synchronizes accepted main once without changing the p
   assert.equal(await readFile(path.join(dev.projectRoot, "dev-only.txt"), "utf8"), "retained dev\n");
 });
 
-test("historical reviewed bootstrap does not authorize a fresh native result", async (context) => {
+test("historical native Test requires exact adoption and keeps dev changelog", async (context) => {
   for (const variant of [{}, { missingProof: true }, { ambiguousProof: true }, { modeMismatch: true }]) {
     await context.test(JSON.stringify(variant), async (child) => {
       const fixture = await reviewedDevBootstrapFixture(child, variant);
-      await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), {
-        code: "RELEASE_NATIVE_HISTORY_REQUIRED",
-      });
-      assert.equal(await git(fixture.root, "rev-parse", "dev"), fixture.oldDev);
+      if (variant.missingProof || variant.ambiguousProof) {
+        await assert.rejects(fixture.service.mergeIntoDev(fixture.snapshot), {
+          code: "RELEASE_NATIVE_HISTORY_REQUIRED",
+        });
+        assert.equal(await git(fixture.root, "rev-parse", "dev"), fixture.oldDev);
+      } else {
+        assert.ok(fixture.adoption);
+        assert.equal((await fixture.service.mergeIntoDev(fixture.snapshot)).integrated, true);
+        const head = await git(fixture.root, "rev-parse", "dev");
+        assert.notEqual(head, fixture.oldDev);
+        assert.equal(await git(fixture.root, "ls-tree", head, "app.txt"),
+          await git(fixture.root, "ls-tree", fixture.snapshot.headCommit, "app.txt"));
+        assert.equal(await git(fixture.root, "show", head + ":CHANGELOG.md"),
+          await git(fixture.root, "show", fixture.oldDev + ":CHANGELOG.md"));
+      }
       assert.equal(await git(fixture.devRoot, "status", "--porcelain"), "");
     });
   }
@@ -2425,7 +2438,9 @@ test("known dev sibling context is preview-only while unrelated dev work is pres
   await git(root, "remote", "add", "origin", origin);
   const main = await git(root, "rev-parse", "main");
   const { TaskIntegrationGitService } = await import("../../../src/infrastructure/filesystem/task-integration-git.mjs");
-  const release = new TaskIntegrationGitService({ dataDir: path.join(dataDir, "publication") });
+  const releaseData = path.join(root, "..", `${path.basename(root)}-pub`);
+  context.after(() => rm(releaseData, { recursive: true, force: true }));
+  const release = new TaskIntegrationGitService({ dataDir: releaseData });
   await assert.rejects(release.prepareCandidate({
     projectRoot: root, workspaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     planRevision: "a".repeat(64), approvedBaseCommit: main,

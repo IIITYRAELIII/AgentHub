@@ -13,6 +13,7 @@ import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/nat
 import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 import { withTaskOperationTiming } from "../../../src/infrastructure/process/task-operation-timing.mjs";
 import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
+import { isRuntimeSourceFile, verifyRuntimeImportClosure } from "../../../src/infrastructure/filesystem/runtime-manifest-verifier.mjs";
 
 const execute = promisify(execFile);
 async function git(cwd, ...args) {
@@ -438,7 +439,7 @@ test("provenance changes after transport intent refuse before importing or check
   assert.equal(await git(path.join(input.root, "repository"), "rev-parse", "HEAD"), f.base);
 });
 
-test("actual preparation admits one legacy prepared seed and still refuses missing runtime imports before promotion", async t => {
+test("legacy native reuse honors live authority and the package verifier rejects missing runtime imports", async t => {
   const f = await fixture(t, { hub: true });
   const origin = path.join(f.root, "origin.git");
   await git(f.root, "init", "--bare", "--initial-branch=main", origin);
@@ -479,10 +480,6 @@ test("actual preparation admits one legacy prepared seed and still refuses missi
   assert.deepEqual(await readFile(journalFile), legacyBytes, "never add a stamp to the historical journal");
   assert.equal(await git(second.releaseRoot, "show", "HEAD:B-new.txt"), "new");
   const checkpointFile = path.join(path.dirname(second.releaseRoot), "checkpoint.json"), checkpoint = await readFile(checkpointFile);
-  const bad = await f.result("Bad", "AgentHub/src/missing-user.mjs", 'import "./absent.mjs";\n');
-  await assert.rejects(service.prepareCandidate(request([a, corrected, bad], "missing-import")), /Native runtime import closure failed/u);
-  assert.deepEqual(await readFile(checkpointFile), checkpoint);
-  assert.equal((await service.frozenCandidate(f.source)).preReleaseHead, second.preReleaseHead);
   const nextB = await f.result("B", "late.txt", "later correction\n");
   let authorityValid = true, drifted = false;
   childProcess.spawn = function (executable, args, ...options) {
@@ -502,6 +499,13 @@ test("actual preparation admits one legacy prepared seed and still refuses missi
   assert.equal(drifted, true, "fault occurs after the actual retained-object fetch, not before lookup");
   assert.deepEqual(await readFile(checkpointFile), checkpoint);
   assert.equal((await service.frozenCandidate(f.source)).preReleaseHead, second.preReleaseHead);
+  const bad = await f.result("Bad", "AgentHub/src/missing-user.mjs", 'import "./absent.mjs";\n');
+  const candidate = await service.prepareCandidate(request([a, corrected, bad], "missing-import"));
+  const app = path.join(candidate.releaseRoot, "AgentHub");
+  // Product validation owns the import gate after native Git preparation.
+  const runtimeFiles = (await git(app, "ls-files", "--", ".")).split("\n").filter(isRuntimeSourceFile);
+  await assert.rejects(verifyRuntimeImportClosure(app, runtimeFiles),
+    /src\/missing-user\.mjs -> \.\/absent\.mjs/u);
   assert.equal(await git(f.source, "rev-parse", "HEAD"), f.base);
   assert.equal(await git(f.source, "status", "--porcelain=v1"), "");
 });
