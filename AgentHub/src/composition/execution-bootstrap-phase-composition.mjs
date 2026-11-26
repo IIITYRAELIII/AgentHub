@@ -343,7 +343,21 @@ export function createExecutionBootstrapPhase({
   const bootstrap = createAgentHubBootstrapComposition({
     config,
     runtimeCommandRoot,
-    handleDesktopControl: api.handleDesktopControl,
+    handleDesktopControl: async (request) => {
+      // This handler is installed only on the authenticated Desktop socket.
+      // The browser, Telegram and ordinary user send do not reach this port.
+      if (request.action !== "release-continuation") return api.handleDesktopControl(request);
+      const health = await api.handleDesktopControl({
+        action: "runtime-health", params: {}, context: request.context,
+      });
+      if (selection.hostState.stopping || !health.live || !health.ready || health.degraded
+          || health.installerCutover?.admissionClosed) return { retry: true };
+      const { contextToken, requestId, streamId, text } = request.params ?? {};
+      return infrastructure.hubMcpService.call("hub_stream_message_send", {
+        context_token: contextToken, request_id: requestId, stream_id: streamId, text,
+        mode: "steer", confirm_send: true,
+      });
+    },
     forgetDesktopControl: api.forgetDesktopControl,
     runtimeCommandServer: infrastructure.runtimeCommandServer,
     hubMcpServer: infrastructure.hubMcpServer,
