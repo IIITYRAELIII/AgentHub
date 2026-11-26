@@ -168,8 +168,13 @@ matches; a mismatch uses the same exact-group source read as an omitted group.
 New Codex group citations read the full source before binding content and surface
 hashes. The selected preview must render as an exact prefix of that source, with
 the same selected text at the same UTF-16 offsets; otherwise creation fails
-visibly rather than guessing offsets. All three hashes remain mandatory on
-navigation. Legacy citations already bound to shortened content are not rewritten.
+visibly rather than guessing offsets. The complete selected text is visible
+in the composer while verification runs. This provisional card belongs to the
+current composer operation and is outside the draft, persistence and ordinary
+form submission. A successful check enables submission with the exact locator.
+Refusal, dismissal or a Stream/binding change removes the provisional card
+without adding an annotation. All three hashes remain mandatory on navigation.
+Legacy citations already bound to shortened content are not rewritten.
 
 Large compaction snapshots and user-input records do not become agent trace
 items. Exact source reads validate their complete JSON structure with bounded

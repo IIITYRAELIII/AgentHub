@@ -9025,7 +9025,8 @@ function updateSendState() {
     || currentTaskReferences().length > 0
     || currentAnnotations().length > 0;
   const preparing = currentAttachmentPreviews().length > 0;
-  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(currentPendingComposerRequest()) || preparing;
+  composerSend.disabled = !draftFilled || !state.selectedId || Boolean(currentPendingComposerRequest())
+    || preparing || Boolean(currentAnnotationPreview());
   composerQuickMessages?.querySelectorAll("button").forEach((button) => {
     button.disabled = !state.selectedId || Boolean(currentPendingComposerRequest()) || preparing;
   });
@@ -9127,6 +9128,8 @@ function sendComposerRequest({
   restoreOnReject = false,
 } = {}) {
   if (!state.selectedId || currentPendingComposerRequest()) return;
+  // An ordinary submit includes the draft. Quick-send owns its own text.
+  if (clearComposer && currentAnnotationPreview()) return;
   if (currentAttachmentPreviews().length) {
     showToast("Вложения ещё готовятся. Дождись подготовки или удали их перед отправкой.");
     return;
@@ -9796,17 +9799,24 @@ function setAnnotations(next) {
   updateSendState();
 }
 
+function currentAnnotationPreview() {
+  return pendingAnnotationOperations.get(state.selectedId)?.preview ?? null;
+}
+
 function renderAnnotations() {
+  const preview = currentAnnotationPreview();
   annotationsBox.replaceChildren();
-  annotationsBox.hidden = annotations.length === 0;
+  annotationsBox.hidden = annotations.length === 0 && !preview;
   annotations.forEach(appendAnnotation);
+  if (preview) annotationsBox.append(preview);
 }
 
 function appendAnnotation(annotation, index) {
+  const pending = index == null;
   const card = el("div", { class: "annotation" }, [
     el("div", { class: "annotation-content" }, [
       el("span", { class: "annotation-quote", tabindex: "0", text: annotation.quote }),
-      el("textarea", {
+      pending ? el("small", { role: "status", text: "Проверяем источник цитаты…" }) : el("textarea", {
         class: "annotation-comment",
         "data-annotation-comment-index": index,
         rows: 1,
@@ -9817,6 +9827,7 @@ function appendAnnotation(annotation, index) {
     ]),
     el("button", {
       type: "button", class: "annotation-remove", "data-annotation-index": index,
+      "data-cancel-annotation-preview": pending,
       title: "Убрать аннотацию", "aria-label": "Убрать аннотацию", text: "×",
     }),
   ]);
@@ -9825,6 +9836,11 @@ function appendAnnotation(annotation, index) {
 }
 
 annotationsBox.addEventListener("click", (event) => {
+  if (event.target.closest("[data-cancel-annotation-preview]") && currentAnnotationPreview()) {
+    clearPendingAnnotation(state.selectedId);
+    composerInput.focus({ preventScroll: true });
+    return;
+  }
   const remove = event.target.closest("[data-annotation-index]");
   if (!remove) return;
   setAnnotations(annotations.filter((_, i) => Number(remove.dataset.annotationIndex) !== i));
@@ -10080,11 +10096,17 @@ function duplicateResponseAnnotation(left, right) {
 function clearPendingAnnotation(taskId) {
   const operation = pendingAnnotationOperations.get(taskId);
   pendingAnnotationOperations.delete(taskId);
-  operation?.dismiss();
+  operation?.dismiss?.();
+  if (operation?.preview) {
+    operation.preview.remove();
+    annotationsBox.hidden = annotationsBox.childElementCount === 0;
+    if (state.selectedId === taskId) updateSendState();
+  }
 }
 
 async function addAnnotation(selection) {
-  if (!normalizedAnnotationQuote(selection?.quote)) {
+  const quote = normalizedAnnotationQuote(selection?.quote);
+  if (!quote) {
     showToast("Выделите фрагмент сообщения или рассуждения.");
     return false;
   }
@@ -10096,18 +10118,31 @@ async function addAnnotation(selection) {
   const started = trace.now();
   const isSelectedOperation = () => state.selectedId === taskId
     && composerTaskOperationCurrent(operation, { allowDraftEdits: true });
-  const pendingMessage = "Проверяем источник цитаты…";
-  operation.dismiss = showToast(pendingMessage, null, { persistent: true });
+  const captured = selection.traceSource ?? captureCodexTraceSelection(selection);
   pendingAnnotationOperations.set(taskId, operation);
   const isPending = () => pendingAnnotationOperations.get(taskId) === operation;
-  trace.afterPaint("ui-render", "annotation-pending", started, commandId, {}, () => ({
-    outcome: !toast.hidden && toast.textContent === pendingMessage ? "succeeded" : "cancelled",
-  }), () => isPending() && isSelectedOperation());
+  if (captured?.taskId === taskId) {
+    // The text is already visible at the source. Keep its composer copy outside
+    // the durable draft until the exact source and all three hashes are checked.
+    const preview = appendAnnotation({ quote }, null);
+    operation.preview = preview;
+    annotationsBox.hidden = false;
+    updateSendState();
+    trace.afterPaint("ui-render", "annotation-preview", started, commandId, {}, () => ({
+      outcome: preview.getClientRects().length && !preview.closest("[hidden]") ? "succeeded" : "cancelled",
+    }), () => isPending() && isSelectedOperation() && preview.isConnected);
+  } else {
+    const pendingMessage = "Проверяем источник цитаты…";
+    operation.dismiss = showToast(pendingMessage, null, { persistent: true });
+    trace.afterPaint("ui-render", "annotation-pending", started, commandId, {}, () => ({
+      outcome: !toast.hidden && toast.textContent === pendingMessage ? "succeeded" : "cancelled",
+    }), () => isPending() && isSelectedOperation());
+  }
 
   let next;
   try {
     next = await trace.measure("ui-interaction", "annotation-source",
-      () => responseAnnotationFromSelection(selection, commandId), commandId,
+      () => responseAnnotationFromSelection({ ...selection, traceSource: captured }, commandId), commandId,
       result => ({ outcome: result ? "succeeded" : "failed" }));
   } catch {
     next = responseAnnotationRefusal("source-error", commandId);
@@ -10158,17 +10193,21 @@ function closeAnnotationContextMenu() {
   annotationContextMenu.hidden = true;
 }
 
-function openAnnotationContextMenu(event, selection) {
+function captureCodexTraceSelection(selection) {
   const group = traceDetailSources.get(selection.surface);
   const projection = group ? sourceMessageForSelection(selection) : null;
-  const locator = projection && responseAnnotationSurfaceLocator(selection.message, selection.surface);
+  if (projection?.message.provider !== "codex") return null;
+  const locator = responseAnnotationSurfaceLocator(selection.message, selection.surface);
+  if (!locator?.traceGroupId) return null;
+  return { taskId: state.selectedId, projection, locator, nativeItemId: group.sourceItemId,
+    text: String(selection.surface.textContent ?? "") };
+}
+
+function openAnnotationContextMenu(event, selection) {
   pendingAnnotationSelection = {
     ...selection,
     clipboardText: selectedMessageClipboard(selection)?.text ?? selection.quote,
-    ...(locator?.traceGroupId && projection.message.provider === "codex" ? {
-      traceSource: { taskId: state.selectedId, projection, locator, nativeItemId: group.sourceItemId,
-        text: String(selection.surface.textContent ?? "") },
-    } : {}),
+    traceSource: captureCodexTraceSelection(selection),
   };
   annotationContextMenu.hidden = false;
   const menuRect = annotationContextMenu.getBoundingClientRect();

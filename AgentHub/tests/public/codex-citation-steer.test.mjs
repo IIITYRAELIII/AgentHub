@@ -14,7 +14,7 @@ import { createDesktopTaskHistoryFactory } from "../../src/interfaces/desktop/de
 import { mergeActiveTaskHistory, mergeCompletedTaskHistory } from "../../src/application/task-history.mjs";
 import { codexRolloutHistory, TaskViewController } from "../../src/interfaces/telegram/task-view-controller.mjs";
 import { row, message, start, turnId, observer } from "../providers/codex/codex-rollout-answer.fixture.mjs";
-import { applyFixtureSnapshot, launchBrowser, openFixture, snapshot } from "./composer-production.fixture.mjs";
+import { applyFixtureSnapshot, launchBrowser, openFixture, setSelectedTask, snapshot } from "./composer-production.fixture.mjs";
 
 const user = (id, comment, leadingAnnotations = []) => row("response_item", { type: "message", role: "user", id,
   internal_chat_message_metadata_passthrough: { turn_id: turnId },
@@ -88,6 +88,13 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
     const pending = page.getByText("Проверяем источник цитаты…", { exact: true });
     const card = page.locator("[data-annotations] .annotation-quote");
     const input = page.locator("[data-composer-input]");
+    const send = page.locator("[data-composer-send]");
+    await page.evaluate(() => {
+      window.__quoteSends = [];
+      document.addEventListener("agenthub:intent", ({ detail }) => {
+        if (detail.type === "message:send") window.__quoteSends.push(detail.annotations);
+      });
+    });
     async function openMenu(surface, length) {
       await surface.scrollIntoViewIfNeeded();
       await surface.evaluate((node, end) => {
@@ -103,7 +110,13 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
     await openMenu(live, quote.length);
     await menu.click();
     await pending.waitFor();
-    assert.equal(await card.count(), 0);
+    assert.equal(await card.textContent(), quote, "first click must show the complete text before the worker answers");
+    assert.ok(await card.isVisible());
+    assert.ok(await send.isDisabled());
+    assert.deepEqual(await page.evaluate(() => {
+      document.querySelector("[data-composer]").requestSubmit();
+      return [composerDraftState("stream-a").annotations, window.__quoteSends];
+    }), [[], []], "the visible preview must not enter the draft or be sent without an exact source");
     await openMenu(live, quote.length);
     await menu.click();
     assert.equal(requests.length, 1, "a repeated click while pending must share the current UI action");
@@ -155,7 +168,7 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
       }
       return window.__quoteTraceEvents.filter(event => event.commandId === id);
     }, commandId);
-    for (const action of ["annotation-pending", "annotation-source", "annotation-draft", "annotation-card",
+    for (const action of ["annotation-preview", "annotation-source", "annotation-draft", "annotation-card",
       "http-history-local-session", "http-history-device-session"]) {
       assert.ok(clientEvents.some(event => event.metadata?.action === action && event.outcome === "succeeded"), action);
     }
@@ -167,8 +180,86 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
       server: serverEvents.map(event => ({ stage: event.stage, ms: event.monotonicDurationMs })),
     }));
 
+    const paintedAt = action => clientEvents.find(event => event.metadata?.action === action
+      && event.outcome === "succeeded").monotonicDurationMs;
+    assert.ok(paintedAt("annotation-preview") < paintedAt("annotation-card"));
     assert.equal(await card.count(), 1);
+    assert.ok(await send.isEnabled());
+    await page.evaluate(() => localStorage.setItem("fixture:send-mode", "accept"));
+    await send.click();
+    await page.waitForFunction(() => window.__agentHubFixture.log.some(record => record.action === "send-message"));
+    const sent = await page.evaluate(() => ({
+      intents: window.__quoteSends,
+      submissions: window.__agentHubFixture.log.filter(record => record.action === "send-message"),
+    }));
+    assert.deepEqual(sent.intents, [[{ quote, annotation: "", source: saved }]]);
+    assert.equal(sent.submissions.length, 1);
+    assert.deepEqual(sent.submissions[0].params.responseAnnotations, [{ text: quote, annotation: "", source: saved }]);
     assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a long provisional quote is discarded on dismissal, Stream change or ambiguous native source", { timeout: 30_000 }, async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub-provisional-quote-"));
+  const file = path.join(directory, "rollout.jsonl");
+  const browser = await launchBrowser();
+  try {
+    const quote = "Long visible source 🦊. ".repeat(100).trimEnd();
+    const item = message("provisional-item", "commentary", quote);
+    const activity = parseCodexRolloutActivity(start() + item);
+    const service = observer(async () => activity);
+    const observed = await service.read(binding);
+    const run = createObservedTaskRun({ ...binding, userMessages: observed.userMessages }, observed);
+    service.applyObserved(run, observed);
+    const head = row("session_meta", { id: "01a0ea85-db2c-7bd3-bfad-2634824c6069" }) + start();
+    for (const outcome of ["dismissed", "switched", "ambiguous"]) {
+      await writeFile(file, head + item + (outcome === "ambiguous" ? item : ""));
+      const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      const entered = Promise.withResolvers();
+      const release = Promise.withResolvers();
+      await openFixture(page, {
+        fixtureSnapshot: liveSnapshot(run, "provisional"), fixtureHistory: historyFor(activity),
+        localWeb: true, surface: "browser",
+        tracePageReader: async ({ tracePage }) => {
+          entered.resolve();
+          await release.promise;
+          return { provider: binding.provider, threadId: binding.threadId,
+            tracePage: await readCodexTracePageInWorker(file, tracePage) };
+        },
+      });
+      await page.evaluate(() => window.AgentHub.showSelectedTask());
+      const surface = page.locator("[data-chat-live] .turn-trace-reasoning").first();
+      await surface.waitFor();
+      await surface.evaluate(node => {
+        const range = window.AgentHubMessageDisclosure.domRangeFromOffsets(node, 0, node.textContent.length);
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+        window.__provisionalQuote = window.AgentHub.addSelectedAnnotation();
+      });
+      await entered.promise;
+      const card = page.locator("[data-annotations] .annotation-quote");
+      assert.ok(await card.isVisible());
+      assert.equal(await card.textContent(), quote);
+      if (outcome === "dismissed") {
+        await page.getByRole("button", { name: "Убрать аннотацию" }).click();
+      } else if (outcome === "switched") {
+        await setSelectedTask(page, "stream-b");
+      }
+      if (outcome !== "ambiguous") await card.waitFor({ state: "hidden" });
+      release.resolve();
+      assert.equal(await page.evaluate(() => window.__provisionalQuote), false);
+      await card.waitFor({ state: "hidden" });
+      assert.deepEqual(await page.evaluate(() => [
+        composerDraftState("stream-a").annotations, composerDraftState("stream-b").annotations,
+      ]), [[], []]);
+      if (outcome === "ambiguous") {
+        await page.getByText("Не удалось подтвердить источник выделенного фрагмента.", { exact: true }).waitFor();
+      }
+      await page.close();
+    }
   } finally {
     await browser.close();
     await rm(directory, { recursive: true, force: true });
