@@ -8,6 +8,31 @@ export function terminalCompletionTime(value, startedAt) {
   return value;
 }
 
+export function planTurnCompletionRecovery(record, evidence, expectedCompletedAt) {
+  if (!record || evidence?.provider !== "codex" || evidence.sourceRevision === evidence.terminalRevision
+    || !["provider", "threadId", "turnId"].every((field) => evidence[field] && evidence[field] === record[field])
+    || (record.runId && evidence.runId && record.runId !== evidence.runId)
+    || !terminalCompletionTime(expectedCompletedAt)
+    || !terminalCompletionTime(evidence.completedAt, record.startedAt)
+    || Date.parse(evidence.completedAt) >= Date.parse(expectedCompletedAt)) {
+    return { eligible: false, applied: false };
+  }
+  const unchanged = record.completedAt === evidence.completedAt;
+  if (!unchanged && (record.completedAt !== expectedCompletedAt || record.observedAt !== expectedCompletedAt)) {
+    return { eligible: false, applied: false };
+  }
+  return {
+    eligible: true, applied: false, ...(unchanged ? { unchanged: true } : {}), projectRoot: record.projectRoot,
+    recovery: {
+      originalCompletedAt: expectedCompletedAt,
+      completedAt: evidence.completedAt,
+      terminalRevision: evidence.terminalRevision,
+      sourceRevision: evidence.sourceRevision,
+      providerCompletedAt: evidence.providerCompletedAt || null,
+    },
+  };
+}
+
 export function providerTerminalCompletionTime(terminal, telemetry) {
   if (!telemetry || !["provider", "threadId", "turnId"].every(
     (field) => terminal[field] && terminal[field] === telemetry[field],

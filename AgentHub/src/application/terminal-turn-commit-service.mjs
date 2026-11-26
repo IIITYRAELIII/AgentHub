@@ -429,6 +429,10 @@ export class TerminalTurnCommitService {
     };
   }
 
+  withCurrentCompletionRevision(evidence, operation) {
+    return this.store.withCurrentCompletionRevision(evidence, operation);
+  }
+
   pendingProjections(options) {
     return this.store.pendingProjections(options);
   }

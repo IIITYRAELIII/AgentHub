@@ -110,6 +110,15 @@ function configure(database) {
   `);
 }
 
+export function readProviderTerminalEvidence(database, { provider, threadId, turnId }) {
+  return database.prepare(`
+    SELECT provider, thread_id AS threadId, turn_id AS turnId, run_id AS runId,
+      status, final_phase AS finalPhase, completed_at_ms AS completedAtMs
+    FROM provider_turn_telemetry
+    WHERE provider = ? AND thread_id = ? AND turn_id = ?
+  `).get(provider, threadId, turnId) ?? null;
+}
+
 export class ProviderTurnTelemetryStore {
   #database = null;
   #databaseFile;
@@ -211,13 +220,8 @@ export class ProviderTurnTelemetryStore {
     });
   }
 
-  terminalEvidence({ provider, threadId, turnId }) {
-    return this.#enqueue(() => this.#open().prepare(`
-      SELECT provider, thread_id AS threadId, turn_id AS turnId, run_id AS runId,
-        status, final_phase AS finalPhase, completed_at_ms AS completedAtMs
-      FROM provider_turn_telemetry
-      WHERE provider = ? AND thread_id = ? AND turn_id = ?
-    `).get(provider, threadId, turnId) ?? null);
+  terminalEvidence(identity) {
+    return this.#enqueue(() => readProviderTerminalEvidence(this.#open(), identity));
   }
 
   recent({ provider = "", threadId = "", streamId = "", limit = 100 } = {}) {

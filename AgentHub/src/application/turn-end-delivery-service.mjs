@@ -277,7 +277,10 @@ export class TurnEndDeliveryService {
     if (!evidence?.completedAt || evidence.sourceRevision === evidence.terminalRevision) {
       return { eligible: false, applied: false };
     }
-    return this.recoverTurnCompletion(evidence, { expectedCompletedAt, apply });
+    if (apply !== true) return this.recoverTurnCompletion(evidence, { expectedCompletedAt });
+    const result = await this.terminalCommits.withCurrentCompletionRevision(evidence,
+      () => this.recoverTurnCompletion(evidence, { expectedCompletedAt, apply: true }));
+    return result ?? { eligible: false, applied: false, reason: "stale-terminal-revision" };
   }
 
   async deliverOutbox(item, { waitForProjection = null, projectionOnly = false } = {}) {

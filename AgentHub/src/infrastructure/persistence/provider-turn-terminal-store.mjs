@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 import { terminalCompletionTime } from "../../domain/turn-completion-time.mjs";
 import { consistentInterstreamRecordIdentity } from "../../domain/interstream-message.mjs";
+import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
 
@@ -9,6 +11,7 @@ const OUTBOX_STATES = new Set(["pending", "projecting", "delivered", "superseded
 const TELEGRAM_STATES = new Set(["not-requested", "intent", "uncertain", "acked", "failed", "superseded", "superseded-uncertain"]);
 const COMMAND_STATES = new Set(["not-required", "intent", "acked", "superseded"]);
 const NON_TERMINAL_STATUSES = new Set(["active", "inprogress", "running", "finishing", "progress"]);
+const COMPLETION_WRITER_REQUIRES_LOCK = Symbol("completion-writer-requires-lock");
 const TERMINAL_PAYLOAD_METADATA_MIGRATION_LIMIT = 200;
 const TERMINAL_PAYLOAD_METADATA_SAMPLE_CHARS = (2 * 1024 * 1024) + 1;
 
@@ -326,6 +329,25 @@ export class ProviderTurnTerminalStore {
     }
   }
 
+  #withCompletionLock(key, operation) {
+    const digest = contentHash([key.provider, key.threadId, key.turnId]);
+    const lockPath = path.join(path.resolve(this.#dataDir), `turn-completion-${digest}`);
+    return withInterprocessLocks([lockPath], operation);
+  }
+
+  async withCurrentCompletionRevision(value, operation) {
+    const key = identity(value);
+    if (key.provider !== "codex") return null;
+    return this.#withCompletionLock(key, async (lease) => {
+      if (!this.completionTime(value)) return null;
+      await lease.assertOwned();
+      const result = await operation();
+      await lease.assertOwned();
+      if (!this.completionTime(value)) throw new Error("Codex terminal revision changed during journal repair");
+      return result;
+    });
+  }
+
   commit(value) {
     const key = identity(value);
     const expectedTerminalRevision = value.expectedTerminalRevision == null
@@ -347,11 +369,18 @@ export class ProviderTurnTerminalStore {
     const requestedTelegramIntent = value.channels?.telegram?.requested === true
       ? jsonValue(value.channels.telegram)
       : null;
-    return this.#enqueue(() => {
+    const commit = (completionLockHeld = false) => this.#enqueue(() => {
       const database = this.#database();
       try {
         database.exec("BEGIN IMMEDIATE");
         const current = selectTerminal(database, key);
+        if (key.provider === "codex" && current && !completionLockHeld
+          && !terminalCompletionTime(current.payload?.completion?.completedAt, current.payload?.completion?.startedAt)) {
+          // Only a revision with an absent or invalid time can be under
+          // historical repair. Release the SQLite writer before taking its lock.
+          database.exec("ROLLBACK");
+          return COMPLETION_WRITER_REQUIRES_LOCK;
+        }
         const currentOutbox = current ? selectOutbox(database, current) : null;
         const completion = basePayload.completion;
         if (key.provider === "codex" && completion && !Array.isArray(completion)
@@ -529,6 +558,8 @@ export class ProviderTurnTerminalStore {
         database.close();
       }
     }, `${key.provider}\0${key.threadId}\0${key.turnId}`);
+    return commit().then((result) => result === COMPLETION_WRITER_REQUIRES_LOCK
+      ? this.#withCompletionLock(key, () => commit(true)) : result);
   }
 
   get(value) {

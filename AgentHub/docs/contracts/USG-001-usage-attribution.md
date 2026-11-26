@@ -150,7 +150,10 @@ A Codex completion with no verified finish time remains in the local ledger.
 Its accounted usage is shown separately in all-time usage as undated and does
 not enter a dated bucket, duration or the dated sync format. Addressable finish
 time repair keeps the turn and fact identity and preserves observed usage and
-account fields.
+account fields. When a later verified finish replaces the prior finish for
+that exact turn, the independently verified HUB-417 start still applies if the
+effective finish is at or after that start. The original start proof remains
+intact.
 
 Terminal projection recovery may recreate a missing deterministic `turn` fact
 from the exact durable journal record under the configured local device and

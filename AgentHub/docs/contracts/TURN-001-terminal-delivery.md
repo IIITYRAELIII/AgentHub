@@ -221,8 +221,13 @@ terminal.
 - The configured `TurnEndDeliveryService.recoverJournalCompletion` supports a
   read-only preview and an explicit addressable apply for a legacy Codex
   terminal revision with missing time. The caller pins the current terminal
-  revision and the exact erroneous journal timestamp. The existing journal
-  owner preserves the original timestamp in provenance, updates the same
+  revision and the exact erroneous journal timestamp. The standalone
+  `turn-completion-recovery.mjs` command supports only read-only preview.
+  Apply uses the configured owner through `recoverCompletionFromDatabase`.
+  A turn-local interprocess lock protects the pinned revision through mutation
+  and readback. Writers changing a legacy revision with a missing timestamp
+  share the lock, and ordinary valid first or repeat commits keep their existing
+  SQLite path. The journal owner preserves the original timestamp and updates the same
   local usage fact and rebuilds the affected day indexes. Retries can finish
   the projection after an interrupted apply. The operation does not reopen
   the outbox or replay provider, history, command or Telegram effects.
