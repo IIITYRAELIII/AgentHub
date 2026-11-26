@@ -267,7 +267,7 @@ export async function openTaskAwaitCutoverRuntime({
     ?? new TaskIntegrationGitService({ dataDir: config.dataDir,
       readPreparationAuthority: root => workspaceCatalogStore.preparationIsolationAuthority(root),
       readPreparationOriginal: id => workspaceCatalogStore.mcpOperation(id) });
-  const releasePlanner = new TaskCompositionPlanService({ taskBoard, taskGitWorkspaces });
+  const releasePlanner = new TaskCompositionPlanService({ taskBoard, taskGitWorkspaces, measureOperation: measureTaskOperation });
   const releasePreflight = suppliedReleasePreflight ?? new TaskIntegrationService({
     measureOperation: measureTaskOperation,
     releasePlanner,

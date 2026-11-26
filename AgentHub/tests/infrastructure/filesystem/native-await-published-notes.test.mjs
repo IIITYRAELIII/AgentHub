@@ -353,11 +353,18 @@ async function verifyInterruptedAwait(t, cancellation = null) {
     }),
   };
   const releasePreflight = new TaskIntegrationService({
-    releasePlanner: { plan: (_workspaceId, { acceptingTask } = {}) => ({
-      revision: acceptingTask ? request.planRevision : "current",
-      ready: (acceptingTask ? selection : [f.oldTask]).map(value => ({ ...value, projectRoot: f.primary })),
-      blocked: [], conflicts: [],
-    }) },
+    releasePlanner: {
+      async planAcceptance(workspaceId, { acceptingTask, checkBaseline, ...options }) {
+        const baseline = await this.plan(workspaceId, options);
+        checkBaseline?.(baseline);
+        return { baseline, prospective: await this.plan(workspaceId, { ...options, acceptingTask }) };
+      },
+      plan: (_workspaceId, { acceptingTask } = {}) => ({
+        revision: acceptingTask ? request.planRevision : "current",
+        ready: (acceptingTask ? selection : [f.oldTask]).map(value => ({ ...value, projectRoot: f.primary })),
+        blocked: [], conflicts: [],
+      }),
+    },
     taskGitWorkspaces: taskGit, releaseGitWorkspaces: f.service,
     readPublicationState: () => ({ repositories: [{ root: f.primary, revision: f.base }] }),
   });

@@ -262,9 +262,14 @@ original operation ID. This compatibility read is needed only while a v1
 preparation admitted by an earlier version remains unresolved. See
 [ADR-HUB-530](../decisions/ADR-HUB-530-interrupted-await.md).
 
-The planner baseline/prospective reads, ordered history and selected-content
-proof are preserved. No cross-boundary evidence cache, scan-skipping or broader
-multiple-base/publication policy from canceled work is included.
+The planner computes the baseline and prospective plans from one fresh live Git
+pass per acceptance boundary. After Git evidence it rereads canonical Task rows
+and durable selected composition authority on that invocation. Each boundary
+still checks its original revisions, current Git evidence and existing native
+base, history and content proofs before promotion or final CAS. Evidence is
+never reused across boundaries or operations. The broader multiple-base and
+publication policy from canceled work remains outside this mechanism. See
+[ADR-HUB-461](../decisions/ADR-HUB-461-fresh-acceptance-plan-pair.md).
 
 ## Native content and conflict preservation
 

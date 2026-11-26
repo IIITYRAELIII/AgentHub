@@ -320,18 +320,27 @@ export class TaskIntegrationService {
       throw new Error("Prospective Await preparation requires its lifecycle commit");
     }
     const planOptions = selectedTaskIds ? { selectedTaskIds } : {};
-    const baseline = await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId, planOptions));
-    const plan = acceptingTask
-      ? await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId, { ...planOptions, acceptingTask }))
-      : baseline;
+    if (acceptingTask) requiredMethod(this.releasePlanner, "planAcceptance");
+    const readPlans = (checkBaseline = null) => this.measureOperation("release:planner", async () => {
+      if (acceptingTask) return this.releasePlanner.planAcceptance(workspaceId, { ...planOptions, acceptingTask, checkBaseline });
+      const current = await this.releasePlanner.plan(workspaceId, planOptions);
+      checkBaseline?.(current);
+      return { baseline: current, prospective: current };
+    });
+    const { baseline, prospective: plan } = await readPlans();
     const validatePlan = async () => {
-      const current = await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId, planOptions));
-      if (current.revision !== baseline.revision) {
-        throw new Error("release plan revision changed during PreRelease rebuild");
-      }
+      const current = await readPlans(currentBaseline => {
+        if (currentBaseline.revision !== baseline.revision) {
+          throw new Error("release plan revision changed during PreRelease rebuild");
+        }
+      });
       if (acceptingTask) {
-        const prospective = await this.measureOperation("release:planner", async () => this.releasePlanner.plan(workspaceId, { ...planOptions, acceptingTask }));
-        if (prospective.revision !== plan.revision) throw new Error("Task changed during PreRelease acceptance preparation");
+        if (current.prospective.revision !== plan.revision) throw new Error("Task changed during PreRelease acceptance preparation");
+      }
+      if (current.prospective.blocked.length) {
+        throw new Error(`Await set has blocked Task results: ${current.prospective.blocked.map(item => (
+          `${item.taskNumber ?? item.taskId ?? "Task"}: ${item.reason ?? item.gitError ?? "result unavailable"}`
+        )).join("; ")}`);
       }
     };
     if (expectedPlanRevision != null && plan.revision !== requiredPlanRevision(expectedPlanRevision)) {

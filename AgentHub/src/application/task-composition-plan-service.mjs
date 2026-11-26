@@ -1,7 +1,21 @@
 import { taskReleasePlan } from "../domain/task-release-snapshot.mjs";
+import { normalizedTaskGitReferences } from "../domain/task-git-reference.mjs";
+
+function releaseAuthority(tasks, acceptingTask, authorities) {
+  return JSON.stringify(tasks.filter(task => task.id === acceptingTask.id
+    || task.status !== "done" && task.workflowStatus === "awaiting_implementation")
+    .map(task => ({ id: task.id, taskNumber: task.taskNumber ?? null, workspaceId: task.workspaceId, status: task.status,
+      workflowStatus: task.workflowStatus, releaseRevision: task.releaseRevision ?? task.revision,
+      ...(task.id === acceptingTask.id ? { revision: task.revision } : {}),
+      gitReferences: normalizedTaskGitReferences(task.gitReferences),
+      squashTransfer: task.squashTransfer ?? null, resultReleaseRevision: task.resultReleaseRevision ?? null,
+      selected: authorities.get(task.id) ?? [],
+    })).sort((left, right) => left.id.localeCompare(right.id)));
+}
+
 
 export class TaskCompositionPlanService {
-  constructor({ taskBoard, taskGitWorkspaces } = {}) {
+  constructor({ taskBoard, taskGitWorkspaces, measureOperation = async (_stage, run) => run() } = {}) {
     if (typeof taskBoard?.releaseTasks !== "function") throw new TypeError("taskBoard.releaseTasks is required");
     if (typeof taskBoard?.selectedCompositionForRelease !== "function") {
       throw new TypeError("taskBoard.selectedCompositionForRelease is required");
@@ -11,10 +25,19 @@ export class TaskCompositionPlanService {
     }
     this.taskBoard = taskBoard;
     this.taskGitWorkspaces = taskGitWorkspaces;
+    if (typeof measureOperation !== "function") throw new TypeError("measureOperation is required");
+    this.measureOperation = measureOperation;
   }
 
   async plan(workspaceId, { acceptingTask = null, selectedTaskIds = null } = {}) {
-    let tasks = this.taskBoard.releaseTasks(workspaceId);
+    const rows = await this.#readTasks(workspaceId);
+    const tasks = this.#projectTasks(rows, acceptingTask, selectedTaskIds);
+    const { evidence } = await this.#resolve(tasks);
+    return this.#projection(workspaceId, tasks, evidence);
+  }
+
+  #projectTasks(rows, acceptingTask, selectedTaskIds) {
+    let tasks = rows;
     if (selectedTaskIds != null) {
       const selected = [...new Set((Array.isArray(selectedTaskIds) ? selectedTaskIds : [])
         .map((taskId) => String(taskId ?? "").trim()).filter(Boolean))];
@@ -42,7 +65,11 @@ export class TaskCompositionPlanService {
           + (task.workflowStatus === "awaiting_implementation" ? 0 : 1),
       } : task);
     }
-    const resolved = [];
+    return tasks;
+  }
+
+  async #resolve(tasks) {
+    const evidence = new Map(), authorities = new Map();
     for (const task of tasks) {
       const changedFiles = [];
       const selectedCompositions = [];
@@ -51,28 +78,87 @@ export class TaskCompositionPlanService {
       // the prospective Await set needs live Git evidence. Archived branches
       // may already have been cleaned up and cannot affect this release.
       if (task.status === "done" || task.workflowStatus !== "awaiting_implementation") {
-        resolved.push({ ...task, changedFiles, gitError });
         continue;
       }
       try {
         for (const reference of task.gitReferences ?? []) {
-          const selected = this.taskBoard.selectedCompositionForRelease({
-            taskId: task.id, ...reference,
-          });
+          const selected = await this.#selected(task, reference);
           if (selected) selectedCompositions.push({ projectRoot: reference.projectRoot, ...selected });
-          const evidence = await this.taskGitWorkspaces.releaseEvidence({
+          const result = await this.measureOperation("release:planner:git-evidence", () => this.taskGitWorkspaces.releaseEvidence({
             taskId: task.id,
             ...(task.taskNumber ? { taskNumber: task.taskNumber } : {}),
             ...reference,
-          });
-          changedFiles.push(...evidence.changedFiles);
+          }), { detail: true });
+          changedFiles.push(...result.changedFiles);
         }
       } catch (error) {
         gitError = error.message;
       }
-      resolved.push({ ...task, changedFiles, gitError,
+      authorities.set(task.id, selectedCompositions);
+      evidence.set(task.id, { changedFiles, gitError,
         ...(selectedCompositions.length ? { selectedCompositions } : {}) });
     }
-    return taskReleasePlan(workspaceId, resolved);
+    return { evidence, authorities };
+  }
+
+  #readTasks(workspaceId) {
+    return this.measureOperation("release:planner:canonical-read", () =>
+      structuredClone(this.taskBoard.releaseTasks(workspaceId)));
+  }
+
+  #selected(task, reference) {
+    return this.measureOperation("release:planner:selected-authority", () =>
+      this.taskBoard.selectedCompositionForRelease({ taskId: task.id, ...reference }), { detail: true });
+  }
+
+  #projection(workspaceId, tasks, evidence) {
+    return this.measureOperation("release:planner:projection", () => taskReleasePlan(workspaceId,
+      tasks.map(task => ({ ...task, ...(task.status !== "done" && task.workflowStatus === "awaiting_implementation"
+        ? evidence.get(task.id) : { changedFiles: [], gitError: null }) }))));
+  }
+
+  async #currentAuthorities(tasks) {
+    const result = new Map();
+    for (const task of tasks.filter(task => task.status !== "done" && task.workflowStatus === "awaiting_implementation")) {
+      const selected = [];
+      for (const reference of task.gitReferences ?? []) {
+        const value = await this.#selected(task, reference);
+        if (value) selected.push({ projectRoot: reference.projectRoot, ...value });
+      }
+      result.set(task.id, selected);
+    }
+    return result;
+  }
+
+  // This pair is invocation-local to EACH existing preflight boundary.
+  // It never grants authority to a later boundary, retry or process.
+  async planAcceptance(workspaceId, { acceptingTask, selectedTaskIds = null, checkBaseline = null } = {}) {
+    const rows = await this.#readTasks(workspaceId);
+    const baselineTasks = this.#projectTasks(rows, null, selectedTaskIds);
+    let tasks, prospectiveError;
+    try {
+      tasks = this.#projectTasks(baselineTasks, acceptingTask);
+    } catch (error) {
+      prospectiveError = error;
+    }
+    const { evidence, authorities } = await this.#resolve(tasks ?? baselineTasks);
+    const baseline = await this.#projection(workspaceId, baselineTasks, evidence);
+    // A stale current Await revision takes precedence over prospective errors.
+    checkBaseline?.(baseline);
+    if (prospectiveError) throw prospectiveError;
+    const prospective = await this.#projection(workspaceId, tasks, evidence);
+    if (!prospective.blocked.length) {
+      // The old separate plans could observe changes while Git was awaited.
+      // Reread full canonical rows AND durable selected/closure authority here;
+      // an identity-only snapshot cannot stand in for those proofs.
+      const fresh = await this.#readTasks(workspaceId);
+      const currentTasks = this.#projectTasks(fresh, acceptingTask, selectedTaskIds);
+      const currentAuthorities = await this.#currentAuthorities(currentTasks);
+      if (releaseAuthority(rows, acceptingTask, authorities)
+          !== releaseAuthority(fresh, acceptingTask, currentAuthorities)) {
+        throw new Error("release plan authority changed during PreRelease rebuild");
+      }
+    }
+    return { baseline, prospective };
   }
 }

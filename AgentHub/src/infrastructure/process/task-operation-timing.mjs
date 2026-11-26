@@ -6,6 +6,7 @@ const MAX_DETAIL_SPANS = 512;
 // Fixed diagnostic classes only; no argv, paths or caller-provided stage labels.
 const AGGREGATE_AWAITS = new Set(["lock-owner-readdir-await", "lock-owner-read-await"]);
 const AGGREGATE_STAGES = new Set([...AGGREGATE_AWAITS, "git-child", "owned-command", "lease-assert", "process-guard",
+  "release:planner:canonical-read", "release:planner:selected-authority", "release:planner:git-evidence", "release:planner:projection",
   "dependency-project", "dependency-inventory", "dependency-full-proof", "dependency-npm",
   "dependency-installed-lock-proof", "lock-local-acquire", "task-binding", "mcp:receipt",
   "native-retire:owned-setup", "native-retire:current", "native-retire:source-pins", "native-retire:archive-read",

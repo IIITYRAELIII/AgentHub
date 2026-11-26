@@ -102,6 +102,11 @@ function fixture({
   };
   const service = new TaskIntegrationService({
     releasePlanner: {
+      async planAcceptance(workspaceId, { acceptingTask, checkBaseline, ...options }) {
+        const baseline = await this.plan(workspaceId, options);
+        checkBaseline?.(baseline);
+        return { baseline, prospective: await this.plan(workspaceId, { ...options, acceptingTask }) };
+      },
       plan: async (workspaceId) => {
         calls.push(["plan", workspaceId]);
         return plan;
