@@ -200,9 +200,9 @@ from that cache. A rewrite or cache reconstruction starts a new token. These
 small scalar fields participate in the same budget and require no extra read.
 
 Explicit “All stages” reads use the existing history owner and rollout worker,
-without provider calls, history writes or automatic polling. They stream a fixed
-source prefix in 64 KiB chunks and retain at most 4 MiB for a raw record or its
-internal projected JSON representation. Raw records over 4 MiB are admitted only
+  without provider calls, history writes or automatic polling. They stream a fixed
+  source prefix in 64 KiB parser chunks and retain at most 4 MiB for a raw record
+  or its internal projected JSON representation. Raw records over 4 MiB are admitted only
 when complete structural and escape validation positively identifies a top-level
 `compacted` record or `response_item` with `payload.type=message` and
 `payload.role=user`. Their large string values may be omitted only from that
@@ -212,7 +212,11 @@ Oversized agent, lifecycle, unknown or unclassifiable records remain errors;
 invalid JSON, invalid escapes, incomplete records and a projected representation
 over 4 MiB also fail closed. This scoped exception does not raise the record
 budget for agent evidence or change automatic preview reads
-(ADR-HUB-237-exact-trace-record-bounds).
+  (ADR-HUB-237-exact-trace-record-bounds). An exact-group read may reuse a
+  bounded worker-local projection of a newline-terminated prefix only after
+  rehashing the same bytes from the opened file. Any appended bytes in the
+  requested snapshot still pass through the parser. The response carries the
+  complete prefix hash and the same group and ambiguity checks (ADR-HUB-546).
 Pages return at most 50 groups and 512 KiB. An oversized block fails visibly,
 without truncation. Exact provider/Thread/turn/item and duplicate-source checks
 remain mandatory.

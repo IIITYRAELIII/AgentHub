@@ -70,7 +70,8 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
     const page = await browser.newPage({ viewport: { width: 1280, height: 880 } });
     page.setDefaultTimeout(5_000);
     const errors = await openFixture(page, {
-      fixtureSnapshot: liveSnapshot(run, "quote-live"), fixtureHistory: historyFor(activity), localWeb: true,
+      fixtureSnapshot: liveSnapshot(run, "quote-live"), fixtureHistory: historyFor(activity),
+      localWeb: true, surface: "browser",
       tracePageReader: async params => {
         requests.push(params);
         if (requests.length === 1) await gate.promise;
@@ -142,7 +143,7 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
     const commandId = requests[0].clientTraceId;
     assert.match(commandId, /^[a-f0-9-]{36}$/u);
     assert.deepEqual(serverEvents.map(event => event.stage), ["trace-history-binding", "trace-source-locate",
-      "trace-worker-wait", "trace-source-read", "trace-history-presentation"]);
+      "trace-worker-wait", "trace-source-read", "trace-worker-return", "trace-history-presentation"]);
     assert.ok(serverEvents.every(event => event.commandId === commandId && event.outcome === "succeeded"
       && Number.isFinite(event.monotonicDurationMs)));
     const clientEvents = await page.evaluate(async id => {
@@ -154,7 +155,8 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
       }
       return window.__quoteTraceEvents.filter(event => event.commandId === id);
     }, commandId);
-    for (const action of ["annotation-pending", "annotation-source", "annotation-draft", "annotation-card"]) {
+    for (const action of ["annotation-pending", "annotation-source", "annotation-draft", "annotation-card",
+      "http-history-local-session", "http-history-device-session"]) {
       assert.ok(clientEvents.some(event => event.metadata?.action === action && event.outcome === "succeeded"), action);
     }
     assert.ok(clientEvents.some(event => event.stage === "client-ack"));
