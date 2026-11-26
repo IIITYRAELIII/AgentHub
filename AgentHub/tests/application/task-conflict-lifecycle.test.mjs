@@ -96,8 +96,11 @@ test("Test prepares the Task once before snapshot and merge", async (t) => {
   await f.status(a.task.id, "testing", "single-preparation");
   assert.equal(calls, 1);
   assert.equal(f.taskBoard.task(a.task.id).workflowStatus, "testing");
-  for (const stage of ["workflow", "await-transition", "await-admitted", "prepare-task", "snapshot", "integrate-dev", "persistence", "git-child"]) {
-    assert.ok(f.timings.some(event => event.operationId === "single-preparation" && event.stage === stage && event.phase === "end"), stage);
+  const timing = f.timings.filter(event => event.operationId === "single-preparation");
+  assert.equal(timing.some(event => ["await-transition", "await-admitted"].includes(event.stage)), false);
+  for (const stage of ["workflow", "prepare-task", "snapshot", "test-dev-inputs", "test-detached-stage",
+    "test-dev-owned", "integrate-dev", "persistence", "git-child"]) {
+    assert.ok(timing.some(event => event.stage === stage && event.phase === "end"), stage);
   }
 });
 
