@@ -207,6 +207,19 @@ next Test requires ordinary ownership and admission. See ADR-HUB-524.
 ## Managed claim, Test and Await
 
 Claim returns the canonical managed checkout with its claim/custody binding.
+An ordinary Test for a Task outside Await admits under its Task owner. Its
+repository dev owner protects the Git effect through exact terminal readback and
+the durable Task result. A Test whose Task joined Await while it was queued
+releases the Task owner before entering the Workspace Await lock order. Await
+membership changes, absorption and the specialized recovery paths retain their
+existing admission and authority fences.
+
+A fresh ordinary native Test checks out its exact inputs under the repository
+owner, then prepares its detached merge under Task and object-pool ownership.
+The repository owner recomputes the input identity before recording a conflict
+or applying a result. If dev or that identity changed, preparation restarts from
+current pins. A detached stage cannot supply a stale conflict or advance dev.
+
 Task Git still validates exact main/publication baseline, registered repository
 identity, branch, commit, selected content and worktree state. It does not adopt
 rolling dev, another checkout or a broader operational aggregate as Task source.

@@ -64,6 +64,104 @@ function lifecycleFixture({ synchronousFence = false, stableFence = false } = {}
   return { service, calls, task };
 }
 
+test("ordinary Test admits under the Task lease and holds dev through its durable terminal", async () => {
+  const { service, task } = lifecycleFixture({ stableFence: true });
+  task.workflowStatus = "in_progress";
+  const stages = [];
+  const taskLock = { async assertOwned() {} };
+  const repositoryLock = { async assertOwned() {} };
+  let repoHeld = false;
+  service.releasePreflight.withAwaitTransition = () => assert.fail("Ordinary Test must not queue behind Await");
+  service.taskGitWorkspaces.withTaskLock = async (_id, operation) => {
+    stages.push("task");
+    return operation(taskLock);
+  };
+  service.taskBoard.beginLifecycleTransition = () => {
+    assert.equal(repoHeld, false);
+    stages.push("begin");
+    return { phase: "pending_git" };
+  };
+  service.taskGitWorkspaces.withOrdinaryTestRepository = async (options, operation) => {
+    assert.equal(options.lease, taskLock);
+    repoHeld = true;
+    try {
+      stages.push("dev");
+      return await operation(repositoryLock);
+    } finally {
+      repoHeld = false;
+      stages.push("dev-release");
+    }
+  };
+  const snapshotAndMerge = service.taskGitWorkspaces.snapshotAndMergeOwned;
+  service.taskGitWorkspaces.snapshotAndMergeOwned = (options) => {
+    assert.equal(options.lease, repositoryLock);
+    stages.push("git");
+    return snapshotAndMerge(options);
+  };
+  service.taskGitWorkspaces.withNativeIntegrationTerminalOwned = async (_snapshot, options, commit) => {
+    assert.equal(options.lease, repositoryLock);
+    assert.equal(repoHeld, true);
+    return commit();
+  };
+  service.taskBoard.commitWorkflowTransition = ({ operationId }) => {
+    assert.equal(repoHeld, true);
+    assert.equal(operationId, "ordinary-test");
+    stages.push("terminal");
+    return { ...task, workflowStatus: "testing", revision: 2 };
+  };
+  const outcome = await service.updateWorkflowStatus({ taskId: task.id, status: "testing",
+    expectedWorkflowStatus: "in_progress", expectedRevision: 1, operationId: "ordinary-test" });
+  assert.equal(outcome.task.workflowStatus, "testing");
+  assert.deepEqual(stages, ["task", "begin", "dev", "git", "terminal", "dev-release"]);
+});
+
+test("ordinary Test rechecks Task state before applying detached Git evidence", async () => {
+  const { service, task, calls } = lifecycleFixture({ stableFence: true });
+  task.workflowStatus = "in_progress";
+  let current = task;
+  service.taskBoard.task = () => current;
+  service.taskGitWorkspaces.withOrdinaryTestRepository = async ({ lease }, operation) => {
+    current = { ...task, revision: task.revision + 1 };
+    return operation(lease, () => assert.fail("A changed Task must never apply the prepared Git result"));
+  };
+  await assert.rejects(service.updateWorkflowStatus({
+    taskId: task.id, status: "testing", expectedWorkflowStatus: "in_progress",
+    expectedRevision: task.revision, operationId: "metadata-drift-during-test",
+  }), /Task changed while Test was prepared/u);
+  assert.equal(calls.begin, 1);
+  assert.equal(calls.fail, 1);
+  assert.equal(calls.commit, 0);
+});
+
+test("a Test queued before its Task enters Await releases the Task before taking the release lock", async () => {
+  const { service, task, calls } = lifecycleFixture({ stableFence: true });
+  task.workflowStatus = "testing";
+  const stages = [];
+  let taskHeld = false;
+  service.taskGitWorkspaces.withOrdinaryTestRepository = () => assert.fail("Stale Test must not get dev ownership");
+  service.taskGitWorkspaces.withTaskLock = async (_id, operation) => {
+    if (!stages.length) Object.assign(task, { workflowStatus: "awaiting_implementation", revision: 2 });
+    taskHeld = true;
+    stages.push("task");
+    try {
+      return await operation({ async assertOwned() {} });
+    } finally {
+      taskHeld = false;
+      stages.push("task-release");
+    }
+  };
+  service.releasePreflight.withAwaitTransition = async (_id, operation) => {
+    assert.equal(taskHeld, false);
+    stages.push("await");
+    return operation();
+  };
+  await assert.rejects(service.updateWorkflowStatus({ taskId: task.id, status: "testing",
+    expectedWorkflowStatus: "testing", expectedRevision: 1, operationId: "stale-ordinary-test" }), /revision changed/u);
+  assert.deepEqual(stages, ["task", "task-release", "await", "task", "task-release"]);
+  assert.equal(calls.begin, 0);
+  assert.equal(calls.commit, 0);
+});
+
 test("cleanup confirmation binds newly appearing ignored WIP before lifecycle admission", async () => {
   const { service, task, calls } = lifecycleFixture({ stableFence: true });
   const ignoredPaths = [];

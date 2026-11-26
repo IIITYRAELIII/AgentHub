@@ -1,5 +1,5 @@
 import path from "node:path";
-import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
+import { measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, link, unlink } from "node:fs/promises";
 import { MaintenanceOperationStore } from "../persistence/maintenance-operation-store.mjs";
@@ -416,7 +416,8 @@ export class OwnedNativeObjectStore {
           currentDirectory = to;
         }
         const destination = path.join(to, file);
-        await immutableLink(source, destination, () => this.#guard());
+        await immutableLink(source, destination, () => measureTaskOperationAwait(
+          "native:object-alias-owner", () => this.#guard(), { reportAtMs: Infinity }));
         linked.add(path.relative(repository, destination).split(path.sep).join("/"));
       }
       return linked;
