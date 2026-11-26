@@ -86,7 +86,7 @@ test("workflow cutover CAS rejects a stale revision or status before lifecycle e
 });
 
 test("detached Test permits same-repo Claim, rejects stale dev and preserves terminal ownership", {
-  timeout: 240_000,
+  timeout: 300_000,
 }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-test-lock-scopes-"));
   const raw = new TaskBoardStore({ databaseFile: path.join(root, "journal.sqlite") });
@@ -271,6 +271,32 @@ test("detached Test permits same-repo Claim, rejects stale dev and preserves ter
         repositoryFinalMs: owned.map(event => event.durationMs), aliasesMs: aliasSpans.map(event => event.durationMs),
         aliasOwnerMs: aliasesOwner.inclusiveMs, aliases: aliasesOwner.count }));
     }
+    releaseFinish.resolve();
+    await awaitOwner;
+    const original = await prepare("recover.txt", one);
+    const beforeRecovery = await git(one, "rev-parse", "refs/heads/dev");
+    const lostProcess = new Error("Lost process after detached Git capture, before cutover");
+    await assert.rejects(workspaces.withTaskLock(original.taskId, async lease => {
+      await begin({ id: original.taskId, kind: "workflow", operationId: original.operationId,
+        targetWorkflowStatus: "testing", expectedRevision: original.expectedRevision });
+      return workspaces.withOrdinaryTestRepository({ ...original, lease,
+        taskNumber: board.task(original.taskId).taskNumber }, () => { throw lostProcess; });
+    }), error => error === lostProcess);
+    assert.equal(await git(one, "rev-parse", "refs/heads/dev"), beforeRecovery);
+    assert.equal(board.lifecycleTransition(original.operationId).phase, "pending_git");
+
+    const reopened = new TaskBoardStore({ databaseFile: path.join(root, "journal.sqlite") });
+    t.after(() => reopened.close());
+    const reopenedBoard = new TaskBoardService({ store: reopened, workspaceCatalog: catalog });
+    const restartedGit = new TaskGitWorkspaceService({ dataDir: root, runtimeRoot: path.join(root, "runtime"),
+      readPublication: async () => null });
+    const restarted = new TaskLifecycleService({ taskBoard: reopenedBoard, workspaceCatalog: catalog,
+      taskGitWorkspaces: restartedGit, releasePreflight: { withAwaitTransition: release.withAwaitTransition.bind(release) } });
+    const recovered = await restarted.reconcileUnknownWorkflowStatus(original);
+    assert.equal(recovered.result.task.workflowStatus, "testing");
+    assert.equal(await git(one, "show", "dev:recover.txt"), "recover.txt");
+    assert.equal(reopenedBoard.lifecycleOutcome(original.operationId).result.task.revision, original.expectedRevision + 1);
+    assert.equal(reopenedBoard.lifecycleTransition(original.operationId), null);
   } finally {
     firstCanCommit.resolve();
     releaseFinish.resolve();

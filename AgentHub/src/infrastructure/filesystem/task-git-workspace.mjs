@@ -1595,6 +1595,8 @@ export class TaskGitWorkspaceService {
     await this.#assertTaskReleaseWait(taskId, root);
     const snapshot = await this.snapshotOwned(params);
     if (!snapshot.changedFiles.length) return finish(snapshot);
+    const file = this.#nativeIntegrationFile(taskId, root, operationId);
+    let recorded = false;
     for (;;) {
       assertTaskOperationExecuting();
       const record = await this.#withClearDevLock(root, lease, owner =>
@@ -1602,7 +1604,16 @@ export class TaskGitWorkspaceService {
           params.validateOrdinaryTask?.();
           await this.#importCustodySnapshotOwned(snapshot, owner);
           const dev = await this.#prepareDevOwned(root, root, owner);
-          return this.#prepareNativeIntegrationRecord(snapshot, dev, { operationId, lease: owner });
+          const captured = await this.#prepareNativeIntegrationRecord(snapshot, dev, { operationId, lease: owner });
+          // The SAME original must remain recoverable even if Hub stops
+          // before the detached merge returns. No dev effect is admitted here.
+          await owner.assertOwned();
+          await mkdir(path.dirname(file), { recursive: true });
+          const intent = { ...captured, detachedOrdinaryTest: true };
+          if (recorded) await this.#replaceNativeIntegrationRecord(file, intent);
+          else await writeSelectedRecord(file, intent);
+          recorded = true;
+          return captured;
         }));
       await measureTaskOperation("test-detached-stage", async () => {
         try {
@@ -4705,6 +4716,12 @@ export class TaskGitWorkspaceService {
         ...(publishedMetadata ? [publishedMetadata.commit] : [])], adoptions };
   }
 
+  async #replaceNativeIntegrationRecord(file, record) {
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    await writeSelectedRecord(temporary, record);
+    await rename(temporary, file);
+  }
+
   async #prepareNativeIntegrationRecord(snapshot, dev, { lease, operationId,
     nativeAbsorptionInput, nativeAbsorptionHistory, expectedTaskRevision, initialNativeTest }) {
     const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, lease);
@@ -4741,6 +4758,18 @@ export class TaskGitWorkspaceService {
       let record = await this.pendingNativeIntegrationOwned({ taskId: snapshot.taskId,
         projectRoot: snapshot.repositoryRoot, operationId, lease: ownedLease });
       let dev;
+      const detached = record?.detachedOrdinaryTest === true;
+      if (detached) {
+        if (record.phase !== "prepared" || record.target != null || record.targetTree != null || record.stageRoot != null
+            || initialNativeTest || nativeAbsorptionInput || nativeAbsorptionHistory
+            || record.initialNativeTest || record.nativeAbsorptionInput || record.nativeAbsorptionHistory) {
+          throw new Error("Detached Test original has unexpected committed or specialized evidence");
+        }
+        snapshot = record.snapshot;
+        // With no admitted target the original snapshot can be prepared
+        // against current dev. A journal with a target never takes this path.
+        record = null;
+      }
       if (initialNativeTest) await validateInitialNativeTest({ record });
       if (record) {
         if (JSON.stringify(record.initialNativeTest ?? null) !== JSON.stringify(initialNativeTest)) throw new Error("Initial native Test original Git binding changed");
@@ -4773,7 +4802,8 @@ export class TaskGitWorkspaceService {
           throw staleOrdinaryTestStage;
         }
         await mkdir(path.dirname(file), { recursive: true });
-        await writeSelectedRecord(file, record);
+        if (detached) await this.#replaceNativeIntegrationRecord(file, { ...record, detachedOrdinaryTest: true });
+        else await writeSelectedRecord(file, record);
       }
       const git = (args, cwd = dev.projectRoot, options = {}) => this.#runOwned(args, { ...options, cwd, lease: ownedLease,
         guardRepositoryRoot: snapshot.repositoryRoot, timeoutMs: 300_000 });

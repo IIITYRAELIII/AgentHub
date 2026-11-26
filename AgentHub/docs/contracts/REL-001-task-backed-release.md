@@ -215,7 +215,9 @@ membership changes, absorption and the specialized recovery paths retain their
 existing admission and authority fences.
 
 A fresh ordinary native Test checks out its exact inputs under the repository
-owner, then prepares its detached merge under Task and object-pool ownership.
+owner, records the original Test intent, then prepares its detached merge under
+Task and object-pool ownership. Recovery uses the recorded Task snapshot. Only
+an original without an admitted target may prepare that snapshot on newer dev.
 The repository owner recomputes the input identity before recording a conflict
 or applying a result. If dev or that identity changed, preparation restarts from
 current pins. A detached stage cannot supply a stale conflict or advance dev.
