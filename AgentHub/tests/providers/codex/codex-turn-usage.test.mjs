@@ -56,6 +56,28 @@ function token(input, cache, output, reasoning, cacheWrite = 0) {
   };
 }
 
+test("GPT-6.2 rollout distinguishes a measured cache zero from a missing counter", () => {
+  const turnId = "gpt62-usage";
+  const model = "gpt-6.2-sol";
+  for (const measured of [false, true]) {
+    const raw = {
+      input_tokens: 100_000, output_tokens: 10_000, total_tokens: 110_000,
+      ...(measured ? { cached_input_tokens: 0 } : {}),
+    };
+    const records = [
+      { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+      { type: "turn_context", payload: { turn_id: turnId, model } },
+      response(turnId),
+      { type: "event_msg", payload: { type: "token_count", info: { last_token_usage: raw } } },
+    ];
+    if (measured) records.push({ type: "token_usage_record", payload: { turn_id: turnId, turn_token_usage: raw } });
+    const observed = codexTurnUsageFromJsonl(records.map(line).join("\n"), turnId);
+    assert.equal(observed.reported, true);
+    assert.equal(observed.usage.cachedInputTokens, 0);
+    assert.equal(observed.usage.measuredTokenFields.split(",").includes("cachedInputTokens"), measured);
+  }
+});
+
 test("exact Codex totals retain cache writes and only long individual requests", async () => {
   const turnId = "pricing-turn";
   const records = [

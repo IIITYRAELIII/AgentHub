@@ -53,6 +53,99 @@ function service(stateFile, {
   });
 }
 
+test("a rejected update does not discard the exact last-known-good safe-tool proof", async context => {
+  const stateFile = await fixture(context);
+  const make = version => {
+    const root = path.join(path.dirname(stateFile), version);
+    const core = { ...candidate(version), path: path.join(root, "codex.exe") };
+    const files = [{ name: "codex.exe", sha256: core.sha256 }, { name: "codex-code-mode-host.exe", sha256: "C".repeat(64) }];
+    return { ...core, bundle: { schemaVersion: 1, root, installRoot: path.dirname(root), files,
+      codeModeHost: true, digest: codexBundleDigest(files, true) } };
+  };
+  const current = make("0.151.0");
+  const replacement = make("0.152.0");
+  await writeFile(stateFile, JSON.stringify({
+    schemaVersion: 1, active: current, lastKnownGood: current,
+    canary: { status: "passed", identity: current, evidence: { safeToolCount: 1 } },
+  }));
+  const canaries = [];
+  const ports = {
+    stateFile, platform: "win32",
+    verifyRecorded: async recorded => recorded,
+    discover: async () => ({ candidates: [replacement, current], rejected: [] }),
+    acquireCustody: async () => ({ assertAlive() {}, async release() {} }),
+    runCanary: async entry => {
+      canaries.push(entry.version);
+      return entry.version === current.version ? { ok: true, evidence: { safeToolCount: 1 } } : { ok: false };
+    },
+  };
+  const first = new CodexExecutableUpdateService(ports);
+  assert.equal(await first.selectForStart(), current.path);
+  await first.markStartupSuccess();
+  await first.releaseUnboundSelection();
+  await first.refreshInBackground();
+  assert.equal(first.diagnostics().failedIdentity.version, replacement.version);
+  const cold = new CodexExecutableUpdateService(ports);
+  try {
+    assert.equal(await cold.selectForStart(), current.path);
+    assert.equal(await cold.verifySelectedForLaunch(current.path), current.path);
+    assert.deepEqual(canaries, [replacement.version]);
+    assert.equal(cold.diagnostics().startupSelection.outcome, "succeeded");
+  } finally {
+    await cold.releaseUnboundSelection();
+  }
+
+  // Older state can have lost that proof already. It must earn it once.
+  const old = JSON.parse(await readFile(stateFile, "utf8"));
+  delete old.lastKnownGoodCanary;
+  await writeFile(stateFile, JSON.stringify(old));
+  const legacy = new CodexExecutableUpdateService(ports);
+  try {
+    assert.equal(await legacy.selectForStart(), current.path);
+    assert.deepEqual(canaries, [replacement.version, current.version]);
+    assert.ok(Number.isFinite(legacy.diagnostics().startupSelection.phases.canaryMs));
+  } finally {
+    await legacy.releaseUnboundSelection();
+  }
+});
+
+test("malformed optional canary evidence leaves the valid last-known-good proof and held lease usable", async context => {
+  const stateFile = await fixture(context);
+  const root = path.join(path.dirname(stateFile), "bin");
+  const current = { ...candidate("0.151.0"), path: path.join(root, "codex.exe") };
+  const files = [{ name: "codex.exe", sha256: current.sha256 }];
+  current.bundle = { schemaVersion: 1, root, installRoot: path.dirname(root), files,
+    codeModeHost: true, digest: codexBundleDigest(files, true) };
+  const good = { identity: current, status: "passed", evidence: { safeToolCount: 1 } };
+  await writeFile(stateFile, JSON.stringify({
+    schemaVersion: 1, lastKnownGood: current, lastKnownGoodCanary: good,
+    canary: { ...good, identity: { path: { toString: null } } },
+  }));
+  let acquired = 0;
+  let released = 0;
+  const owner = new CodexExecutableUpdateService({
+    stateFile, platform: "win32",
+    verifyRecorded: async (recorded, { retainCustody }) => {
+      acquired++;
+      retainCustody({ assertAlive() {}, async release() { released++; } });
+      return recorded;
+    },
+    acquireCustody: async () => assert.fail("the recorded lease was already acquired"),
+    runCanary: async () => assert.fail("the valid last-known-good proof should be reused"),
+  });
+  try {
+    assert.equal(await owner.selectForStart(), current.path);
+    assert.equal(await owner.verifySelectedForLaunch(current.path), current.path);
+    assert.deepEqual([acquired, released], [1, 0]);
+    await owner.markStartupSuccess();
+  } finally {
+    await owner.releaseUnboundSelection();
+  }
+  assert.deepEqual([acquired, released], [1, 1]);
+  const stored = JSON.parse(await readFile(stateFile, "utf8"));
+  assert.deepEqual(stored.lastKnownGoodCanary, good);
+});
+
 test("unsigned rg remains eligible in discovery, preflight and cold startup with a legacy bundle", {
   skip: process.platform !== "win32",
 }, async context => {
@@ -121,6 +214,11 @@ test("unsigned rg remains eligible in discovery, preflight and cold startup with
   assert.equal(await readFile(stateFile, "utf8"), persisted);
   try {
     assert.equal(await restarted.selectForStart(), main);
+    const timing = restarted.diagnostics().startupSelection.phases;
+    assert.ok(Number.isFinite(timing.inspectionCustodyMs));
+    assert.equal(timing.selectionCustodyMs, undefined);
+    assert.equal(timing.inspectionReleaseMs, undefined);
+    await assert.rejects(writeFile(helper, "must remain held until release"));
     assert.equal(await restarted.verifySelectedForLaunch(main), main);
     await restarted.markStartupSuccess();
   } finally {
@@ -132,9 +230,14 @@ test("unsigned rg remains eligible in discovery, preflight and cold startup with
     ...beforeCold, featureChecks: beforeCold.featureChecks + 2,
   });
 
+  const failedSave = new CodexExecutableUpdateService({
+    ...ownerOptions, writeFileImpl: async () => { throw new Error("selection state write refused"); },
+  });
+  await assert.rejects(failedSave.selectForStart(), /selection state write refused/u);
+  assert.equal(featureChecks, beforeCold.featureChecks + 3);
   await writeFile(helper, "changed helper bytes");
   await assert.rejects(verifyRecordedCodexExecutable(legacy, inspection), /Recorded Codex bundle identity changed/u);
-  assert.equal(featureChecks, beforeCold.featureChecks + 2);
+  assert.equal(featureChecks, beforeCold.featureChecks + 3);
 });
 
 for (const policy of [
@@ -458,14 +561,22 @@ test("candidate startup failure permits exactly one last-known-good rollback", a
   const update = service(stateFile, { candidates: [newest, legacy] });
   await update.refreshInBackground();
   assert.equal(await update.selectForStart(), newest.path);
+  const firstSelection = update.diagnostics().startupSelection;
   assert.equal(await update.markStartupFailure(new Error("startup protocol failure")), true);
   assert.equal(await update.selectForStart(), legacy.path);
+  const rollbackSelection = update.diagnostics().startupSelection;
+  assert.equal(rollbackSelection.outcome, "succeeded");
+  assert.deepEqual(rollbackSelection.previousAttempt, firstSelection);
+  rollbackSelection.previousAttempt.phases.stateReadMs = -1;
+  assert.deepEqual(update.diagnostics().startupSelection.previousAttempt, firstSelection);
   assert.equal(update.diagnostics().status, "rollback-starting");
   await update.markStartupSuccess();
   assert.equal(update.diagnostics().status, "rolled-back");
   assert.equal(update.diagnostics().lastKnownGood.version, legacy.version);
   const saved = JSON.parse(await readFile(stateFile, "utf8"));
   assert.equal(JSON.stringify(saved).includes("auth"), false);
+  assert.equal(await update.selectForStart(), legacy.path);
+  assert.equal(update.diagnostics().startupSelection.previousAttempt, undefined);
 });
 
 test("launch verification rejects post-canary replacement and permits only verified last-known-good", async (context) => {

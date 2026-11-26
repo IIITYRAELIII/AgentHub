@@ -96,11 +96,12 @@ export function createDesktopControlRouter({
     return next;
   }
 
-  function effectiveParams(params, context) {
+  function effectiveParams(params, context, action) {
     if (miniAppSources.has(String(context?.source ?? ""))) {
       return {
         ...params,
-        limit: Math.min(Number(params.limit) || 10, miniAppLimits.limit),
+        limit: Math.min(Number(params.limit) || 10,
+          action === "task-history" || action === "open-task" ? 30 : miniAppLimits.limit),
         maxAnswerChars: miniAppLimits.maxAnswerChars,
         maxResponseBytes: miniAppLimits.maxResponseBytes,
         compactSnapshot: true,
@@ -145,7 +146,7 @@ export function createDesktopControlRouter({
     }
     // Package admission owns an exact business input. Do not inject response
     // policy fields, or discard caller fields that its strict owner must reject.
-    const resolvedParams = ["restart-package", "resume-package"].includes(action) ? { ...params } : effectiveParams(params, context);
+    const resolvedParams = ["restart-package", "resume-package"].includes(action) ? { ...params } : effectiveParams(params, context, action);
     if (action === "send-message" && context?.commandId && !resolvedParams.clientUserMessageId) {
       resolvedParams.clientUserMessageId = String(context.commandId);
     }

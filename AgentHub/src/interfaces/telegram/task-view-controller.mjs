@@ -604,6 +604,7 @@ export class TaskViewController {
         if (!timing) return;
         traceTiming("trace-worker-wait", "succeeded", timing.queueWaitMs);
         traceTiming("trace-source-read", outcome, timing.readMs);
+        if (Number.isFinite(timing.returnMs)) traceTiming("trace-worker-return", "succeeded", timing.returnMs);
       }));
     }
     const task = this.task(binding, binding.chatId);

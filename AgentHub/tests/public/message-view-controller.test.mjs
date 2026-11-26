@@ -28,6 +28,9 @@ test("citation segments use exact coordinates and keep legacy or invalid positio
   const citation={index:1,position:{start,end:start+8}};
   const split=JSON.parse(JSON.stringify(api.responseCitationSegments(text,[citation])));
   assert.deepEqual(split,{segments:[{text:text.slice(0,start)},{citation},{text:'\nTail'}],unpositioned:[]});
+  const conflicting = [{ ...citation, targetMessageKey: "user-a" }, { ...citation, targetMessageKey: "user-b" }];
+  assert.deepEqual(JSON.parse(JSON.stringify(api.responseCitationSegments(text, conflicting))),
+    { segments: [{ text }], unpositioned: [] });
   for(const reference of [{index:1},{index:1,position:{start:-1,end:7}},{index:1,position:{start:0,end:8}},{index:1,position:{start:NaN,end:8}}]) {
     const result=api.responseCitationSegments(text,[reference]);
     assert.equal(result.segments.length,1); assert.equal(result.segments[0].text,text);
@@ -541,8 +544,28 @@ test("explicit citation targets refuse foreign, missing and ambiguous users inst
   assert.equal(citation([b, response]).interactive, false);
   assert.equal(citation([a, { ...a }, b, response]).interactive, false);
   assert.equal(citation([a, b, { ...response, provider: "" }]).interactive, false);
-  assert.equal(citation([a, b, { ...response, responseAnnotationReferences: [{ index: 1 }] }]).targetMessageKey,
-    "client\u001fclient-B", "legacy references retain their existing compatibility mapping");
+  const bare = { ...response, responseAnnotationReferences: [{ index: 1 }] };
+  assert.equal(citation([a, b, bare]).interactive, false, "ambiguous legacy indices do not choose the latest batch");
+  assert.equal(citation([a, bare]).targetMessageKey, "client\u001fclient-A");
+  assert.equal(citation([a, { ...b, threadId: "foreign" }, { ...bare, turnId: undefined }]).interactive, false);
+  assert.equal(citation([a, { ...bare, turnId: undefined }]).interactive, false);
+  assert.equal(citation([a, b, { ...bare, responseAnnotationReferences: [{
+    index: 1, target: { clientUserMessageId: "client-B", batchScoped: true },
+  }] }]).targetMessageKey, "client\u001fclient-B", "modern exact metadata can name either batch");
+});
+
+test("same local index can name two batches while aliases of one batch render once", async () => {
+  const api = await messageViewApi();
+  const scope = { provider: "codex", threadId: "thread", turnId: "turn" };
+  const batch = (itemId, text) => ({ ...scope, role: "user", itemId,
+    clientUserMessageId: `client-${itemId}`, responseAnnotations: [{ text }] });
+  const refs = ["a", "b", "a"].map((itemId, index) => ({ index: 1,
+    target: index === 2 ? { clientUserMessageId: "client-a", batchScoped: true } : { itemId, batchScoped: true },
+  }));
+  const response = { ...scope, role: "agent", responseAnnotationReferences: refs };
+  const results = api.responseCitationPresentations([batch("a", "First"), batch("b", "Second"), response], 2);
+  assert.equal(results.length, 2);
+  assert.deepEqual(Array.from(results, item => [item.index, item.quote]), [[1, "First"], [1, "Second"]]);
 });
 
 test("agent citation displays the user comment and targets its annotation card by canonical identity", async () => {

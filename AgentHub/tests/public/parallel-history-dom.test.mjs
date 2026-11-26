@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { launchBrowser, openFixture, snapshot } from './composer-production.fixture.mjs';
+import { applyFixtureSnapshot, launchBrowser, openFixture, snapshot } from './composer-production.fixture.mjs';
 
 test('a live update in one open Stream preserves the other visible history columns', { timeout: 30000 }, async () => {
   const browser = await launchBrowser();
@@ -163,4 +163,79 @@ test('a live update in one open Stream preserves the other visible history colum
       selected: 'stream-c', currentOwnerPreserved: true });
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
+});
+
+test('a visible column keeps its coalesced source refresh across a quick A-B-A selection', { timeout: 25_000 }, async () => {
+  const browser = await launchBrowser();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    page.setDefaultTimeout(5_000);
+    const initial = snapshot();
+    const errors = await openFixture(page, { fixtureSnapshot: initial });
+    const a = page.locator('[data-stream-task-id="stream-a"]:visible').first();
+    const b = page.locator('[data-stream-task-id="stream-b"]:visible').first();
+    await b.click({ modifiers: ['Control'] });
+    const previewA = page.locator('.stream-chat-preview[data-stream-chat-task-id="stream-a"] .stream-chat-preview-head');
+    if (await previewA.count()) await previewA.click();
+    await page.waitForFunction(() => document.querySelector('[data-chat-pane]')?.dataset.streamChatTaskId === 'stream-a');
+    await page.evaluate(() => {
+      const post = window.__agentHubVscode.postMessage;
+      const sampleHistory = (text, version) => ({
+        provider: 'codex', threadId: 'thread-a', streamId: 'stream-a', start: 0, end: 1,
+        total: 1, messageTotal: 1, nextBefore: null, version,
+        items: [{ id: 'turn-a', completed: true, status: 'completed', terminalRevision: 1, answer: text }],
+      });
+      const reply = (message, result) => queueMicrotask(() => window.dispatchEvent(new MessageEvent('message', {
+        data: { type: 'agenthub:control-result', id: message.id, ok: true, result },
+      })));
+      const seen = [];
+      window.heldAHistory = {
+        seen,
+        release: () => reply(seen[0], { ...sampleHistory('Old A', 'old-a'), notModified: true }),
+      };
+      window.__agentHubVscode.postMessage = message => {
+        if (message.params?.streamId !== 'stream-a') return post(message);
+        if (message.action === 'open-task') {
+          reply(message, { history: sampleHistory('Opened A while refresh was held', 'old-a') });
+          return;
+        }
+        if (message.action !== 'task-history') return post(message);
+        seen.push(message);
+        if (seen.length === 1) return;
+        reply(message, message.params.refreshSource
+          ? sampleHistory('Fresh history from A source', 'new-a')
+          : { ...sampleHistory('Old A', 'old-a'), notModified: true });
+      };
+    });
+    // Reopening a retained tab dispatches its ordinary read. Hold it while two
+    // independent callers request the next read for A.
+    await a.click();
+    await page.waitForFunction(() => window.heldAHistory.seen.length === 1);
+    const completedAt = new Date().toISOString();
+    const changed = {
+      ...initial, version: 'a-visible-column-change',
+      tasks: initial.tasks.map(task => task.streamId === 'stream-a' ? {
+        ...task, unread: true, lastAnswerAt: completedAt, lastAnswerTurnId: 'new-turn-a',
+        latestFinal: { provider: 'codex', threadId: 'thread-a', turnId: 'new-turn-a', revision: 1, completedAt },
+      } : task),
+    };
+    await applyFixtureSnapshot(page, changed);
+    await page.locator('[data-stream-task-id="stream-a"][data-answer-ready]:visible').first().waitFor();
+    await page.evaluate(() => {
+      history.replaceState(null, '', '#/chat/stream/stream-a');
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    await page.getByText('Opened A while refresh was held', { exact: true }).first().waitFor();
+    await b.click();
+    await page.waitForFunction(() => document.querySelector('[data-chat-pane]')?.dataset.streamChatTaskId === 'stream-b');
+    await a.click();
+    await page.waitForFunction(() => document.querySelector('[data-chat-pane]')?.dataset.streamChatTaskId === 'stream-a');
+    await page.evaluate(() => window.heldAHistory.release());
+    await page.waitForFunction(() => window.heldAHistory.seen.length >= 2);
+    assert.equal(await page.evaluate(() => window.heldAHistory.seen[1].params.refreshSource), true);
+    await page.getByText('Fresh history from A source', { exact: true }).first().waitFor();
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
 });

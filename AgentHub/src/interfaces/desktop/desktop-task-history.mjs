@@ -1,8 +1,8 @@
 import { receiptUserDisplay, userDisplayText } from "../../domain/user-message-display.mjs";
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import {
   displayUserPrompt,
-  EMPTY_TURN_COMPLETION_TEXT,
   exactTurnReceiptBindings,
   isEmptyTurnCompletionPlaceholder,
   responseAnnotationDetails,
@@ -19,7 +19,6 @@ import {
   userMessageSnapshotAuthority,
 } from "../../domain/canonical-user-messages.mjs";
 import {
-  CODEX_AUTO_COMPACTION_TURN_ID_PREFIX,
   isCodexAutoCompactionTurnId,
 } from "../../domain/codex-internal-turn.mjs";
 import {
@@ -32,12 +31,14 @@ import {
   trustedInterstreamMessageDetails,
 } from "../../domain/interstream-message.mjs";
 import { taskDisplayTitle } from "../../domain/task-display-title.mjs";
+import { CHAT_HISTORY_VISIBILITY } from "../../domain/history-page-visibility.mjs";
 import { taskRunIsActive } from "../../domain/task-runs.mjs";
 import { isLegacyCodexContextProbeTurn } from "../../domain/legacy-codex-context-probe.mjs";
 import { withDurableMessageMetadata } from "../../domain/stream-message-pin.mjs";
 import { codexVisualizationIdentity } from "../../domain/codex-visualization-reference.mjs";
 
 const MAX_CACHED_HISTORIES = 12;
+const HISTORY_VERSION_LENGTH = 22;
 const MAX_CACHED_TURNS_PER_HISTORY = 40;
 
 function coalesceInterstreamRootAlias(messages, turn) {
@@ -415,9 +416,9 @@ export function createDesktopTaskHistoryFactory({
     }
   }
 
-  async function hydrateHistory(history) {
+  async function hydrateHistory(history, cachedAttachments) {
     const result = structuredClone(Array.isArray(history) ? history : []);
-    await Promise.all(result.flatMap((item) => (
+    await Promise.all(result.flatMap((item, index) => (
       (Array.isArray(item.messages) ? item.messages : [])
         .filter((message) => (
           ["user", "agent"].includes(String(message?.role ?? ""))
@@ -426,7 +427,9 @@ export function createDesktopTaskHistoryFactory({
           && !(Array.isArray(message.attachments) && message.attachments.length)
         ))
         .map(async (message) => {
-          const imported = await attachmentImporter(message.attachmentSources);
+          const cached = cachedAttachments?.[index]?.messages?.find(previous =>
+            previous.attachments?.length && isDeepStrictEqual(previous.attachmentSources, message.attachmentSources));
+          const imported = cached ? structuredClone(cached.attachments) : await attachmentImporter(message.attachmentSources);
           if (imported.length) message.attachments = imported;
         })
     )));
@@ -523,7 +526,7 @@ export function createDesktopTaskHistoryFactory({
     if (!["codex", "claude"].includes(provider) || !selectedThreadId) {
       throw new Error("Укажите корректный поток");
     }
-    const limit = Math.max(1, Math.min(Number(params.limit) || 10, 20));
+    const limit = Math.max(1, Math.min(Number(params.limit) || 10, 30));
 
     // Opening a chat must be a local operation. App Server discovery can take
     // tens of seconds when a provider is stuck, while SQLite/taskCatalog is
@@ -622,30 +625,25 @@ export function createDesktopTaskHistoryFactory({
         timing,
         before: params.before,
         limit,
-        hiddenProvider: "codex",
-        hiddenTurnIdPrefixes: [CODEX_AUTO_COMPACTION_TURN_ID_PREFIX],
-        emptyCompletionText: EMPTY_TURN_COMPLETION_TEXT,
+        ...CHAT_HISTORY_VISIBILITY,
       }))
       : null;
     if (pagedHistory) {
-      for (const source of pagedHistory.items) {
-        const key = `${source.provider}:${source.threadId}`;
-        const id = String(source.turn?.id ?? "").trim();
-        const providerTurn = readCachedTurn(providerHistories, key, id);
-        const hydratedTurn = readCachedTurn(hydratedHistories, key, id);
-        let item = mergeCachedTaskHistory(
-          providerTurn ? [providerTurn] : [],
-          [source.turn],
-        )[0];
-        item = mergeCachedTaskHistory(
-          hydratedTurn ? [hydratedTurn] : [],
-          [item],
-        )[0];
-        if (!(await visibleProviderHistory(source.provider, [item],
-          (turn) => noteLegacyProbe(source, turn))).length) continue;
-        history.push(item);
-        historySources.set(item, { key, provider: source.provider, threadId: source.threadId });
-      }
+      await measure("history-merge-visible-turns", async () => {
+        for (const source of pagedHistory.items) {
+          const key = `${source.provider}:${source.threadId}`;
+          const id = String(source.turn?.id ?? "").trim();
+          const providerTurn = readCachedTurn(providerHistories, key, id);
+          const item = mergeCachedTaskHistory(
+            providerTurn ? [providerTurn] : [],
+            [source.turn],
+          )[0];
+          if (!(await visibleProviderHistory(source.provider, [item],
+            (turn) => noteLegacyProbe(source, turn))).length) continue;
+          history.push(item);
+          historySources.set(item, { key, provider: source.provider, threadId: source.threadId });
+        }
+      });
       if (!deferProviderRefresh) scheduleRefresh(currentThreadBinding);
     } else for (const threadBinding of threadBindings) {
       const key = `${threadBinding.provider}:${threadBinding.threadId}`;
@@ -803,7 +801,12 @@ export function createDesktopTaskHistoryFactory({
       rawPage = orderedHistory.slice(start, end);
     }
     const pageSources = rawPage.map((item) => historySources.get(item));
-    const page = await measure("history-attachment-hydration", () => hydrateHistory(rawPage));
+    // SQL already supplies these turns. The previous hydration can supply
+    // imported attachments, but replaying its messages would duplicate legacy requests.
+    const cachedAttachments = pagedHistory ? rawPage.map((item, index) =>
+      item.messages?.some(message => message.attachmentSources?.length && !message.attachments?.length)
+        ? readCachedTurn(hydratedHistories, pageSources[index]?.key, item.id) : null) : null;
+    const page = await measure("history-attachment-hydration", () => hydrateHistory(rawPage, cachedAttachments));
     for (let index = 0; index < page.length; index += 1) {
       const source = pageSources[index];
       if (source?.key) cacheHistory(hydratedHistories, source.key, [page[index]]);
@@ -1105,6 +1108,11 @@ export function createDesktopTaskHistoryFactory({
       }),
     }));
     const fitted = sync("history-fit-page", () => responseBudget.fit(payload, {
+      ...(deferProviderRefresh ? {
+        preferCompleteTail: true,
+        knownFinal: params.knownFinal ?? entry.latestFinal,
+        reservedBytes: Buffer.byteLength(',"version":""') + HISTORY_VERSION_LENGTH,
+      } : {}),
       maxBytes: Math.min(
         Math.max(Number(params.maxResponseBytes) || 3_500_000, 64 * 1_024),
         3_500_000,
@@ -1113,7 +1121,7 @@ export function createDesktopTaskHistoryFactory({
     const version = sync("history-version", () => createHash("sha256")
       .update(JSON.stringify(fitted))
       .digest("base64url")
-      .slice(0, 22));
+      .slice(0, HISTORY_VERSION_LENGTH));
     if (params.knownVersion && String(params.knownVersion) === version) {
       return {
         ...(binding.streamId ? { streamId: binding.streamId } : {}),

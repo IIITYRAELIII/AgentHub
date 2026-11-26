@@ -9,6 +9,8 @@ test("execution phase shares recovery and Telegram with bootstrap and keeps opti
   let telegramInput;
   const resources = { id: "one-resource-registry" };
   const runs = new Map();
+  const sends = [];
+  const health = { live: true, ready: true, degraded: false, installerCutover: { admissionClosed: false } };
   const bootstrap = boundPort();
   const { createExecutionBootstrapPhase } = await importCompositionWithPorts(
     new URL("../../src/composition/execution-bootstrap-phase-composition.mjs", import.meta.url), {
@@ -30,7 +32,10 @@ test("execution phase shares recovery and Telegram with bootstrap and keeps opti
     config: { dataDir: import.meta.dirname, components: { telegram: true } }, root: import.meta.dirname,
     runtimeCommandRoot: import.meta.dirname, settings: {},
     selection: { hostState: { stopping: false }, providerTitle: () => "Codex", selectedProjectRoot: () => "project" },
-    infrastructure: {},
+    infrastructure: { hubMcpService: { async call(name, args) {
+      sends.push({ name, args });
+      return { delivery: { accepted: true } };
+    } } },
     provider: { taskRuns: runs, taskCatalog: [],
       codexProviderTasks: { discoverTasks: async () => { events.push(["discover"]); return ["thread-exact"]; } },
       backgroundJobs: { restore: () => events.push(["restore"]) } },
@@ -39,6 +44,7 @@ test("execution phase shares recovery and Telegram with bootstrap and keeps opti
       startDeferred: (item) => events.push(["deferred", item]),
     } },
     deferred: { ports: { bootstrap }, api: {
+      handleDesktopControl: (request) => request.action === "runtime-health" ? health : request,
       backfillWorkLogPricingMetadata: (threads, options) => events.push(["pricing", threads, options.propagateErrors]),
     } },
   };
@@ -62,4 +68,25 @@ test("execution phase shares recovery and Telegram with bootstrap and keeps opti
   assert.equal(events.length, 3, "cancelled optional backfill cannot enter provider discovery");
   await bootstrapInput.backfillProviderMetadata();
   assert.deepEqual(events.slice(-2), [["discover"], ["pricing", ["thread-exact"], true]]);
+  const ordinary = { action: "send-message", params: { followUpMode: "queue" } };
+  assert.equal(await bootstrapInput.handleDesktopControl(ordinary), ordinary);
+  const notice = { action: "release-continuation", params: {
+    contextToken: "fixture-capability", requestId: "release-attempt:continue", streamId: "stream", text: "Ready",
+    mode: "queue", origin: { streamId: "foreign" },
+  } };
+  for (const block of [{ ready: false }, { live: false }, { degraded: true }, { installerCutover: { admissionClosed: true } }]) {
+    const previous = { ...health };
+    Object.assign(health, block);
+    assert.deepEqual(await bootstrapInput.handleDesktopControl(notice), { retry: true });
+    Object.assign(health, previous);
+  }
+  input.selection.hostState.stopping = true;
+  assert.deepEqual(await bootstrapInput.handleDesktopControl(notice), { retry: true });
+  assert.deepEqual(sends, []);
+  input.selection.hostState.stopping = false;
+  assert.deepEqual(await bootstrapInput.handleDesktopControl(notice), { delivery: { accepted: true } });
+  assert.deepEqual(sends, [{ name: "hub_stream_message_send", args: {
+    context_token: "fixture-capability", request_id: "release-attempt:continue",
+    stream_id: "stream", text: "Ready", mode: "steer", confirm_send: true,
+  } }]);
 });

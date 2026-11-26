@@ -78,6 +78,14 @@ export class RuntimeHealth {
     return this;
   }
 
+  readDiagnostic(name) {
+    try {
+      return this.#diagnosticSources.get(name)?.();
+    } catch (error) {
+      return { error: String(error?.message ?? error) };
+    }
+  }
+
   begin({ operations = [] } = {}) {
     this.#capabilities.clear();
     this.#phase = "starting";
@@ -213,12 +221,8 @@ export class RuntimeHealth {
     const ready = this.#phase === "complete" && required.every((capability) => capability.state === "ready");
     const degraded = impaired.length > 0;
     const diagnostics = {};
-    for (const [name, source] of this.#diagnosticSources) {
-      try {
-        diagnostics[name] = source();
-      } catch (error) {
-        diagnostics[name] = { error: String(error?.message ?? error) };
-      }
+    for (const name of this.#diagnosticSources.keys()) {
+      diagnostics[name] = this.readDiagnostic(name);
     }
     const workerMemory = runtimeWorkerMemorySnapshot();
     if (this.#diagnosticSources.size || Object.keys(workerMemory).length) {
