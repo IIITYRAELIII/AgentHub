@@ -5923,9 +5923,11 @@ agentHub.on("workspace-search:open", (result) => {
     const searchContext = focused
       ? historyMessages({ items: [focused] }).map(({ historyOrder, ...item }) => item)
       : [];
-    const searchOrder = new Map((focused?.messages ?? []).map((item, index) => [
-      identityKey({ ...exactNavigation, itemId: item.itemId, role: item.role }), index,
-    ]));
+    const searchOrder = new Map();
+    for (const [index, item] of (focused?.messages ?? []).entries()) {
+      const key = identityKey({ ...exactNavigation, itemId: item.itemId, role: item.role });
+      if (key) searchOrder.set(key, index);
+    }
     return { opened, searchHit, searchContext, searchOrder, history: opened.history };
   }, ({ opened, searchHit, searchContext, searchOrder }) => {
     workspaceSearchOpening = null;

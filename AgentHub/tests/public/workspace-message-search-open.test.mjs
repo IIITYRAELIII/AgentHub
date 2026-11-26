@@ -26,7 +26,7 @@ const turn = (suffix, day, text = "workspace needle") => ({
     { role: "agent", itemId: `final-${suffix}`, phase: "final_answer", text: "Answer " + suffix }],
 });
 
-async function fixture(t, surface, { preload = false } = {}) {
+async function fixture(t, surface, { preload = false, unaddressedItems = false } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "hub556-search-"));
   const store = new LocalTaskSyncStore({ filePath: path.join(dir, "sync.json"), databaseFile: path.join(dir, "journal.sqlite"), historyLimit: 20 });
   const browser = await launchBrowser();
@@ -47,10 +47,16 @@ async function fixture(t, surface, { preload = false } = {}) {
   await store.load();
   const historical = turn("historical", "01");
   const intermediate = turn("intermediate", "02");
-  const currentTurns = Array.from({ length: 42 }, (_, i) => turn("recent-" + i, "03"));
+  const currentTurns = Array.from({ length: unaddressedItems ? 4 : 42 }, (_, i) => turn("recent-" + i, "03"));
   if (preload) {
     currentTurns[22].messages[0].text = "indexed user target";
     currentTurns[23].messages.unshift({ role: "user", itemId: "extra-user", text: "Another user item" });
+  }
+  if (unaddressedItems) {
+    historical.messages.splice(2, 0, { role: "agent", itemId: "", text: "Unaddressed note" });
+    intermediate.startedAt = "2026-09-01T00:00:00Z";
+    intermediate.completedAt = "2026-09-01T00:01:00Z";
+    intermediate.messages[0].itemId = "";
   }
   const otherTurn = turn("other", "04");
   await store.recordHistory(former, [historical]);
@@ -58,7 +64,7 @@ async function fixture(t, surface, { preload = false } = {}) {
   await store.recordHistory(other, [otherTurn]);
   store.markMessageSearchThread(former);
   store.markMessageSearchThread(current);
-  assert.equal(store.history(current).some(item => item.id === intermediate.id), false);
+  assert.equal(store.history(current).some(item => item.id === intermediate.id), unaddressedItems);
   const model = snapshot();
   model.workspaces[0].streams[0].threads = [current, former];
   model.workspaces[0].streams[1].threads = [other];
@@ -111,9 +117,14 @@ async function fixture(t, surface, { preload = false } = {}) {
       assert.equal(result.history.streamId, params.streamId);
       assert.equal(result.history.threadId, params.streamId === current.streamId ? current.threadId : other.threadId);
       if (params.itemId === "hit-historical") {
-        assert.equal(result.history.items.some(turn => turn.id === params.turnId), false);
+        assert.equal(result.history.items.some(turn => turn.id === params.turnId), unaddressedItems);
         assert.equal(result.history.focusedItem?.id, params.turnId);
         assert.equal(result.history.focusedItem?.threadId, former.threadId);
+        if (unaddressedItems) {
+          assert.ok(result.history.focusedItem.messages.some(message => !message.itemId && message.text === "Unaddressed note"));
+          const neighbor = result.history.items.find(turn => turn.threadId === current.threadId && turn.id === intermediate.id);
+          assert.ok(neighbor?.messages.some(message => !message.itemId && message.role === "user"));
+        }
       }
       responses.push(result.focusedMessage.itemId);
       return { ok: true, result };
@@ -177,6 +188,12 @@ async function exactTarget(f, suffix, provider, threadId) {
   assert.deepEqual(f.diagnostics, []);
 }
 
+async function assertHistoricalOrder(f) {
+  const messages = f.page.locator('[data-chat-log] [data-thread-id="thread-old"][data-item-id]');
+  assert.deepEqual(await messages.evaluateAll(nodes => nodes.map(node => node.dataset.itemId)),
+    ["user-historical", "hit-historical", "final-historical"]);
+}
+
 for (const surface of ["web", "vscode"]) {
   test(`workspace search opens a former Thread from page two while indexing in ${surface}`, { timeout: 40_000 }, async t => {
     const f = await fixture(t, surface);
@@ -188,10 +205,15 @@ for (const surface of ["web", "vscode"]) {
     assert.equal(f.calls[0].itemId, "hit-historical");
     assert.equal(f.calls[0].taskThreadId, former.threadId);
     assert.deepEqual(f.responses, ["hit-historical"]);
-    const chat = f.page.locator("[data-chat-log]");
-    const messages = chat.locator('[data-thread-id="thread-old"][data-item-id]');
-    assert.deepEqual(await messages.evaluateAll(nodes => nodes.map(node => node.dataset.itemId)),
-      ["user-historical", "hit-historical", "final-historical"]);
+    await assertHistoricalOrder(f);
+  });
+
+  test(`workspace search ignores unaddressed items in other turns as order anchors in ${surface}`, { timeout: 40_000 }, async t => {
+    const f = await fixture(t, surface, { unaddressedItems: true });
+    await f.find();
+    await f.hit("historical").click();
+    await exactTarget(f, "historical", former.provider, former.threadId);
+    await assertHistoricalOrder(f);
   });
 }
 
