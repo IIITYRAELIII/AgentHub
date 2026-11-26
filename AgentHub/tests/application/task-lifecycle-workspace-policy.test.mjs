@@ -90,7 +90,12 @@ test("detached Test permits same-repo Claim, rejects stale dev and preserves ter
 }, async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "hub-test-lock-scopes-"));
   const raw = new TaskBoardStore({ databaseFile: path.join(root, "journal.sqlite") });
-  t.after(async () => { raw.close(); await rm(root, { recursive: true, force: true }); });
+  let reopened = null;
+  t.after(async () => {
+    reopened?.close();
+    raw.close();
+    await rm(root, { recursive: true, force: true });
+  });
   const run = promisify(execFile);
   const git = async (cwd, ...args) => (await run("git", args, { cwd, windowsHide: true })).stdout.trim();
   const commit = (cwd, message) => git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
@@ -285,8 +290,7 @@ test("detached Test permits same-repo Claim, rejects stale dev and preserves ter
     assert.equal(await git(one, "rev-parse", "refs/heads/dev"), beforeRecovery);
     assert.equal(board.lifecycleTransition(original.operationId).phase, "pending_git");
 
-    const reopened = new TaskBoardStore({ databaseFile: path.join(root, "journal.sqlite") });
-    t.after(() => reopened.close());
+    reopened = new TaskBoardStore({ databaseFile: path.join(root, "journal.sqlite") });
     const reopenedBoard = new TaskBoardService({ store: reopened, workspaceCatalog: catalog });
     const restartedGit = new TaskGitWorkspaceService({ dataDir: root, runtimeRoot: path.join(root, "runtime"),
       readPublication: async () => null });
