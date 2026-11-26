@@ -23,32 +23,13 @@ test("the current source checkout contains every first-party runtime import", as
   }
   await visit("src");
   await visit("assets");
-  await visit("release-progress");
   await verifyRuntimeImportClosure(root, files.filter(isRuntimeSourceFile).sort());
 });
 
-test("native source membership reads the declared release observer graph and still refuses a missing identity", async () => {
-  const bodies = new Map([
-    ["src/infrastructure/process/release-progress-monitor.mjs", 'import { identity } from "../../../release-progress/identity.mjs"; export { identity };'],
-    ["release-progress/server.mjs", 'import { identity } from "./identity.mjs"; import { read } from "./reader.mjs"; export { identity, read };'],
-    ["release-progress/reader.mjs", 'export const read = () => null;'],
-    ["release-progress/identity.mjs", 'export const identity = "exact observer identity";'],
-    ["release-progress/index.html", "<main>observer</main>"],
-    ["release-progress/app.js", "void 0;"],
-    ["release-progress/style.css", "main { display: block; }"],
-    ["release-progress/unrelated.mjs", 'import "./not-shipped.mjs";'],
-    ["release-progress/README.md", "not a runtime asset"],
-  ]);
-  const names = [...bodies.keys()];
-  const included = names.filter(isRuntimeSourceFile);
-  const sources = new Map(names.filter(isRuntimeSourceModule).map(name => [name, Buffer.from(bodies.get(name))]));
-  assert.equal(included.includes("release-progress/unrelated.mjs"), false);
-  assert.equal(included.includes("release-progress/README.md"), false);
-  const readModule = name => sources.get(name).toString("utf8");
-  await verifyRuntimeImportClosure("/owned/source", included, { readModule });
-  await assert.rejects(verifyRuntimeImportClosure("/owned/source", included.filter(name => name !== "release-progress/identity.mjs"), {
-    readModule,
-  }), /missing relative imports:.*release-progress\/identity\.mjs/u);
+test("the retired release observer graph is outside runtime source membership", () => {
+  for (const name of ["release-progress/server.mjs", "release-progress/identity.mjs", "release-progress/index.html"]) {
+    assert.equal(isRuntimeSourceFile(name), false, name);
+  }
 });
 
 test("native source membership includes the declared Git JSON companion and refuses missing dependencies", async () => {
@@ -62,7 +43,7 @@ test("native source membership includes the declared Git JSON companion and refu
     [helper, "export const identity = 'fixture';"],
     [unrelated, "{}"],
   ]);
-  // Same selection and raw module callback as the native preparation guard.
+  // Use the same source membership and module reads as package verification.
   const names = [...bodies.keys()];
   const sources = new Map(names.filter(isRuntimeSourceModule)
     .map(name => [name, Buffer.from(bodies.get(name))]));
