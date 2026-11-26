@@ -7,6 +7,7 @@ import { launchBrowser, openFixture, snapshot } from "./composer-production.fixt
 
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
 import { DesktopSystemService } from "../../src/interfaces/desktop/desktop-system-service.mjs";
+import { fitTaskHistoryPayload } from "../../src/domain/response-budget.mjs";
 import { DesktopTaskService } from "../../src/interfaces/desktop/desktop-task-service.mjs";
 import { createDesktopTaskHistoryFactory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
 
@@ -76,9 +77,12 @@ async function fixture(t, surface, { preload = false } = {}) {
   const taskHistory = createDesktopTaskHistoryFactory({
     selection: { activeProvider: () => current.provider, threadId: () => current.threadId, chatId: () => null },
     catalog: { entries: () => [current, other], threadsForStream },
-    historyReader: { readPage: (refs, params) => store.historyPage(refs, params) },
+    historyReader: {
+      readPage: (refs, params) => store.historyPage(refs, params),
+      readTurn: identity => store.historyTurn(identity),
+    },
     runs: { forTask: () => null },
-    responseBudget: { fit: payload => payload },
+    responseBudget: { fit: fitTaskHistoryPayload },
   });
   const desktop = new DesktopTaskService({
     catalog: () => [current, other],
@@ -106,6 +110,11 @@ async function fixture(t, surface, { preload = false } = {}) {
       if (held.has(params.itemId)) await held.get(params.itemId);
       assert.equal(result.history.streamId, params.streamId);
       assert.equal(result.history.threadId, params.streamId === current.streamId ? current.threadId : other.threadId);
+      if (params.itemId === "hit-historical") {
+        assert.equal(result.history.items.some(turn => turn.id === params.turnId), false);
+        assert.equal(result.history.focusedItem?.id, params.turnId);
+        assert.equal(result.history.focusedItem?.threadId, former.threadId);
+      }
       responses.push(result.focusedMessage.itemId);
       return { ok: true, result };
     } catch (error) {
@@ -179,6 +188,9 @@ for (const surface of ["web", "vscode"]) {
     assert.equal(f.calls[0].itemId, "hit-historical");
     assert.equal(f.calls[0].taskThreadId, former.threadId);
     assert.deepEqual(f.responses, ["hit-historical"]);
+    const chat = f.page.locator("[data-chat-log]");
+    await chat.locator('[data-thread-id="thread-old"][data-item-id="user-historical"]').waitFor();
+    await chat.locator('[data-thread-id="thread-old"][data-item-id="final-historical"]').waitFor();
   });
 }
 

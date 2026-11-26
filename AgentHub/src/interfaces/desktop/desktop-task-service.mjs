@@ -402,6 +402,7 @@ export class DesktopTaskService {
         streamId: entry.streamId,
         provider: targetProvider,
         threadId: taskThread,
+        ...(indexedMessage ? { focusTurnId: turnId } : {}),
         limit: params.limit,
         maxAnswerChars: params.maxAnswerChars,
       }, params, {

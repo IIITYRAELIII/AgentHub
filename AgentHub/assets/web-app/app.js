@@ -6994,7 +6994,8 @@ function renderMessagesContent({
     ? tailLimit
     : (state.messageRenderLimits.get(taskId) ?? INITIAL_MESSAGE_RENDER_LIMIT);
   const searchIndex = exactNavigation?.workspaceSearch
-    ? allMessages.findIndex((message) => matchesMessageTarget(message, exactNavigation))
+    ? allMessages.findIndex((message) => message.provider === exactNavigation.provider
+      && message.threadId === exactNavigation.threadId && message.turnId === exactNavigation.turnId)
     : -1;
   const searchLimit = searchIndex >= 0 ? allMessages.length - searchIndex : 0;
   if (searchLimit > visibleLimit) state.messageRenderLimits.set(taskId, searchLimit);
@@ -12160,8 +12161,7 @@ const AgentHub = {
     if (!sameMessages) state.messages.set(taskId, next);
     mobileDialogs?.sync();
     if (taskId === state.selectedId) {
-      if (sameMessages && selectedSurfaceOwned
-        && (!exactNavigation.workspaceSearch || renderedMessageTarget(exactNavigation))) {
+      if (sameMessages && selectedSurfaceOwned && !exactNavigation.workspaceSearch) {
         const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
         focusRenderedMessage(exactNavigation, { behavior: reducedMotion ? "auto" : "smooth" });
       } else {

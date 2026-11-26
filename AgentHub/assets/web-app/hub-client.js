@@ -879,7 +879,11 @@ function reconciledMessages(taskIdValue) {
   // Live snapshots, durable history and the optimistic receipt can arrive in
   // either order. Re-run idempotent deduplication after all three were merged.
   const canonical = projectCanonicalMessages(visible);
-  const searchHit = focusedHistoryWindowByTask.get(taskIdValue)?.searchHit;
+  const { searchHit, searchContext } = focusedHistoryWindowByTask.get(taskIdValue) ?? {};
+  if (searchContext?.length && !canonical.some((message) => message.provider === searchHit.provider
+    && message.threadId === searchHit.threadId && message.turnId === searchHit.turnId)) {
+    canonical.push(...projectCanonicalMessages(searchContext));
+  }
   // Search may address an indexed item that the normal one-card-per-turn view
   // folds into the final answer. Keep it outside canonical reconciliation.
   if (searchHit && !canonical.some((message) => identityKey(message) === identityKey(searchHit))) {
@@ -3262,7 +3266,10 @@ function applyOpened(result, {
   }
   const retainsPinnedFocus = Boolean(result.focusedTurn && exactNavigation?.pinId);
   if (exactNavigation?.searchHit) {
-    focusedHistoryWindowByTask.set(id, { searchHit: exactNavigation.searchHit });
+    focusedHistoryWindowByTask.set(id, {
+      searchHit: exactNavigation.searchHit,
+      searchContext: exactNavigation.searchContext,
+    });
   } else if (selectTask && focusedHistoryWindowByTask.get(id)?.searchHit) {
     clearFocusedHistoryWindow(id);
   }
@@ -5895,15 +5902,20 @@ agentHub.on("workspace-search:open", (result) => {
     const hitKey = identityKey(exactNavigation);
     const searchHit = focusedHistoryMessages(opened.focusedTurn).find((item) => identityKey(item) === hitKey);
     if (!searchHit) throw new Error("Не удалось открыть сообщение из поиска.");
-    return { opened, searchHit, history: opened.history };
-  }, ({ opened, searchHit }) => {
+    const focused = opened.history.focusedItem;
+    const searchContext = focused?.id === params.turnId && focused.provider === params.provider
+      && focused.threadId === params.taskThreadId
+      ? historyMessages({ items: [focused] }).map(({ historyOrder, ...item }) => item)
+      : [];
+    return { opened, searchHit, searchContext, history: opened.history };
+  }, ({ opened, searchHit, searchContext }) => {
     workspaceSearchOpening = null;
     agentHub.closeWorkspaceMessageSearch({ restoreFocus: false });
     agentHub.showSelectedTask();
     replaceRoute("#/chat/"
       + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
       + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
-    applyOpened(opened, { exactNavigation: { ...exactNavigation, searchHit } });
+    applyOpened(opened, { exactNavigation: { ...exactNavigation, searchHit, searchContext } });
   });
   const request = { id: result.id, generation: navigationIntents.capture() };
   workspaceSearchOpening = request;
