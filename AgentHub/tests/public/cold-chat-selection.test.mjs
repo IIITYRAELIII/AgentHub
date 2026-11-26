@@ -47,7 +47,10 @@ for (const [shape, mobile] of [["ordinary", false], ["heavy", false], ["ordinary
           ? { "hub-client.js": await readFile(process.env.AGENT_HUB_TEST_CLIENT_ASSET, "utf8") } : {};
         const errors = await openFixture(page, { fixtureSnapshot: initial, surface: "web", assetOverrides });
         stage = "open";
-        if (mobile) await page.locator('[data-mobile-dialogs-tab="chat"]').click();
+        if (mobile) {
+          await page.locator('[data-mobile-dialogs-tab="chat"]').click();
+          await page.locator("[data-mobile-stream-switch]").click();
+        }
         const performanceSession = await page.context().newCDPSession(page);
         await performanceSession.send("Performance.enable");
         const count = shape === "heavy" ? 20 : 2;
@@ -66,7 +69,7 @@ for (const [shape, mobile] of [["ordinary", false], ["heavy", false], ["ordinary
         const reply = (route, result) => route.fulfill({ status: 200, contentType: "application/json",
           body: JSON.stringify({ ok: true, result }) });
         let historyRequests = 0;
-        await page.route("**/api/control", async route => {
+        await page.route(url => url.pathname === "/api/control", async route => {
           const { action, params } = route.request().postDataJSON();
           if (action === "select-task" && params?.streamId === "stream-a") return reply(route, initial);
           if (params?.streamId !== "stream-b") return route.fallback();

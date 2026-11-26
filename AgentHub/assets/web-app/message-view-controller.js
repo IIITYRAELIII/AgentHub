@@ -5,14 +5,25 @@
   const DEFERRED_USER_MESSAGE_THRESHOLD = 4_000;
   const DEFERRED_USER_MESSAGE_PREVIEW_CHARS = 1_600;
 
+  function annotationLocatorField(target) {
+    return ["clientUserMessageId", "sourceOccurrenceId", "itemId"].find(key => target?.[key]);
+  }
+
+  function annotationLocatorKey(target) {
+    if (target?.unresolved === true) return "unresolved";
+    const field = annotationLocatorField(target);
+    return field ? `${field}\u001f${target[field]}` : "";
+  }
+
   function normalizedResponseAnnotationReferences(references) {
     const normalized = [];
     const seen = new Set();
     for (const reference of Array.isArray(references) ? references : []) {
       const index = Number(reference?.index);
-      if (!Number.isSafeInteger(index) || index < 1
-        || index > MAX_RESPONSE_ANNOTATION_INDEX || seen.has(index)) continue;
-      seen.add(index);
+      if (!Number.isSafeInteger(index) || index < 1 || index > MAX_RESPONSE_ANNOTATION_INDEX) continue;
+      const key = `${index}\u001f${annotationLocatorKey(reference.target)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       const position = reference?.position;
       normalized.push({ index, ...(reference.target && typeof reference.target === "object" ? { target: reference.target } : {}), ...(Number.isSafeInteger(position?.start) && Number.isSafeInteger(position?.end) && position.start >= 0
         && position.end === position.start + `Цитата ${index}`.length
@@ -72,42 +83,71 @@
     }
   }
 
-  function responseCitationPresentations(messages, messageIndex) {
+  function responseCitationPresentations(messages, messageIndex, capture = null) {
     const values = Array.isArray(messages) ? messages : [];
     const message = values[messageIndex];
     const references = message?.role === "agent" && Array.isArray(message.responseAnnotationReferences)
       ? normalizedResponseAnnotationReferences(message.responseAnnotationReferences)
       : [];
     if (!references.length) return [];
-    let targetIndex = -1;
-    for (let index = messageIndex - 1; index >= 0; index -= 1) {
-      if (values[index]?.role === "user" && Array.isArray(values[index].responseAnnotations)
-        && values[index].responseAnnotations.length) {
-        targetIndex = index;
-        break;
-      }
-    }
+    const scopeFields = ["provider", "threadId", "turnId"];
+    const scoped = scopeFields.every(field => Boolean(message[field]));
+    const anonymous = scopeFields.every(field => !message[field]);
+    const sameScope = candidate => scoped
+      ? scopeFields.every(field => candidate[field] === message[field])
+      : anonymous && scopeFields.every(field => !candidate[field]);
+    const batches = values.slice(0, messageIndex).flatMap((candidate, offset) => (
+      candidate?.role === "user" && Array.isArray(candidate.responseAnnotations) && candidate.responseAnnotations.length
+        && sameScope(candidate)
+        ? [{ candidate, offset }] : []
+    ));
+    const getAnnotation = (batch, index) => batch?.candidate.responseAnnotations[index - 1];
+    const visibleAnnotation = (batch, index) => {
+      const item = getAnnotation(batch, index);
+      return Boolean(String(item?.text ?? "").trim() || String(item?.annotation ?? "").trim());
+    };
+    const addressed = (locator) => {
+      const field = annotationLocatorField(locator);
+      if (!scoped || !field) return null;
+      const matches = batches.filter(batch => batch.candidate[field] === locator[field]);
+      return matches.length === 1 ? matches[0] : null;
+    };
+    // Old publishers copied one target onto all references, including indices
+    // that target could never contain. Repair that known shape by unique index.
+    const sample = references[0].target ?? capture;
+    const sampleKey = annotationLocatorKey(sample);
+    const oldTarget = sampleKey && !sample?.batchScoped && !capture?.byIndex ? addressed(sample) : null;
+    const legacyBlanket = oldTarget && references.every(ref => annotationLocatorKey(ref.target ?? capture) === sampleKey)
+      && references.some(ref => !visibleAnnotation(oldTarget, ref.index));
+
+    const owned = new Set();
     return references.flatMap((reference) => {
-      let target = values[targetIndex];
-      let exactTargetIndex = targetIndex;
-      if (reference.target) {
-        const locator = reference.target;
-        const matches = values.flatMap((candidate, index) => {
-          if (!message.provider || !message.threadId || !message.turnId
-            || index >= messageIndex || candidate?.role !== "user"
-            || candidate.provider !== message.provider || candidate.threadId !== message.threadId
-            || candidate.turnId !== message.turnId) return [];
-          const key = locator.clientUserMessageId ? "clientUserMessageId"
-            : locator.sourceOccurrenceId ? "sourceOccurrenceId" : locator.itemId ? "itemId" : "";
-          return key && candidate[key] === locator[key] ? [{ candidate, index }] : [];
-        });
-        target = matches.length === 1 ? matches[0].candidate : null;
-        exactTargetIndex = matches.length === 1 ? matches[0].index : -1;
-      }
-      const index = Number(reference?.index);
-      const annotation = target?.responseAnnotations?.[index - 1];
+      const { index } = reference;
+      const indexed = capture?.byIndex?.[index - 1];
+      const locator = reference.target ?? (capture?.byIndex
+        ? indexed ? { ...indexed, batchScoped: true } : { unresolved: true }
+        : capture);
+      const eligible = batches.filter(batch => visibleAnnotation(batch, index));
+      const unique = eligible.length === 1 ? eligible[0] : null;
+      let target = null;
+      if (locator) {
+        const exact = addressed(locator);
+        if (exact && !locator.unresolved) {
+          if (locator.batchScoped) target = visibleAnnotation(exact, index) ? exact : null;
+          else if (legacyBlanket) target = unique;
+          else if (eligible[0] === exact) target = exact;
+        }
+      } else target = unique;
+
+      const annotation = getAnnotation(target, index);
       const interactive = Boolean(target && annotation);
-      const quote = String(annotation?.annotation ?? "").trim();
+      if (interactive) {
+        const key = `${target.offset}\u001f${index}`;
+        if (owned.has(key)) return [];
+        owned.add(key);
+      }
+      const comment = String(annotation?.annotation ?? "").trim();
+      const quote = comment || String(annotation?.text ?? "").trim();
       const source = globalThis.AgentHubMessageDisclosure?.normalizedResponseAnnotationSource?.(
         annotation?.source,
       );
@@ -116,8 +156,8 @@
         ...(reference.position ? { position: reference.position } : {}),
         label: `Цитата ${index}`,
         quote: interactive ? quote : "",
-        annotation: quote,
-        targetMessageKey: interactive ? messageKey(target, exactTargetIndex) : "",
+        annotation: comment,
+        targetMessageKey: interactive ? messageKey(target.candidate, target.offset) : "",
         ...(interactive && source ? { source } : {}),
         interactive,
       }];
@@ -174,12 +214,17 @@
       else unpositioned.push(citation);
     }
     positioned.sort((a, b) => a.position.start - b.position.start);
-    if (positioned.some((citation, index) => index && citation.position.start < positioned[index - 1].position.end)) {
-      return { segments: [{ text }], unpositioned: Array.from(citations ?? []) };
+    const conflicting = new Set();
+    for (let index = 1; index < positioned.length; index += 1) {
+      if (positioned[index].position.start < positioned[index - 1].position.end) {
+        conflicting.add(positioned[index - 1]);
+        conflicting.add(positioned[index]);
+      }
     }
     const segments = [];
     let offset = 0;
     for (const citation of positioned) {
+      if (conflicting.has(citation)) continue;
       segments.push({ text: text.slice(offset, citation.position.start) }, { citation });
       offset = citation.position.end;
     }

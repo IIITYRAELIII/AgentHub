@@ -16,13 +16,13 @@ import { codexRolloutHistory, TaskViewController } from "../../src/interfaces/te
 import { row, message, start, turnId, observer } from "../providers/codex/codex-rollout-answer.fixture.mjs";
 import { applyFixtureSnapshot, launchBrowser, openFixture, snapshot } from "./composer-production.fixture.mjs";
 
-const user = (id, comment) => row("response_item", { type: "message", role: "user", id,
+const user = (id, comment, leadingAnnotations = []) => row("response_item", { type: "message", role: "user", id,
   internal_chat_message_metadata_passthrough: { turn_id: turnId },
   content: [{ type: "input_text", text: `<response-annotations>${JSON.stringify([
-    { text: `Exact source ${id}`, annotation: comment },
+    ...leadingAnnotations, { text: `Exact source ${id}`, annotation: comment },
   ])}</response-annotations>\n<user-request>Check ${id}</user-request>` }],
 });
-const marked = text => `${text} :agent-annotation{index="1"}`;
+const marked = (text, index = 1) => `${text} :agent-annotation{index="${index}"}`;
 const binding = { provider: "codex", threadId: "thread-a", turnId, streamId: "stream-a",
   observer: true, exactTurnObserver: true, status: "running", operationKind: "user-turn" };
 const { desktopRunSnapshot } = createDesktopSnapshotFactory({
@@ -70,7 +70,8 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
     const page = await browser.newPage({ viewport: { width: 1280, height: 880 } });
     page.setDefaultTimeout(5_000);
     const errors = await openFixture(page, {
-      fixtureSnapshot: liveSnapshot(run, "quote-live"), fixtureHistory: historyFor(activity), localWeb: true,
+      fixtureSnapshot: liveSnapshot(run, "quote-live"), fixtureHistory: historyFor(activity),
+      localWeb: true, surface: "browser",
       tracePageReader: async params => {
         requests.push(params);
         if (requests.length === 1) await gate.promise;
@@ -142,7 +143,7 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
     const commandId = requests[0].clientTraceId;
     assert.match(commandId, /^[a-f0-9-]{36}$/u);
     assert.deepEqual(serverEvents.map(event => event.stage), ["trace-history-binding", "trace-source-locate",
-      "trace-worker-wait", "trace-source-read", "trace-history-presentation"]);
+      "trace-worker-wait", "trace-source-read", "trace-worker-return", "trace-history-presentation"]);
     assert.ok(serverEvents.every(event => event.commandId === commandId && event.outcome === "succeeded"
       && Number.isFinite(event.monotonicDurationMs)));
     const clientEvents = await page.evaluate(async id => {
@@ -154,7 +155,8 @@ test("real quote clicks acknowledge immediately and paint the exact card after l
       }
       return window.__quoteTraceEvents.filter(event => event.commandId === id);
     }, commandId);
-    for (const action of ["annotation-pending", "annotation-source", "annotation-draft", "annotation-card"]) {
+    for (const action of ["annotation-pending", "annotation-source", "annotation-draft", "annotation-card",
+      "http-history-local-session", "http-history-device-session"]) {
       assert.ok(clientEvents.some(event => event.metadata?.action === action && event.outcome === "succeeded"), action);
     }
     assert.ok(clientEvents.some(event => event.stage === "client-ack"));
@@ -207,11 +209,14 @@ test("same-turn steer B cannot replace commentary A before or after SQLite reloa
         const steered = await service.read(run);
         Object.assign(run, createObservedTaskRun({ ...binding, userMessages: steered.userMessages }, steered)); service.applyObserved(run, steered);
         await applyFixtureSnapshot(page, liveSnapshot(run, `B-${width}`));
-        const b = page.locator('[data-chat-live] [data-trace-group-id="commentary:answer-B"] [data-response-citation-index="1"]');
-        await b.waitFor();
+        const b = page.locator('[data-chat-live] [data-trace-group-id="commentary:answer-B"]');
+        const ambiguous = b.locator(".msg-response-citation.is-fallback");
+        await ambiguous.waitFor();
+        assert.equal(await ambiguous.textContent(), "Цитата 1");
+        assert.equal(await b.locator("[data-response-citation-target]").count(), 0);
         assert.match(await a.innerText(), /Comment A/u, "an earlier native item retains its original user entity");
         assert.doesNotMatch(await a.innerText(), /Comment B/u);
-        assert.match(await b.innerText(), /Comment B/u);
+        assert.doesNotMatch(await b.innerText(), /Comment A|Comment B/u);
         await writeFile(nativePath, row("session_meta", { id: "01a0ea85-db2c-7bd3-bfad-2634824c6069" }) + first + row("response_item", { type: "custom_tool_call_output", call_id: "old-call",
           output: "large output ".repeat(350_000) }) + user("user-B", "Comment B")
           + message("answer-B", "commentary", marked("Answer B.")));
@@ -318,14 +323,15 @@ test("commentary references do not create a detached empty answer citation", { t
 
 test("native A survives late completion observation and SQLite history while a new final targets B", { timeout: 30_000 }, async () => {
   const a = { role: "user", itemId: "user-A", clientUserMessageId: "client-A", text: "Check A", responseAnnotations: [{ text: "same", annotation: "Comment A" }] };
-  const b = { ...a, itemId: "user-B", clientUserMessageId: "client-B", text: "Check B", responseAnnotations: [{ text: "same", annotation: "Comment B" }] };
+  const firstB = { text: "another quote", annotation: "First comment in B" };
+  const b = { ...a, itemId: "user-B", clientUserMessageId: "client-B", text: "Check B", responseAnnotations: [firstB, { text: "same", annotation: "Comment B" }] };
   const run = { ...binding, id: "native-run", userMessages: [a], responseItems: [] };
   const rawA = marked("Native answer A.");
   startCodexAgentMessage(run, { turnId, item: { id: "native-A", type: "agentMessage", phase: "commentary" } });
   run.userMessages.push(b);
   const item = completeCodexAgentMessage(run, { turnId, item: { id: "native-A", type: "agentMessage", phase: "commentary", text: rawA } });
   upsertRunReasoningBlock(run, { id: item.id, sourceItemId: item.id, kind: "commentary", text: codexAgentMessageSourceText(item), responseAnnotationTarget: item.responseAnnotationTarget });
-  const records = start() + user("user-A", "Comment A") + user("user-B", "Comment B")
+  const records = start() + user("user-A", "Comment A") + user("user-B", "Comment B", [firstB])
     + message("native-A", "commentary", rawA);
   const activity = parseCodexRolloutActivity(records);
   const service = observer(async () => activity);
@@ -346,11 +352,11 @@ test("native A survives late completion observation and SQLite history while a n
     await applyFixtureSnapshot(page, liveSnapshot(run, "native-after-observation"));
     assert.match(await aLink.innerText(), /Comment A/u);
     assert.doesNotMatch(await aLink.innerText(), /Comment B/u);
-    const finalText = marked("New final B.");
+    const finalText = marked("New final B.", 2);
     startCodexAgentMessage(run, { turnId, item: { id: "native-B", type: "agentMessage", phase: "final_answer" } });
     completeCodexAgentMessage(run, { turnId, item: { id: "native-B", type: "agentMessage", phase: "final_answer", text: finalText } });
     await applyFixtureSnapshot(page, liveSnapshot(run, "native-final-B"));
-    const bLink = page.locator('[data-live-body] [data-response-citation-index="1"]');
+    const bLink = page.locator('[data-live-body] [data-response-citation-index="2"]');
     await bLink.waitFor(); assert.match(await bLink.innerText(), /Comment B/u);
     assert.match(await aLink.innerText(), /Comment A/u);
     store = new LocalTaskSyncStore({ filePath }); await store.load();
@@ -374,7 +380,7 @@ test("native A survives late completion observation and SQLite history while a n
         await cold.evaluate(() => window.AgentHub.showSelectedTask());
         const trace = cold.locator("details.turn-trace"); await trace.locator("summary").click();
         assert.match(await trace.locator('[data-trace-group-id="commentary:native-A"] [data-response-citation-index="1"]').innerText(), /Comment A/u);
-        assert.match(await cold.locator('.msg-agent > .msg-body [data-response-citation-index="1"]').last().innerText(), /Comment B/u);
+        assert.match(await cold.locator('.msg-agent > .msg-body [data-response-citation-index="2"]').last().innerText(), /Comment B/u);
       }
       assert.deepEqual(coldErrors, []);
       if (process.env.AGENT_HUB_QA_SCREENSHOT_DIR) await cold.screenshot({ path: path.join(process.env.AGENT_HUB_QA_SCREENSHOT_DIR, "late-native-source-390.png") });

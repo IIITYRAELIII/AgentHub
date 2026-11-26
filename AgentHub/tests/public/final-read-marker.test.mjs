@@ -103,7 +103,7 @@ test('confirmed exact read cannot be resurrected by a late unread snapshot on ei
     assert.ok(viewed && cleared);
     assert.equal(viewed.commandId, cleared.commandId);
     assert.equal(cleared.metadata.terminalRevision, 1);
-    assert.equal(cleared.metadata.codeMarker, 'hub291.read-marker.3');
+    assert.equal(cleared.metadata.codeMarker, 'hub500.read-marker.1');
     assert.equal(cleared.metadata.tabReady, false);
     assert.equal(cleared.metadata.cardReady, false);
     assert.ok(cleared.monotonicDurationMs < 1000, 'isolated ack-to-paint should finish without polling delay');

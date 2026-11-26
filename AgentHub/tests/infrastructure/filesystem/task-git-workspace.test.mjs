@@ -20,9 +20,72 @@ import {
 import { prepareTaskWorktreeDependencies } from "../../../src/infrastructure/filesystem/task-worktree-dependencies.mjs";
 import { canonicalPath } from "../../../src/infrastructure/filesystem/config.mjs";
 import { taskRepositoryKey } from "../../../src/domain/task-git-reference.mjs";
+import { interstreamAuditContentHash } from "../../../src/domain/interstream-message.mjs";
 import { unprovenProcessTaskGit } from "../../helpers/task-git-unproven-process.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("native Test and combined closure use the same saved source and preserve its later HEAD", { timeout: 120_000 }, async t => {
+  const root = await repository(t);
+  const dataDir = path.join(root, "..", `${path.basename(root)}-saved-absorption`);
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const owner = new TaskGitWorkspaceService({ dataDir });
+  const sourceId = "14141414-1414-4414-8414-141414141414";
+  const targetId = "15151515-1515-4515-8515-151515151515";
+  const source = await owner.prepare({ taskId: sourceId, taskNumber: "HUB-14", projectRoot: root });
+  const target = await owner.prepare({ taskId: targetId, taskNumber: "HUB-15", projectRoot: root });
+  const commit = async (cwd, file) => {
+    await writeFile(path.join(cwd, file), `${file}\n`);
+    await git(cwd, "add", "--", file);
+    await git(cwd, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", file);
+    return git(cwd, "rev-parse", "HEAD");
+  };
+  const testedSource = await commit(source.projectRoot, "tested.txt");
+  const saved = await commit(source.projectRoot, "saved.txt");
+  const preserved = await commit(source.projectRoot, "later.txt");
+  const survivor = await commit(target.projectRoot, "survivor.txt");
+  await git(target.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", saved, "-m", "Absorb saved source");
+  const result = await git(target.projectRoot, "rev-parse", "HEAD");
+  const base = await git(root, "rev-parse", "main");
+  const requestId = "saved-and-stopped-source";
+  const origin = { requestId, workspaceId: "workspace", streamId: "source", provider: "codex", sourceThreadId: "thread" };
+  const declaration = { version: 1, kind: "task-absorption-handoff-v1", workspaceId: origin.workspaceId,
+    sourceTaskId: sourceId, sourceTaskRevision: 5, survivorTaskId: targetId, baseCommit: base,
+    sourceCommit: saved, sourceTree: await git(root, "rev-parse", `${saved}^{tree}`),
+    survivorParentCommit: survivor, absorptionCommit: result, saved: true, stopped: true };
+  const binding = d => {
+    const text = JSON.stringify(d);
+    return { requestId, text, origin, contentHash: interstreamAuditContentHash(text, { origin }),
+      createdAtMs: 1, sourceTaskNumber: "HUB-14", sourceDescriptionSha256: "a".repeat(64),
+      priorResults: [{ taskId: sourceId, projectRoot: root, resultCommit: testedSource,
+        testOperationId: "previous-test", returnOperationId: "previous-return", testRevision: 3, returnRevision: 4,
+        testOutcomeHash: "b".repeat(64), returnOutcomeHash: "c".repeat(64) }] };
+  };
+  const operation = (operationId, input) => owner.withTaskLocks([sourceId, targetId], async lease => {
+    const options = { operationId, lease, nativeAbsorptionInput: input, validateAbsorption: () => {} };
+    const { snapshot, integration } = await owner.snapshotAndMergeOwned({ ...options, taskId: targetId,
+      taskNumber: "HUB-15", projectRoot: target.projectRoot, expectedTaskRevision: 5 });
+    assert.equal(integration.integrated, true);
+    return owner.withNativeIntegrationTerminalOwned(snapshot, options, descriptor => descriptor);
+  }, { guardTaskId: targetId });
+  await assert.rejects(operation("head-not-bound", binding(declaration)), /source HEAD\/base\/branch or saved cleanliness changed/u);
+  const descriptor = await operation("bound-saved-source", binding({ ...declaration, preservedSourceHead: preserved }));
+  const closure = () => owner.withTaskLocks([sourceId, targetId], lease => owner.withAbsorptionEvidenceOwned({
+    source: { id: sourceId, taskNumber: "HUB-14", revision: 5, gitReferences: [{ projectRoot: root, resultCommit: testedSource }] },
+    target: { id: targetId, gitReferences: [{ projectRoot: root, branch: target.branch, resultCommit: result }] },
+    lease, nativeAbsorption: descriptor,
+  }, evidence => evidence), { guardTaskId: targetId });
+  const evidence = await closure();
+  assert.equal(evidence.repositories[0].sourceHead, preserved);
+  assert.equal(evidence.repositories[0].selectedSourceCommit, saved);
+  assert.deepEqual(evidence.repositories[0].results, [saved, testedSource]);
+  assert.equal(await git(root, "rev-parse", source.branch), preserved);
+  assert.equal(await readFile(path.join(source.projectRoot, "later.txt"), "utf8"), "later.txt\n");
+  await assert.rejects(git(root, "cat-file", "-e", `${result}:later.txt`), { code: 128 });
+  await commit(source.projectRoot, "drift.txt");
+  await assert.rejects(closure(), /source HEAD\/base\/branch or saved cleanliness changed/u);
+});
 
 test("release Git can omit a wall clock cutoff while retaining explicit abort", async () => {
   assert.equal(await runTaskGitCommand(["-e", "setTimeout(() => process.stdout.write('completed'), 25)"], {

@@ -60,6 +60,7 @@ function configureUsageSyncDatabase(database) {
       reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
       long_context_reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
       total_tokens INTEGER NOT NULL DEFAULT 0,
+      measured_token_fields TEXT,
       usage_reported INTEGER NOT NULL DEFAULT 1,
       model TEXT NOT NULL DEFAULT '',
       service_tier TEXT NOT NULL DEFAULT '',
@@ -108,6 +109,7 @@ function configureUsageSyncDatabase(database) {
     ["device_label", "TEXT NOT NULL DEFAULT ''"],
     ["estimate_kind", "TEXT NOT NULL DEFAULT ''"],
     ["image_generation_count", "INTEGER NOT NULL DEFAULT 0"],
+    ["measured_token_fields", "TEXT"],
     ["cache_write_input_tokens", "INTEGER NOT NULL DEFAULT 0"],
     ["long_context_input_tokens", "INTEGER NOT NULL DEFAULT 0"],
     ["long_context_cached_input_tokens", "INTEGER NOT NULL DEFAULT 0"],
@@ -198,6 +200,8 @@ function rowToEvent(row) {
       reasoningOutputTokens: row.reasoning_output_tokens,
       longContextReasoningOutputTokens: row.long_context_reasoning_output_tokens,
       totalTokens: row.total_tokens,
+      ...(row.measured_token_fields !== null && row.measured_token_fields !== undefined
+        ? { measuredTokenFields: row.measured_token_fields } : {}),
     },
     usageReported: row.usage_reported !== 0,
     model: row.model,
@@ -240,6 +244,7 @@ function eventParameters(event) {
     event.usage.reasoningOutputTokens,
     event.usage.longContextReasoningOutputTokens ?? 0,
     event.usage.totalTokens,
+    event.usage.measuredTokenFields ?? null,
     event.usageReported ? 1 : 0,
     event.model,
     event.serviceTier,
@@ -529,9 +534,9 @@ export class WorkLogUsageSyncStore {
         long_context_input_tokens, long_context_cached_input_tokens,
         long_context_cache_write_input_tokens, output_tokens, long_context_output_tokens,
         reasoning_output_tokens, long_context_reasoning_output_tokens,
-        total_tokens, usage_reported, model, service_tier,
+        total_tokens, measured_token_fields, usage_reported, model, service_tier,
         device_label, observed_at
-      ) VALUES (${new Array(36).fill("?").join(", ")})
+      ) VALUES (${new Array(37).fill("?").join(", ")})
       ON CONFLICT(event_id) DO UPDATE SET
         schema_version = excluded.schema_version,
         device_id = excluded.device_id,
@@ -563,6 +568,7 @@ export class WorkLogUsageSyncStore {
         reasoning_output_tokens = excluded.reasoning_output_tokens,
         long_context_reasoning_output_tokens = excluded.long_context_reasoning_output_tokens,
         total_tokens = excluded.total_tokens,
+        measured_token_fields = excluded.measured_token_fields,
         usage_reported = excluded.usage_reported,
         model = excluded.model,
         service_tier = excluded.service_tier,

@@ -147,6 +147,10 @@ async function openStreamTabsDomFixture(page, {
         body: JSON.stringify(typeof snapshot === "function" ? snapshot() : snapshot ?? initialSnapshot) });
       return;
     }
+    if (requestUrl.pathname === "/health") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+      return;
+    }
     if (requestUrl.pathname === "/api/control" && route.request().method() === "POST") {
       const request = route.request().postDataJSON();
       const response = await control?.(request) ?? { status: 200, body: { ok: true, result: initialSnapshot } };
@@ -1396,6 +1400,57 @@ test("an active Stream preserves its answer-ready state", async () => {
   );
 });
 
+async function openPopulatedStreamSettings(page) {
+  await page.evaluate(() => {
+    window.AgentHub.setWorkspaces([{ id: "rail-workspace", name: "Panel preview", settings: {} }]);
+    window.AgentHub.setTasks([{
+      id: "rail-task", threadId: "rail-thread", workspaceId: "rail-workspace",
+      workspaceName: "Panel preview", streamId: "rail-stream", streamName: "Preview",
+      streamOrdinal: 1, provider: "codex", agentLabel: "Codex", status: "ready",
+      statusLabel: "Готов", lastActivity: new Date().toISOString(),
+      running: false, unread: true, selected: true, streamSettings: {},
+    }]);
+  });
+  await page.locator("[data-stream-card-settings-toggle]").click();
+}
+
+test("stream effect buttons apply one mode and restore it after reload", async () => {
+  const { chromium } = await import("playwright");
+  const browser = await launchDomBrowser(chromium);
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await openStreamTabsDomFixture(page);
+    await openPopulatedStreamSettings(page);
+    const menu = page.getByRole("dialog", { name: "Настройки потоков" });
+    const effect = menu.getByRole("group", { name: "Эффект активности и готового ответа потока" });
+    const still = effect.getByRole("button", { name: "Статичный", exact: true });
+    const dynamic = effect.getByRole("button", { name: "Динамичный", exact: true });
+    const assertMode = async (mode) => {
+      assert.equal(await page.locator("html").getAttribute("data-stream-status-effect"), mode);
+      assert.equal(await still.getAttribute("aria-pressed"), String(mode === "static"));
+      assert.equal(await dynamic.getAttribute("aria-pressed"), String(mode === "dynamic"));
+    };
+    await assertMode("dynamic");
+    const order = menu.getByRole("group", { name: "Порядок потоков" });
+    const fixed = await order.getByRole("button", { name: "Фикс" }).boundingBox();
+    const dynamicBox = await dynamic.boundingBox();
+    assert.ok(Math.abs(dynamicBox.x - fixed.x) <= 1);
+    assert.ok(Math.abs(dynamicBox.width - fixed.width) <= 1);
+    const screenshotDir = process.env.HUB157_QA_SCREENSHOT_DIR;
+    if (screenshotDir) await menu.screenshot({ path: path.join(screenshotDir, "effect-dynamic.png") });
+    await still.click();
+    await assertMode("static");
+    await page.reload();
+    await openPopulatedStreamSettings(page);
+    await assertMode("static");
+    if (screenshotDir) await menu.screenshot({ path: path.join(screenshotDir, "effect-static.png") });
+    await dynamic.press("Space");
+    await assertMode("dynamic");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("right panel visibility defaults on and its header switch preserves hidden options across reload", async () => {
   const { chromium } = await import("playwright");
   const browser = await launchDomBrowser(chromium);
@@ -1404,21 +1459,8 @@ test("right panel visibility defaults on and its header switch preserves hidden 
       const page = await browser.newPage({ viewport: { width, height: 1000 } });
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      const populate = async () => {
-        await page.evaluate(() => {
-          window.AgentHub.setWorkspaces([{ id: "rail-workspace", name: "Panel preview", settings: {} }]);
-          window.AgentHub.setTasks([{
-            id: "rail-task", threadId: "rail-thread", workspaceId: "rail-workspace",
-            workspaceName: "Panel preview", streamId: "rail-stream", streamName: "Preview",
-            streamOrdinal: 1, provider: "codex", agentLabel: "Codex", status: "ready",
-            statusLabel: "Готов", lastActivity: new Date().toISOString(),
-            running: false, unread: true, selected: true, streamSettings: {},
-          }]);
-        });
-        await page.locator("[data-stream-card-settings-toggle]").click();
-      };
       await openStreamTabsDomFixture(page);
-      await populate();
+      await openPopulatedStreamSettings(page);
       const group = page.getByRole("region", { name: "Правая панель", exact: true });
       const toggle = group.getByRole("switch", { name: "Отображать правую панель", exact: true });
       const options = group.locator("[data-activity-rail-settings]");
@@ -1459,7 +1501,7 @@ test("right panel visibility defaults on and its header switch preserves hidden 
       await toggle.click();
       await page.reload();
       await page.waitForFunction(() => typeof window.AgentHub === "object");
-      await populate();
+      await openPopulatedStreamSettings(page);
       assert.equal(await toggle.getAttribute("aria-checked"), "false");
       assert.equal(await options.isVisible(), false);
       assert.equal(await page.locator("[data-activity-rail]").isVisible(), false);

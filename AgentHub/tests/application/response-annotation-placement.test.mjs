@@ -8,6 +8,21 @@ import { claudeTranscriptHistory, codexThreadHistory, mergeCompletedTaskHistory 
 import { LocalTaskSyncStore } from '../../src/infrastructure/persistence/task-sync-store.mjs';
 import { TurnEndNotificationRegistry } from '../../src/application/turn-end-notifications.mjs';
 
+test("terminal history never retargets a damaged explicit annotation range", () => {
+  const raw = '- :agent-annotation{index="1"} First\n- :agent-annotation{index="1"} Second';
+  const position = { start: 19, end: 26 };
+  const target = { itemId: "user-B", batchScoped: true };
+  const projected = (reference) => mergeCompletedTaskHistory([], {
+    turnId: "turn", answer: raw, responseAnnotationReferences: [reference],
+  })[0].messages[0];
+  const damaged = projected({ index: 1, position, target });
+  assert.equal(damaged.text, "- Цитата 1 First\n- Second");
+  assert.deepEqual(damaged.responseAnnotationReferences, [{ index: 1, position: { start: 2, end: 10 } }]);
+  assert.deepEqual(projected({ index: 1, target }).responseAnnotationReferences, [
+    { index: 1, position: { start: 2, end: 10 }, target },
+  ]);
+});
+
 test('annotation positions survive actual provider history SQLite reopen and terminal notification',async()=>{
   const raw='Git 🦊 :agent-annotation{index="2"}\n\nDependencies :codex-annotation{index="1"}\n\nCleanup :agent-annotation{index="3"}\n\nMedia :codex-annotation{index="4"}';
   const expected=project(raw);
