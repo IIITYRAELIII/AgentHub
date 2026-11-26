@@ -18,13 +18,14 @@ const execute = promisify(execFile);
 async function git(cwd, ...args) {
   return (await execute("git", args, { cwd, windowsHide: true })).stdout.trim();
 }
-async function fixture(t, { hub = false } = {}) {
+async function fixture(t, { hub = false, changelog = null } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "nreuse-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const source = path.join(root, "source"); await mkdir(source);
   await git(source, "init", "--initial-branch=main");
   await writeFile(path.join(source, ".gitattributes"), "* text eol=lf\n");
   await writeFile(path.join(source, "shared.txt"), "before\n");
+  if (changelog !== null) await writeFile(path.join(source, "CHANGELOG.md"), "previous notes\n");
   if (hub) {
     await mkdir(path.join(source, "AgentHub/src"), { recursive: true });
     await writeFile(path.join(source, "AgentHub/package.json"), JSON.stringify({ name: "agent-hub", version: "2.0.3" }));
@@ -36,14 +37,19 @@ async function fixture(t, { hub = false } = {}) {
     await git(cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@local.invalid", "commit", "-m", message);
     return git(cwd, "rev-parse", "HEAD");
   };
-  const base = await commit(source, "base"), folders = new Map();
+  const taskBase = await commit(source, "base"), folders = new Map();
+  let base = taskBase;
+  if (changelog !== null) {
+    await writeFile(path.join(source, "CHANGELOG.md"), changelog);
+    base = await commit(source, "publish release notes");
+  }
   const result = async (id, file, bytes) => {
     let folder = folders.get(id);
     if (!folder) {
-      folder = path.join(root, id); await git(source, "worktree", "add", "-b", id, folder, base); folders.set(id, folder);
+      folder = path.join(root, id); await git(source, "worktree", "add", "-b", id, folder, taskBase); folders.set(id, folder);
     }
     await writeFile(path.join(folder, file), bytes);
-    return { taskId: id, taskRevision: 1, baseCommit: base, resultCommit: await commit(folder, id) };
+    return { taskId: id, taskRevision: 1, baseCommit: taskBase, resultCommit: await commit(folder, id) };
   };
   const captures = path.join(root, "captures"); await mkdir(captures);
   const counts = { merge: 0 }, timings = [];
@@ -113,6 +119,36 @@ test("identical whole conflict context reuses marker resolution while retaining 
   assert.deepEqual((await git(next.root, "show", "-s", "--format=%P", next.head)).split(" "), [next.merges[0].commit, nextB.resultCommit]);
   assert.deepEqual(await readFile(path.join(original.root, "merge.json")), old);
   assert.equal(await git(f.source, "status", "--porcelain=v1"), "");
+});
+
+test("retained conflict reuse preserves the published root changelog", async t => {
+  for (const notes of [null, "published notes\n"]) {
+    await t.test(notes ? "task changelog conflicts with published notes" : "task adds a root changelog", async t => {
+      const f = await fixture(t, { changelog: notes });
+      const a = await f.result("A", "shared.txt", "A\n");
+      await f.result("B", "shared.txt", "B\n");
+      const b = await f.result("B", "CHANGELOG.md", "task B notes\n");
+      const original = f.request([a, b], "with-notes");
+      await assert.rejects(f.run(original), error => {
+        assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT");
+        assert.deepEqual(error.conflicts, ["shared.txt"]);
+        return true;
+      });
+      const checkout = path.join(original.root, "repository");
+      await writeFile(path.join(checkout, "shared.txt"), "A\nB\n");
+      await f.commit(checkout, "resolve shared file");
+      await f.run(original);
+      const journal = await readFile(path.join(original.root, "merge.json"));
+      const nextB = await f.result("B", "new.txt", "new automatic contribution\n");
+      const result = await f.run(f.request([a, nextB], "new-contribution"));
+      assert.equal(await git(result.root, "show", "HEAD:shared.txt"), "A\nB");
+      assert.equal(await git(result.root, "show", "HEAD:new.txt"), "new automatic contribution");
+      assert.equal(await git(result.root, "ls-tree", "HEAD", "--", "CHANGELOG.md"),
+        await git(f.source, "ls-tree", f.base, "--", "CHANGELOG.md"));
+      assert.equal(result.merges[1].resultCommit, nextB.resultCommit);
+      assert.deepEqual(await readFile(path.join(original.root, "merge.json")), journal);
+    });
+  }
 });
 
 test("reuse preserves compatibility helpers or leaves their real conflict unresolved", async t => {

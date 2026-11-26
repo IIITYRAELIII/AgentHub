@@ -257,8 +257,10 @@ async function replaceConflictEntries(git, tree, replacements) {
   const entries = await treeEntries(git, tree), folders = new Map();
   for (const [file, value] of replacements) {
     const slash = file.indexOf("/");
-    if (slash < 0) entries.set(file, value);
-    else {
+    if (slash < 0) {
+      if (value === undefined) entries.delete(file);
+      else entries.set(file, value);
+    } else {
       const name = file.slice(0, slash);
       if (!folders.has(name)) folders.set(name, new Map());
       folders.get(name).set(file.slice(slash + 1), value);
@@ -273,13 +275,15 @@ async function replaceConflictEntries(git, tree, replacements) {
   return String(await git(["mktree", "-z"], { input: [...entries].map(([name, entry]) => `${entry}\t${name}\0`).join("") }));
 }
 
-export async function retainedNativeConflict({ root, repository, candidates, state, task, identity, gitAt, verify, beforeTransport }) {
+export async function retainedNativeConflict({ root, repository, candidates, state, task, identity, gitAt, verify, beforeTransport,
+  preservedRootPath = null }) {
   return measureTaskOperation("native:conflict-reuse", async () => {
     const git = (args, options = {}) => gitAt(repository, args, options);
     const stages = state.conflict.stages.filter(([, entry]) => !entry.endsWith(" 0"));
+    const relevantStages = merge => merge.stages.filter(([file]) => file !== preservedRootPath);
     const current = stageRecords(await git(["merge-tree", "--write-tree", "-z", state.head, task.resultCommit],
       { rawOutput: true, acceptableExitCodes: [1] }));
-    if (!current || taskGitIdentityHash(current.stages) !== taskGitIdentityHash(stages)) return null;
+    if (!current || taskGitIdentityHash(relevantStages(current)) !== taskGitIdentityHash(stages)) return null;
     for (const candidate of candidates) {
       for (const [i, step] of candidate.state.merges.entries()) {
         if (!step.resolved || step.taskId !== task.taskId || !await candidate.unchanged()) continue;
@@ -290,20 +294,23 @@ export async function retainedNativeConflict({ root, repository, candidates, sta
         if (String(await git(["show", "-s", "--format=%P", step.commit])) !== `${before} ${step.resultCommit}`) continue;
         const old = stageRecords(await git(
           ["merge-tree", "--write-tree", "-z", before, step.resultCommit], { rawOutput: true, acceptableExitCodes: [1] }));
-        if (!old || taskGitIdentityHash(old.stages) !== taskGitIdentityHash(stages)) continue;
+        if (!old || taskGitIdentityHash(relevantStages(old)) !== taskGitIdentityHash(stages)) continue;
         const selected = await treeEntries(git, `${step.commit}^{tree}`, true), replacements = new Map();
         const previousAutomatic = await treeEntries(git, old.tree, true);
         // Partial conflict reuse must not silently drop a compatibility helper
         // or another manual afterimage outside the copied conflict paths. Whole
         // prefix reuse retains those bytes; otherwise keep the real conflict.
         if ([...new Set([...previousAutomatic.keys(), ...selected.keys()])].some(file =>
-          !state.conflict.paths.includes(file) && previousAutomatic.get(file) !== selected.get(file))) continue;
+          file !== preservedRootPath && !state.conflict.paths.includes(file)
+            && previousAutomatic.get(file) !== selected.get(file))) continue;
         for (const file of state.conflict.paths) {
           const entry = selected.get(file);
           if (!/^(100644|100755) blob [a-f0-9]{40}$/u.test(entry ?? "")) break;
           replacements.set(file, entry);
         }
         if (replacements.size !== state.conflict.paths.length) continue;
+        // Materialize the first parent's release-owned entry, including its absence.
+        if (preservedRootPath) replacements.set(preservedRootPath, (await treeEntries(git, state.head)).get(preservedRootPath));
         const tree = await replaceConflictEntries(git, current.tree, replacements);
         const commit = String(await git(["-c", "user.name=Agent Hub", "-c", "user.email=agent-hub@local.invalid",
           "commit-tree", tree, "-p", state.head, "-p", task.resultCommit, "-m", "Reuse exact retained native conflict context"]));

@@ -1183,6 +1183,7 @@ export async function mergeSelectedResults({
         if (!retained && await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]) === task.resultCommit) {
           await requireUntouchedConflict(git, state.head, task.resultCommit, state.conflict);
           retained = await retainedNativeConflict({ root, repository, candidates, state, task, identity, gitAt, beforeTransport,
+            preservedRootPath: keepChangelog ? ROOT_CHANGELOG : null,
             verify: (before, result, target, step) => verifyStep(before, result, target,
               { storedBinding: step?.resolution?.binding ?? step?.reviewedResolution?.binding, ownedResolution: true }) });
         }
