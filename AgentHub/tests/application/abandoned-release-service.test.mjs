@@ -218,6 +218,57 @@ test("lost preview-reconciliation reply reads the same completed preview without
   assert.equal(f.releases.get(f.failed.operationId).state, "failed");
 });
 
+test("an unresolved ID-only retry preserves its control receipt until the same ID recovers the original", async t => {
+  const f = await fixture(t, { assignedStream: false, canonicalRuntime: true });
+  const original = await retainUnknownPreview(f);
+  const stream = await f.catalog.runMutation(() => f.catalog.createStream({
+    workspaceId: f.stream.workspaceId, name: "Ordinary",
+  }));
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "claude", threadId: "ordinary", streamId: stream.id }));
+  const args = { context_token: f.hub.contextToken({ provider: "claude", threadId: "ordinary" }),
+    request_id: "recover-preview", operation_request_id: "preview" };
+  const reconcile = "hub_task_operation_reconcile";
+  const evidenceOwned = f.taskGit.abandonedReleaseServiceEvidenceOwned.bind(f.taskGit);
+  const complete = f.catalog.completeMcpOperation.bind(f.catalog);
+  let refuse = true;
+  f.taskGit.abandonedReleaseServiceEvidenceOwned = async input => {
+    if (refuse) throw new Error("controlled temporary refusal");
+    return evidenceOwned(input);
+  };
+  f.catalog.completeMcpOperation = (id, ...rest) => {
+    if (id === args.request_id) throw new Error("controlled first receipt write loss");
+    return complete(id, ...rest);
+  };
+  await assert.rejects(f.hub.call(reconcile, args), /receipt reconciliation is required/);
+  f.catalog.completeMcpOperation = complete;
+  const control = f.catalog.mcpOperation(args.request_id);
+  assert.equal(control.status, "unknown");
+  assert.equal((await f.hub.call(reconcile, { ...args, request_id: "fresh-refused" })).outcome, "unknown");
+  assert.equal(f.catalog.mcpOperation("fresh-refused").status, "succeeded");
+
+  await f.hub.submitTaskOperation(reconcile, args);
+  const refused = await f.hub.joinSubmittedTaskOperation(args);
+  assert.equal(refused.taskOperation.status, "unknown");
+  assert.equal(refused.taskOperation.active, false);
+  assert.deepEqual(f.catalog.mcpOperation(args.request_id), control);
+  assert.deepEqual(f.catalog.mcpOperation("preview"), original);
+
+  refuse = false;
+  await f.hub.submitTaskOperation(reconcile, args);
+  const recovered = await f.hub.joinSubmittedTaskOperation(args);
+  assert.equal(recovered.taskOperation.status, "succeeded");
+  assert.equal(recovered.result.outcome, "PREVIEW_RECOVERED");
+  assert.equal(recovered.result.result.preview.releaseService.actor.streamId, f.stream.id);
+  const stored = f.catalog.mcpOperation("preview");
+  assert.equal(stored.status, "succeeded");
+  assert.equal(stored.argumentsHash, original.argumentsHash);
+  assert.equal(stored.result.operatorReconciliation.priorReceipt.error, original.error);
+  assert.equal(f.board.lifecycleOutcome("preview"), null);
+  assert.equal(f.board.task(f.task.id).status, "open");
+  assert.equal((await f.hub.call(reconcile, args)).outcome, "PREVIEW_RECOVERED");
+  assert.deepEqual(f.catalog.mcpOperation("preview"), stored);
+});
+
 test("abandoned closure refuses stale/foreign originals and a running worker before intake", async t => {
   const f = await fixture(t), before = f.releases.snapshot(f.failed.operationId);
   for (const [name, patch] of Object.entries({ missing: { operationId: "missing" }, stale: { expectedRevision: f.failed.revision + 1 },

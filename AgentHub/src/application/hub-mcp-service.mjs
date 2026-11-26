@@ -3023,7 +3023,7 @@ export class HubMcpService {
     }
     const custodyConsume = toolName === "hub_task_claim" && Boolean(args.forward_custody_request_id);
     const custodyStage = toolName === "hub_task_operation_reconcile" && Boolean(args.claim_custody);
-    // Re-enter only the addressed ordinary Await reconciliation owner. This
+    // Re-enter only the addressed Task reconciliation owner. This
     // control never dispatches the old workflow; its leases and outcome fence
     // decide whether to settle or read the already settled original.
     const workflowReconciliationContinuation = started.replayed
@@ -3091,6 +3091,8 @@ export class HubMcpService {
           return durable.result;
         }
         if (workflowReconciliationContinuation) {
+          // An unresolved read is informative, but it cannot settle the older control receipt.
+          if (result.resolved === false) return result;
           const completed = await this.workspaceCatalog.completeUnknownMcpOperation(requestId, {
             workspaceId: context.workspaceId, toolName, result,
             reconciliation: { kind: "task-operation-reconciliation-control-v1",
