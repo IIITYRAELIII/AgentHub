@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { TurnEndDeliveryService } from "../../src/application/turn-end-delivery-service.mjs";
 import { AgentHubStartupCoordinator } from "../../src/application/agent-hub-startup-coordinator.mjs";
+import { createCommandTraceComposition } from "../../src/composition/command-trace-composition.mjs";
 import { createRuntimeHealth } from "../../src/application/runtime-health.mjs";
 import { TerminalTurnCommitService } from "../../src/application/terminal-turn-commit-service.mjs";
 import { RunJournalService } from "../../src/application/run-journal-service.mjs";
@@ -125,7 +126,7 @@ test('batch persistence fences can coalesce without acknowledging any held save'
   assert.equal(saves,3);assert.ok(state.rows().every(row=>row.state==='delivered'));
 });
 
-test('startup readiness still waits for every exact projection persistence fence',async t=>{
+test('startup is ready while exact projection persistence and ACK remain fenced',async t=>{
   const state=await fixture(t,3);
   const written=gate(),saving=gate();let saveCount=0,ready=0,timers=0;
   state.service.saveState=async()=>{if(++saveCount===3)saving.resolve();await written.promise;};
@@ -136,14 +137,14 @@ test('startup readiness still waits for every exact projection persistence fence
     recoverRuns:noop,retryTerminalProjections:()=>state.service.retryPendingProjections({recoverProjecting:true}),
     retryNotifications:noop,restoreBackgroundJobs:noop,registerTelegramCommands:noop,
     hasPendingRestart:()=>true,finalizeRestart:noop,
-    markReady:async()=>{assert.ok(state.rows().every(row=>row.state==='delivered'));ready+=1;},
+    markReady:async()=>{ready+=1;},
     startTimers:()=>{timers+=1;},readyMessage:()=>'',backfillProviderMetadata:noop,
     pollTelegram:noop,waitForever:noop,log(){},logError(){},
   });
   const start=startup.start();
   try {
     await within(saving.promise,'startup did not reach the bounded projection persistence fences');
-    assert.equal(health.snapshot().ready,false);assert.equal(ready,0);assert.equal(timers,0);
+    assert.equal(health.snapshot().ready,true);assert.equal(ready,1);assert.equal(timers,1);
     assert.ok(state.rows().every(row=>row.state==='projecting'));
   } finally {written.resolve();await start;await startup.waitForBackgroundWork();}
   assert.equal(ready,1);assert.equal(timers,1);assert.equal(health.snapshot().ready,true);
@@ -415,6 +416,191 @@ test("canonical recovery preserves enriched partial success and does not infer a
     assert.equal(state.rows().filter((row) => row.state === "delivered").length, 2);
   } finally {
     reader.close();
+    await usage.close();
+    journal.close();
+  }
+});
+
+test("cold recovery settles a sparse terminal page without rewriting already-current journal rows", { timeout: 30_000 }, async (t) => {
+  let usage, database, trace;
+  t.after(async () => { await trace?.close(); await usage?.close(); database?.close(); });
+  const state = await fixture(t, 7);
+  const completions = state.completions.splice(0);
+  const databaseFile = path.join(state.root, "journal.sqlite");
+  database = new JournalDatabase(databaseFile);
+  const worker = new WorkLogUsageSyncWorkerStore({ databaseFile, deviceId: "local" });
+  usage = createWorkLogUsageStore({
+    ledgerFile: path.join(state.root, "retired.json"), databaseFile, defaultProjectRoot: state.root,
+    usageSyncStore: worker, usageSyncDeviceId: "local", usageSyncRuntimeHomeIds: { codex: "home" },
+    repositoryFactory: (options) => new WorkLogUsageRepository(options),
+  });
+  const journal = new RunJournalService({
+    usageStore: usage, defaultProjectRoot: state.root, projectionProjectRoots: [state.root],
+    findProject: (root) => ({ path: root }),
+  });
+  const retained = completions.slice(0, 5);
+  for (const entry of retained) {
+    await usage.recordAutomaticAndProject({ ...entry, title: "Retained title", body: entry.finalAnswer,
+      accountKey: "chatgpt:historical", accountAttribution: "exact", deferProjection: true });
+    await journal.ensureTurnUsageFact(entry);
+  }
+  await journal.flushTurnProjections(retained);
+  const before = await Promise.all(retained.map((entry) => journal.turnProjectionStatus(entry)));
+  assert.ok(before.every((entry) => entry.current));
+  const journalsWritten = [], usageChecked = [], historyWritten = [], flushed = [];
+  for (const [index, entry] of completions.entries()) {
+    const completion = index < 6 ? { ...entry, completedAt: null } : entry;
+    if (index === 0) Object.assign(completion, { usage: {}, usageReported: false });
+    const first = await state.terminal.commit({ ...completion, finalAnswer: "Previous partial terminal" });
+    const latest = await state.terminal.commit(completion);
+    assert.equal(latest.outbox.terminalRevision, first.outbox.terminalRevision + 1);
+    assert.ok(await state.terminal.claim(latest.outbox));
+  }
+  state.service.persistHistory = async (entry) => historyWritten.push([entry.turnId, entry.terminalRevision]);
+  state.service.projectTurn = async (entry, options) => {
+    journalsWritten.push(entry.turnId);
+    return journal.projectTurn(entry, options);
+  };
+  state.service.ensureTurnUsageFact = async (entry) => {
+    usageChecked.push(entry.turnId);
+    return journal.ensureTurnUsageFact(entry);
+  };
+  state.service.readTurnProjection = (entry) => journal.turnProjectionStatus(entry);
+  state.service.flushTurnProjections = async (entries) => {
+    flushed.push(entries.map((entry) => entry.turnId));
+    return journal.flushTurnProjections(entries);
+  };
+  const saveGate = gate(), saving = gate();
+  state.service.saveState = async () => { saving.resolve(); await saveGate.promise; };
+  trace = createCommandTraceComposition({ dataDir: state.root });
+  await trace.initialize();
+  state.service.commandTrace = trace.service;
+  const startupTraceId = "fixture-sparse-terminal-startup";
+  const health = createRuntimeHealth(), noop = async () => {};
+  const startup = new AgentHubStartupCoordinator({ telegramEnabled: true, health,
+    startMiniApp: noop, startDesktopControl: noop, startRuntimeCommand: noop, startHubMcp: noop,
+    sanitizeRollouts: noop, initializeProvider: noop, providerIsRunning: () => true,
+    retryTerminalProjections: (options) => state.service.retryPendingProjections({ ...options, recoverProjecting: true }),
+    retryNotifications: (options) => state.service.retryPendingTelegram(options), restoreBackgroundJobs: noop, registerTelegramCommands: noop,
+    hasPendingRestart: () => true, finalizeRestart: noop, markReady: noop, startTimers: noop,
+    readyMessage: () => "", pollTelegram: noop, waitForever: noop, log() {}, logError() {},
+    startupTraceId, commandTrace: trace.service,
+  });
+  const started = performance.now();
+  const start = startup.start();
+  try {
+    await start;
+    await within(saving.promise, "background delivery did not reach its persistence fence");
+    assert.equal(health.snapshot().ready, true);
+    assert.equal(state.rows().filter((row) => row.state === "delivered").length, 0);
+  } finally { saveGate.resolve(); await start; await startup.waitForBackgroundWork(); }
+  t.diagnostic(JSON.stringify({ recoveryMs: performance.now() - started,
+    journalWrites: journalsWritten.length, usageChecks: usageChecked.length, flushes: flushed.length,
+    pending: (await state.terminal.pendingProjections()).length }));
+  assert.equal(health.snapshot().ready, true);
+  assert.deepEqual(journalsWritten.sort(), ["turn-5", "turn-6"]);
+  assert.deepEqual(usageChecked.sort(), ["turn-5", "turn-6"]);
+  assert.deepEqual(flushed.flat().sort(), ["turn-5", "turn-6"]);
+  assert.deepEqual(historyWritten.sort(), completions.map((entry) => [entry.turnId, 2]));
+  assert.deepEqual(await state.terminal.pendingProjections(), []);
+  const after = await Promise.all(retained.map((entry) => journal.turnProjectionStatus(entry)));
+  assert.ok(after.every((entry) => entry.current));
+  assert.deepEqual(after.map((entry) => [entry.record, entry.recordRevision]),
+    before.map((entry) => [entry.record, entry.recordRevision]));
+  assert.equal((await state.terminal.get(retained[0])).payload.completion.completedAt, null);
+  assert.equal((await state.terminal.get(retained[0])).payload.completion.usageReported, false);
+  assert.equal((await journal.turnProjectionStatus(completions[5])).current, true);
+  assert.ok((await journal.turnProjectionStatus(completions[6])).current);
+  const retainedSpans = await trace.service.readCommandTimeline("terminal:codex:thread:turn-0");
+  assert.ok(retainedSpans.some((span) => span.stage === "terminal-outbox-ack" && span.outcome === "succeeded"));
+  assert.deepEqual(retainedSpans.filter(span => span.metadata.startupTraceId !== startupTraceId).map(span => span.stage), []);
+  assert.ok(retainedSpans.every((span) => span.stage !== "terminal-journal-project"));
+  const startupSpans = await trace.service.readCommandTimeline(`startup:${startupTraceId}`);
+  const notifications = startupSpans.filter((span) => span.stage === "startup-notifications");
+  assert.equal(notifications.length, 6);
+  for (const action of ["terminal-admission", "terminal-projections", "telegram-delivery"]) {
+    const spans = notifications.filter(span => span.metadata.action === action);
+    assert.deepEqual(spans.map(span => span.outcome), ["started", "succeeded"]);
+    assert.equal(spans[0].metadata.operationSpanId, spans[1].metadata.operationSpanId);
+  }
+  assert.ok(notifications.every((span) => span.metadata.startupTraceId === startupTraceId
+    && span.metadata.operationId === "notifications"));
+  assert.notEqual(notifications[0].metadata.operationSpanId, notifications[2].metadata.operationSpanId);
+  assert.ok(startupSpans.some((span) => span.stage === "terminal-legacy-migration" && span.outcome === "succeeded"));
+  const reopened = new TurnEndDeliveryService({
+    terminalCommits: new TerminalTurnCommitService({ store: new ProviderTurnTerminalStore({ dataDir: state.root }) }),
+    taskRuns: state.service.taskRuns, persistHistory: state.service.persistHistory,
+  });
+  assert.deepEqual(await reopened.retryPendingProjections({ recoverProjecting: true }), { processed: 0 });
+  assert.equal(historyWritten.length, 7);
+});
+
+test("a sparse current revision repairs a historically wrong completion date before ACK", async (t) => {
+  const state = await fixture(t, 1);
+  const [completion] = state.completions.splice(0);
+  const databaseFile = path.join(state.root, "journal.sqlite");
+  const journal = new JournalDatabase(databaseFile);
+  const worker = new WorkLogUsageSyncWorkerStore({ databaseFile, deviceId: "device-local" });
+  const usage = createWorkLogUsageStore({
+    ledgerFile: path.join(state.root, "retired.json"), databaseFile,
+    defaultProjectRoot: state.root, usageSyncStore: worker,
+    usageSyncDeviceId: "device-local", usageSyncRuntimeHomeIds: { codex: "home-local" },
+    repositoryFactory: (options) => new WorkLogUsageRepository(options),
+  });
+  const runJournal = new RunJournalService({
+    usageStore: usage, defaultProjectRoot: state.root, projectionProjectRoots: [state.root],
+    findProject: (root) => root === state.root ? { path: root } : null,
+  });
+  state.service.projectTurn = (...args) => runJournal.projectTurn(...args);
+  state.service.flushTurnProjections = (...args) => runJournal.flushTurnProjections(...args);
+  state.service.ensureTurnUsageFact = (...args) => runJournal.ensureTurnUsageFact(...args);
+  state.service.readTurnProjection = (...args) => runJournal.turnProjectionStatus(...args);
+  state.service.rememberLastMessage = (...args) => runJournal.rememberLastMessage(...args);
+  let sends = 0;
+  state.service.finalizeRunDelivery = async () => { sends += 1; };
+  const snapshot = () => {
+    const db = new DatabaseSync(path.join(state.root, "runtime.sqlite"), { readOnly: true });
+    try {
+      return db.prepare("SELECT terminal_revision, state, attempt_count, payload_json FROM provider_turn_terminal_outbox ORDER BY terminal_revision").all();
+    } finally {
+      db.close();
+    }
+  };
+  try {
+    const historical = await state.terminal.commit(completion);
+    await state.terminal.acknowledge(await state.terminal.claim(historical.outbox));
+    const current = await state.terminal.commit({
+      ...completion, completedAt: null, finalAnswer: "Reconciled terminal",
+      usage: {}, usageReported: false,
+    });
+    const corrupted = {
+      ...completion, finalAnswer: "Reconciled terminal", completedAt: "2026-11-24T03:25:02.265Z",
+    };
+    await runJournal.projectTurn(corrupted, { body: corrupted.finalAnswer, deferProjection: true });
+    await runJournal.ensureTurnUsageFact(corrupted);
+    await runJournal.flushTurnProjections([corrupted]);
+    const before = snapshot();
+    assert.equal((await runJournal.turnProjectionStatus(corrupted)).current, true);
+    assert.equal((await usage.getTurn(completion)).completedAt, corrupted.completedAt);
+
+    await state.service.retryPendingProjections({ recoverProjecting: true });
+    const after = snapshot();
+    const proof = await runJournal.turnProjectionStatus(current.terminal);
+    assert.equal(proof.record.completedAt, completion.completedAt);
+    assert.equal(proof.index.completedAtMs, Date.parse(completion.completedAt));
+    assert.equal(proof.usageFact.completedAt, completion.completedAt);
+    assert.equal(proof.current, true);
+    assert.equal(proof.record.usageReported, true);
+    assert.equal(proof.record.usage.inputTokens, 100);
+    assert.equal(proof.record.usage.outputTokens, 20);
+    assert.equal(runJournal.lastMessageRecord(completion).updatedAt, completion.completedAt);
+    assert.deepEqual(after[0], before[0]);
+    assert.equal(after[1].payload_json, before[1].payload_json);
+    assert.equal(after[1].state, "delivered");
+    await state.service.retryPendingProjections();
+    assert.deepEqual(snapshot(), after);
+    assert.equal(sends, 0);
+  } finally {
     await usage.close();
     journal.close();
   }

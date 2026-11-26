@@ -225,8 +225,9 @@ function configure(database) {
     if (!columns.has(name)) database.exec(`ALTER TABLE provider_turn_terminal_outbox ADD COLUMN ${name} ${definition};`);
   }
   const legacyCommandRows = database.prepare(`
-    SELECT provider, thread_id, turn_id, terminal_revision, payload_json
-    FROM provider_turn_terminal_outbox
+    SELECT provider, thread_id, turn_id, terminal_revision, outbox.payload_json
+    FROM provider_turn_terminal_outbox AS outbox
+    JOIN provider_turn_terminals USING (provider, thread_id, turn_id, terminal_revision)
     WHERE command_state = 'not-required'
   `).all();
   const migrateCommand = database.prepare(`
@@ -249,6 +250,9 @@ function configure(database) {
     }
   }
   database.exec(`
+    CREATE INDEX IF NOT EXISTS provider_turn_terminal_outbox_command_intent_idx
+      ON provider_turn_terminal_outbox(provider, thread_id, turn_id, terminal_revision)
+      WHERE command_state = 'intent';
     CREATE INDEX IF NOT EXISTS provider_turn_terminal_outbox_telegram_idx
       ON provider_turn_terminal_outbox(telegram_state, created_at, provider, thread_id, turn_id, terminal_revision);
   `);
@@ -272,6 +276,34 @@ function selectOutbox(database, key) {
     FROM provider_turn_terminal_outbox
     WHERE provider = ? AND thread_id = ? AND turn_id = ? AND terminal_revision = ?
   `).get(key.provider, key.threadId, key.turnId, Number(key.terminalRevision)));
+}
+
+function selectPrecedingProjectionCompletedAt(database, key, revision, startedAt) {
+  const earlier = database.prepare(`
+    SELECT older.payload_json, older.created_at, current.status
+    FROM provider_turn_terminals AS current
+    JOIN provider_turn_terminal_outbox AS older
+      ON older.provider = current.provider AND older.thread_id = current.thread_id
+      AND older.turn_id = current.turn_id AND older.terminal_revision = current.terminal_revision - 1
+    WHERE current.provider = ? AND current.thread_id = ? AND current.turn_id = ?
+      AND current.terminal_revision = ?
+  `).get(key.provider, key.threadId, key.turnId, revision);
+  if (!earlier) return null;
+  const payload = parseJson(earlier.payload_json);
+  const completion = payload?.completion;
+  const ids = payload?.identity;
+  if (ids?.terminalRevision !== revision - 1
+    || ids.provider !== key.provider || ids.threadId !== key.threadId || ids.turnId !== key.turnId
+    || completion?.provider !== key.provider || completion.threadId !== key.threadId
+    || completion.turnId !== key.turnId || completion.status !== earlier.status) return null;
+  const completedAt = completion.completedAt;
+  if (typeof completedAt !== "string") return null;
+  const completed = Date.parse(completedAt);
+  const started = Date.parse(startedAt ?? "");
+  const recorded = Date.parse(earlier.created_at);
+  return Number.isFinite(completed) && Number.isFinite(recorded)
+    && completed <= recorded && (!Number.isFinite(started) || completed >= started)
+    ? completedAt : null;
 }
 
 export class ProviderTurnTerminalStore {
@@ -509,7 +541,60 @@ export class ProviderTurnTerminalStore {
     });
   }
 
-  pending({ limit = 100 } = {}) {
+  precedingProjectionCompletedAt(value) {
+    const key = identity(value);
+    const revision = Number(value?.terminalRevision);
+    if (!Number.isSafeInteger(revision) || revision < 2) return Promise.resolve(null);
+    return this.#enqueue(() => {
+      const database = this.#database();
+      try {
+        return selectPrecedingProjectionCompletedAt(database, key, revision, value.payload?.completion?.startedAt);
+      } finally {
+        database.close();
+      }
+    });
+  }
+
+  committedProjectionKeys(values) {
+    if (!values.length) return Promise.resolve([]);
+    const inputs = values.map(identity);
+    return this.#enqueue(() => {
+      const database = this.#database();
+      try {
+        return database.prepare(`
+          SELECT current.provider, current.thread_id AS threadId, current.turn_id AS turnId
+          FROM json_each(?) AS requested
+          JOIN provider_turn_terminals AS current
+            ON current.provider = json_extract(requested.value, '$.provider')
+            AND current.thread_id = json_extract(requested.value, '$.threadId')
+            AND current.turn_id = json_extract(requested.value, '$.turnId')
+        `).all(JSON.stringify(inputs));
+      } finally {
+        database.close();
+      }
+    });
+  }
+
+  startupPendingCommands() {
+    return this.#enqueue(() => {
+      const database = this.#database();
+      try {
+        return database.prepare(`
+          SELECT outbox.* FROM provider_turn_terminal_outbox AS outbox
+          JOIN provider_turn_terminals USING (provider, thread_id, turn_id, terminal_revision)
+          WHERE command_state = 'intent'
+          ORDER BY provider, thread_id, turn_id, terminal_revision
+          LIMIT 100
+        `).all().map(outboxRow);
+      } finally {
+        database.close();
+      }
+    });
+  }
+
+  pending({ limit = 100, channel = null } = {}) {
+    const filter = channel === "telegram" ? "telegram_state IN ('intent', 'uncertain')"
+        : "state = 'pending' OR command_state = 'intent' OR telegram_state IN ('intent', 'uncertain')";
     return this.#enqueue(() => {
       const database = this.#database();
       try {
@@ -519,7 +604,7 @@ export class ProviderTurnTerminalStore {
             command_last_error, command_updated_at, telegram_state, telegram_intent_json,
             telegram_delivery_id, telegram_last_error, telegram_updated_at, created_at, updated_at
           FROM provider_turn_terminal_outbox
-          WHERE state = 'pending' OR command_state = 'intent' OR telegram_state IN ('intent', 'uncertain')
+          WHERE ${filter}
           ORDER BY created_at, provider, thread_id, turn_id, terminal_revision
           LIMIT ?
         `).all(Math.max(1, Math.min(1_000, Number(limit) || 100))).map(outboxRow);
@@ -665,6 +750,7 @@ export class ProviderTurnTerminalStore {
     return this.#enqueue(() => {
       const database = this.#database();
       try {
+        if (state === "delivered") database.exec("BEGIN IMMEDIATE");
         const now = new Date().toISOString();
         const result = database.prepare(`
           UPDATE provider_turn_terminal_outbox
@@ -677,7 +763,21 @@ export class ProviderTurnTerminalStore {
           state, lastError || null, now,
           key.provider, key.threadId, key.turnId, key.terminalRevision,
         );
-        return Number(result.changes) === 1 ? selectOutbox(database, key) : null;
+        const outbox = Number(result.changes) === 1 ? selectOutbox(database, key) : null;
+        if (state === "delivered") {
+          if (outbox?.payload?.completion?.completedAt == null && outbox?.payload?.lastMessage?.text) {
+
+          }
+          database.exec("COMMIT");
+        }
+        return outbox;
+      } catch (error) {
+        if (database.isTransaction) {
+          try { database.exec("ROLLBACK"); } catch (cleanupError) {
+            throw new AggregateError([error, cleanupError], "Terminal acknowledgement rollback failed", { cause: error });
+          }
+        }
+        throw error;
       } finally {
         database.close();
       }

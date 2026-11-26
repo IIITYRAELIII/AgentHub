@@ -5,6 +5,7 @@ import { trustedWindowsPowerShellPath } from "./system-boot-identity.mjs";
 
 const source = fileURLToPath(new URL("./codex-executable-custody.cs", import.meta.url));
 const recordedMainChanged = '{"ready":false,"recordedMainChanged":true}';
+const recordedMemberChanged = '{"ready":false,"recordedMemberChanged":true}';
 const script = [
   "$ErrorActionPreference='Stop'", "$ProgressPreference='SilentlyContinue'",
   "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)",
@@ -18,6 +19,9 @@ const script = [
   "} catch {",
   "  if ($_.Exception.GetBaseException() -is [AgentHubCodexBundleCustody+RecordedMainChangedException]) {",
   `    [Console]::WriteLine('${recordedMainChanged}'); [Console]::Out.Flush()`,
+  "  }",
+  "  if ($_.Exception.GetBaseException() -is [AgentHubCodexBundleCustody+RecordedMemberChangedException]) {",
+  `    [Console]::WriteLine('${recordedMemberChanged}'); [Console]::Out.Flush()`,
   "  }",
   "  [Console]::Error.WriteLine('Codex bundle custody refused'); exit 1",
   "}",
@@ -53,12 +57,13 @@ export function acquireCodexExecutableCustody(bundle, { platform = process.platf
     });
     let ready = false, closed = false, output = "", timer;
     let refused = false;
-    let mainChanged = false;
+    let mainChanged = false, memberChanged = false;
     let settleClose;
     const completion = new Promise(resolveClose => { settleClose = resolveClose; });
     // Only a confirmed mismatch from the held recorded main overrides availability.
     const refusal = () => mainChanged ? new Error("Codex executable changed during bundle verification")
-      : Object.assign(new Error("Codex bundle custody could not be established"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
+      : Object.assign(new Error(memberChanged ? "Recorded Codex bundle identity changed" : "Codex bundle custody could not be established"),
+        { code: "CODEX_BUNDLE_UNAVAILABLE" });
     child.stdin.on("error", () => {});
     child.stderr.on("data", () => {}); // Never retain native exception/path text.
     child.stdout.on("data", chunk => {
@@ -69,6 +74,9 @@ export function acquireCodexExecutableCustody(bundle, { platform = process.platf
       const reply = output.trim();
       if (reply === recordedMainChanged && bundle.recordedMainName !== undefined) {
         mainChanged = true; refused = true; return;
+      }
+      if (reply === recordedMemberChanged && bundle.recordedMainName !== undefined) {
+        memberChanged = true; refused = true; return;
       }
       if (reply !== '{"ready":true}') { refused = true; child.kill(); return; }
       ready = true; clearTimeout(timer);

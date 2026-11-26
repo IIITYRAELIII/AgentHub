@@ -290,9 +290,15 @@ it. Its existing resource owner and scheduler retain all effect authority; see
 ADR-HUB-363-partial-retirement-allocation and REL-001.
 
 Catalog reads during startup must not indirectly launch optional historical
-pricing backfill. Its existing post-readiness coordinator remains the owner;
-mandatory terminal projection recovery and its durable ACK fences still finish
-before readiness, with the existing replacement deadline unchanged.
+pricing backfill. Before readiness the terminal owner reconciles unresolved
+command intents so recovered terminal commands cannot be admitted twice.
+The coordinator schedules history, accounting, journal repair and Telegram
+recovery after readiness. Optional Web transports and their initial journal
+publication also start after readiness. The local listener remains available
+during startup. The idempotent Telegram command registration runs after Ready
+with bounded automatic retries for transient failures and honors Telegram's
+retry interval. An exhausted or permanent refusal is an optional startup
+diagnostic and can be retried without restarting the Hub.
 
 ## Task Git retirement evidence (HUB-524)
 
@@ -542,16 +548,19 @@ measure local disposition and Ready/new input without message content.
   Candidate discovery uses terminal-store-owned persisted payload-byte metadata
   and deterministic covering-index order; the read-model owner never scans or
   sorts terminal JSON to discover candidates.
-- Startup also drains the existing durable terminal projection outbox before
-  readiness whether Telegram is enabled or disabled. Only that startup barrier
-  may return abandoned `projecting` rows to their exact pending identities;
+- Startup migrates missing legacy terminals that own a message command and
+  reconciles indexed current command intents in bounded pages. A running
+  command without a terminal keeps its owner. Abandoned projection claims,
+  history, journal, usage and Telegram recover after Ready from the same
+  durable outbox.
+  Only initial startup may return abandoned `projecting` rows to their exact pending identities;
   same-runtime periodic recovery claims pending rows only and cannot steal an
-  active projection. The projection drain has no provider, command or Telegram
-  side effects and is disposed with the runtime timers.
+  active projection. The projection drain never replays a provider turn or
+  sends Telegram notifications and is disposed with the runtime timers.
   ADR-HUB-409 reduces repeated accounting payload reads and resolves existing
   bounded Workspace reference groups through fresh catalog reads. A journal
   revision changed during callbacks is refused before facts/rendering; final
-  transaction CAS, exact outbox readbacks/ACK fences, startup drain order and
+  transaction CAS, exact outbox readbacks/ACK fences and
   the replacement readiness deadline remain unchanged.
 - Restart UI appears only for a real persisted restart phase and cannot hide a
   final response.

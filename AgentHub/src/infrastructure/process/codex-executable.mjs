@@ -4,7 +4,7 @@ import { open, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { CODEX_REQUIRED_HELPER_MISSING, inspectCodexExecutableBundle,
-  isCodexBundleSignatureRejectionMessage, sameCodexBundleIdentity } from "./codex-executable-bundle.mjs";
+  isCodexBundleSignatureRejectionMessage, sameCodexBundleIdentity, validCodexBundle } from "./codex-executable-bundle.mjs";
 
 const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
 const CODEX_VERSION_OUTPUT = /\bcodex-cli\s+(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/i;
@@ -294,9 +294,17 @@ export async function verifyRecordedCodexExecutable(candidate, {
   }
   const info = await statImpl(canonicalPath);
   if (!info.isFile()) throw new Error("Codex executable candidate is not a file");
-  const verifiedMainSha256 = await measure("recordedMainHashMs", () => hashFile(canonicalPath, { measure }));
-  if (verifiedMainSha256 !== candidate.sha256) {
-    throw new Error("Recorded Codex executable SHA-256 changed");
+  if (candidate.bundle && !validCodexBundle(candidate.bundle)) {
+    throw new Error("Recorded Codex bundle identity is invalid");
+  }
+  // A full recorded bundle is hashed once by native custody before any probe.
+  // A legacy main-only record must still establish the main digest separately.
+  let verifiedMainSha256;
+  if (!candidate.bundle || inspectBundle !== inspectCodexExecutableBundle) {
+    verifiedMainSha256 = await measure("recordedMainHashMs", () => hashFile(canonicalPath, { measure }));
+    if (verifiedMainSha256 !== candidate.sha256) {
+      throw new Error("Recorded Codex executable SHA-256 changed");
+    }
   }
   // Transfer the lease only after comparing the effective feature and full
   // recorded identity. Other callers still receive a verification-only result.

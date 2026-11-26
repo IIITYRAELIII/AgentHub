@@ -10,6 +10,7 @@ using Microsoft.Win32.SafeHandles;
 // Read-only lifetime custody. No copy, replacement, assignment or process stop.
 public sealed class AgentHubCodexBundleCustody : IDisposable {
   public sealed class RecordedMainChangedException : IOException { }
+  public sealed class RecordedMemberChangedException : IOException { }
   [StructLayout(LayoutKind.Sequential)] private struct Info {
     public uint Attributes, CreationLow, CreationHigh, AccessLow, AccessHigh,
       WriteLow, WriteHigh, Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
@@ -81,6 +82,7 @@ public sealed class AgentHubCodexBundleCustody : IDisposable {
           if (!String.Equals(actual, hashes[i], StringComparison.OrdinalIgnoreCase)) {
             if (String.Equals(names[i], recordedMainName, StringComparison.OrdinalIgnoreCase))
               throw new RecordedMainChangedException();
+            if (!String.IsNullOrEmpty(recordedMainName)) throw new RecordedMemberChangedException();
             throw new InvalidDataException("Codex bundle member SHA-256 changed");
           }
         }

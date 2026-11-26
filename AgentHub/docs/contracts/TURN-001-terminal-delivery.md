@@ -201,9 +201,12 @@ terminal.
   Shared journal input keeps the original page order. After the flush, individual
   persistence fences are admitted together through the existing state owner so
   it can coalesce snapshots; each ACK still waits for its covered durable save.
-  The next batch starts only after every admitted delivery has settled. Startup
-  awaits that same recovery drain before readiness; it neither skips pending
-  projections nor increases the replacement readiness deadline.
+  The next batch starts only after every admitted delivery has settled.
+  Startup reconciles outstanding command intents before Ready. History, journal,
+  usage and Telegram recovery start after Ready. Writing repaired history leaves
+  the outbox pending until its durable readback and ACK. A verified
+  terminal completion date retains its revision in chat history across restart
+  while the journal catches up.
 - The durable terminal outbox is the sole retry owner for terminal projection.
   A projection revision is acknowledged only after canonical readback confirms
   its exact journal record, matching immutable accounting fields in the
@@ -213,6 +216,19 @@ terminal.
   An already-complete projection is acknowledged without rewriting richer
   display metadata or account attribution. Projection-only recovery never
   repeats the provider turn, command trace or Telegram delivery.
+  An older terminal payload can omit the completion time or carry no reported
+  usage. If the preceding exact terminal revision has a completion time for the
+  same identity and status within the recorded time bounds, recovery uses that
+  time to correct the journal, turn index and usage fact before ACK. Otherwise it
+  can retain the valid time already stored for the exact journal turn. Both
+  paths preserve independently reported journal usage. The managed history and
+  completed answer list use the same proven time without changing retained raw
+  terminal evidence. The index and usage fact
+  must match the journal record. Explicit image counts and accounting
+  estimates must also be covered according to the same normalization and merge
+  rules used for a journal write. Recovery persists the exact terminal
+  history and checks its current revision before saving and acknowledging the
+  outbox. Terminal payloads retain their original time and usage evidence.
 - Transient SQLite busy/locked and journal-revision conflicts receive one
   runtime-scoped, bounded single-flight retry with capped backoff. Conflict
   recovery re-reads the exact projection before another write. A retry of an

@@ -3080,6 +3080,20 @@ export function applyWorkLogUsage(workLogText, workLogId, usage) {
   );
 }
 
+function normalizedLedgerAccounting({ usage, usageReported, estimatedCredits, estimateKind, imageGenerationCount, model }) {
+  const credits = normalizeEstimatedCredits(estimatedCredits);
+  const kind = String(estimateKind ?? "").trim();
+  return {
+    usage: normalizeTokenUsage(isGpt62UsageModel(model) ? normalizeJournalTokenUsage(usage, model) : usage),
+    usageReported: usageReported === true,
+    estimatedCredits: credits,
+    estimateKind: kind,
+    imageGenerationCount: normalizeImageGenerationCount(imageGenerationCount, {
+      estimatedCredits: credits, estimateKind: kind,
+    }),
+  };
+}
+
 export function incomingLedgerRecord({
   provider = "codex",
   threadId,
@@ -3121,15 +3135,12 @@ export function incomingLedgerRecord({
   observedAt,
   status,
 }) {
-  const usage = isGpt62UsageModel(model) ? normalizeJournalTokenUsage(providerUsage, model) : providerUsage;
   const normalizedServiceUsageKind = ["context-probe", "context-compaction"].includes(serviceUsageKind)
     ? serviceUsageKind : "";
   const accountFields = normalizedAccountFields(normalizedServiceUsageKind ? {
     accountKey: "", accountLabel: "", accountType: "", accountPlan: "",
     accountAttribution: "unknown",
   } : { account, accountKey, accountAttribution });
-  const normalizedEstimatedCredits = normalizeEstimatedCredits(estimatedCredits);
-  const normalizedEstimateKind = String(estimateKind ?? "").trim();
   const normalizedClientUserMessageId = normalizeInterstreamClientUserMessageId(clientUserMessageId);
   const suppliedMessageOrigin = normalizeInterstreamOrigin(messageOrigin);
   const normalizedMessageOrigin = suppliedMessageOrigin?.requestId
@@ -3139,14 +3150,7 @@ export function incomingLedgerRecord({
   return {
     workLogId,
     projectRoot: normalizeProjectRoot(projectRoot),
-    usage: normalizeTokenUsage(usage),
-    usageReported: usageReported === true,
-    estimatedCredits: normalizedEstimatedCredits,
-    estimateKind: normalizedEstimateKind,
-    imageGenerationCount: normalizeImageGenerationCount(imageGenerationCount, {
-      estimatedCredits: normalizedEstimatedCredits,
-      estimateKind: normalizedEstimateKind,
-    }),
+    ...normalizedLedgerAccounting({ usage: providerUsage, usageReported, estimatedCredits, estimateKind, imageGenerationCount, model }),
     model: String(model ?? "").trim().toLowerCase(),
     serviceTier: serviceTier == null ? "" : normalizeServiceTier(serviceTier),
     pricingMetadataResolved: Boolean(String(model ?? "").trim() && serviceTier != null),
@@ -3198,11 +3202,7 @@ function usageSyncContent(record) {
   return JSON.stringify(content);
 }
 
-export function mergeLedgerRecord(existing, incoming) {
-  if (!existing) return incoming;
-  const previousSyncContent = usageSyncContent(existing);
-  const previousObservedAt = String(existing.observedAt ?? "");
-  if (incoming.workLogId) existing.workLogId = incoming.workLogId;
+function mergeLedgerAccounting(existing, incoming) {
   if (incoming.usageReported || !existing.usageReported) {
     existing.usage = incoming.usage;
     existing.usageReported = incoming.usageReported;
@@ -3212,6 +3212,24 @@ export function mergeLedgerRecord(existing, incoming) {
     existing.estimateKind = incoming.estimateKind;
   }
   if (incoming.imageGenerationCount > 0) existing.imageGenerationCount = incoming.imageGenerationCount;
+  return existing;
+}
+
+export function journalAccountingCoversTerminal(record, completion) {
+  const merged = mergeLedgerAccounting({ ...record }, normalizedLedgerAccounting(completion));
+  return record.usageReported === merged.usageReported
+    && JSON.stringify(normalizeTokenUsage(record.usage)) === JSON.stringify(normalizeTokenUsage(merged.usage))
+    && (Number(record.estimatedCredits) || 0) === (Number(merged.estimatedCredits) || 0)
+    && (record.estimateKind ?? "") === (merged.estimateKind ?? "")
+    && (Number(record.imageGenerationCount) || 0) === (Number(merged.imageGenerationCount) || 0);
+}
+
+export function mergeLedgerRecord(existing, incoming) {
+  if (!existing) return incoming;
+  const previousSyncContent = usageSyncContent(existing);
+  const previousObservedAt = String(existing.observedAt ?? "");
+  if (incoming.workLogId) existing.workLogId = incoming.workLogId;
+  mergeLedgerAccounting(existing, incoming);
   existing.limitSamples = mergeUsageLimitSamples(existing.limitSamples, incoming.limitSamples);
   if (incoming.serviceUsageKind) {
     existing.accountKey = "";

@@ -100,6 +100,7 @@ export class RuntimeHealth {
         id,
         label,
         state,
+        background: entry.background === true,
         startedAtMs: state === "pending" ? 0 : startedAtMs,
         completedAtMs: settled ? startedAtMs : 0,
         error: state === "failed" ? String(entry?.error ?? "").trim() : "",

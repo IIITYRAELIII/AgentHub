@@ -103,8 +103,9 @@ availability. See ADR-0138.
   effective features. Unchanged bytes reuse recorded publisher/version trust.
   Missing main/helper files are not usable recorded identities: existing
   official discovery and canary may select a trusted replacement. Before probing
-  a recorded bundle, compare the current file inventory and hashes with the
-  recorded identity. Prior manifests validate against their original digest;
+  a recorded bundle, compare its current file inventory with the recorded
+  identity. Native custody hashes each opened member against that identity in
+  one pass while acquiring the same handles it holds through launch. Prior manifests validate against their original digest;
   publisher fields do not participate in comparison of names, hashes and
   effective features. Unknown verification failures still refuse. A legacy
   main-only record is enriched once; an enabled code-mode bundle without exact

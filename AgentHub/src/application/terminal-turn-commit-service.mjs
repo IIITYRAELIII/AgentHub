@@ -247,7 +247,10 @@ export class TerminalTurnCommitService {
       metadata: { terminalRevision: result?.terminal?.terminalRevision ?? null, runId: run?.id ?? null },
     });
     this.terminals.set(terminalKey(completion), result.terminal);
-    result.commandReconciled = await this.#reconcileTerminal(result.terminal);
+    const persistedCommand = result.outbox?.channels?.command;
+    result.commandReconciled = persistedCommand?.state === "acked" && !persistedCommand.lastError
+      ? true
+      : await this.#reconcileTerminal(result.terminal);
     return result;
   }
 
@@ -400,8 +403,29 @@ export class TerminalTurnCommitService {
     return this.get(identity).then(Boolean);
   }
 
+  committedProjectionKeys(items) {
+    return this.store.committedProjectionKeys(items);
+  }
+
+  async reconcileStartupCommands() {
+    let reconciled = 0;
+    for (;;) {
+      const page = await this.store.startupPendingCommands();
+      if (!page.length) return { reconciled };
+      for (const item of page) {
+        const current = await this.store.get(item);
+        if (current?.terminalRevision !== item.terminalRevision) continue;
+        if (!await this.#reconcileTerminal(current)) {
+          throw new Error(`Cannot reconcile startup command for ${item.provider}/${item.threadId}/${item.turnId}`);
+        }
+        reconciled++;
+      }
+    }
+  }
+
   async pending(options) {
     const items = await this.store.pending(options);
+    if (options?.channel === "telegram") return items;
     for (const item of items) {
       await this.#reconcileTerminal({
         ...item,
@@ -422,6 +446,10 @@ export class TerminalTurnCommitService {
 
   claim(identity) {
     return this.store.claim(identity);
+  }
+
+  precedingProjectionCompletedAt(identity) {
+    return this.store.precedingProjectionCompletedAt?.(identity) ?? Promise.resolve(null);
   }
 
   acknowledge(identity) {

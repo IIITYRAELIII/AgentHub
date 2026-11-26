@@ -45,6 +45,7 @@ test("execution phase shares recovery and Telegram with bootstrap and keeps opti
     } },
     deferred: { ports: { bootstrap }, api: {
       handleDesktopControl: (request) => request.action === "runtime-health" ? health : request,
+      prepareStartupCommandAdmission: (options) => events.push(["admission", options.startupTraceId]),
       backfillWorkLogPricingMetadata: (threads, options) => events.push(["pricing", threads, options.propagateErrors]),
     } },
   };
@@ -89,4 +90,6 @@ test("execution phase shares recovery and Telegram with bootstrap and keeps opti
     context_token: "fixture-capability", request_id: "release-attempt:continue",
     stream_id: "stream", text: "Ready", mode: "steer", confirm_send: true,
   } }]);
+  await bootstrapInput.prepareStartupCommandAdmission({ startupTraceId: "startup" });
+  assert.deepEqual(events.at(-1), ["admission", "startup"]);
 });

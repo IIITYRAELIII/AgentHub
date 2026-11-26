@@ -54,15 +54,17 @@ export async function callTelegramJson({
   body,
   fetchImpl = fetch,
   timeoutMs = 40_000,
+  signal,
   apiBaseUrl = "https://api.telegram.org",
 }) {
   let response;
+  const deadline = AbortSignal.timeout(timeoutMs);
   try {
     response = await fetchImpl(telegramBotApiUrl(apiBaseUrl, token, method), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
     });
   } catch (cause) {
     throw new TelegramRequestError(`Telegram ${method}: transport failed${transportFailureSummary(cause)}`, {

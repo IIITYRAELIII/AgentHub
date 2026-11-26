@@ -380,13 +380,15 @@ export function createExecutionBootstrapPhase({
       signal?.throwIfAborted();
       return measure("startup-pricing-backfill", () => api.backfillWorkLogPricingMetadata(threads, { signal, propagateErrors: true }));
     },
-    retryTerminalProjections: () => api.retryPendingTurnEndProjections({ recoverProjecting: true }),
+    prepareStartupCommandAdmission: (options) => api.prepareStartupCommandAdmission(options),
+    retryTerminalProjections: (options = {}) =>
+      api.retryPendingTurnEndProjections({ ...options, recoverProjecting: true }),
     retryNotifications: api.retryPendingTurnEndNotifications,
     restoreBackgroundJobs: () => provider.backgroundJobs.restore(),
     startRuntimeTimers: runtime.startRuntimeTimers,
-    registerTelegramCommands: () => clients.telegram("setMyCommands", {
+    registerTelegramCommands: ({ signal } = {}) => clients.telegram("setMyCommands", {
       commands: settings.botCommands,
-    }),
+    }, { signal, timeoutMs: 5_000 }),
     hasPendingRestart: () => Boolean(selection.hostState.restartRequest),
     finalizeRestart: api.finalizeRestartMessage,
     markReady: () => infrastructure.instanceGuard.markReady(),

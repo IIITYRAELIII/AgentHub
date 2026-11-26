@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { CodexExecutableUpdateService } from "../../../src/infrastructure/process/codex-executable-update-service.mjs";
+import { acquireCodexExecutableCustody } from "../../../src/infrastructure/process/codex-executable-custody.mjs";
 import { codexBundleDigest } from "../../../src/infrastructure/process/codex-executable-bundle.mjs";
 import { discoverOfficialCodexExecutables, verifyOpenAiAuthenticode, verifyRecordedCodexExecutable }
   from "../../../src/infrastructure/process/codex-executable.mjs";
@@ -240,7 +241,7 @@ test("unsigned rg remains eligible in discovery, preflight and cold startup with
   assert.equal(featureChecks, beforeCold.featureChecks + 3);
 });
 
-test("recorded selection reuses the fresh main digest, rejects native-detected replacement, and recovers absence", {
+test("recorded selection hashes once under native custody and refuses a replacement before probing", {
   skip: process.platform !== "win32",
 }, async context => {
   const stateFile = await fixture(context);
@@ -264,20 +265,22 @@ test("recorded selection reuses the fresh main digest, rejects native-detected r
   const recorded = { path: main, sha256: digest(original), publisher, source: "desktop", version: "0.152.0",
     bundle: { schemaVersion: 1, installRoot: await realpath(installRoot), root, files, codeModeHost: false,
       digest: codexBundleDigest(files, false) } };
-  let afterMainRead;
+  let beforeCustody;
   let featureProbes = 0;
   const reads = [];
   const options = { environment,
     async hashFile(file) {
       reads.push(file);
-      const sha256 = digest(await readFile(file));
-      if (file === main) await afterMainRead?.();
-      return sha256;
+      return digest(await readFile(file));
+    },
+    async acquireInspectionCustody(bundle) {
+      await beforeCustody?.();
+      return acquireCodexExecutableCustody(bundle);
     },
     async readFeatures() { featureProbes++; return { codeModeHost: false }; },
   };
   assert.equal((await verifyRecordedCodexExecutable(recorded, options)).bundle.digest, recorded.bundle.digest);
-  assert.deepEqual(reads, [main, helper]);
+  assert.deepEqual(reads, []);
   assert.equal(featureProbes, 1);
 
   await writeFile(stateFile, JSON.stringify({ schemaVersion: 1, active: recorded, lastKnownGood: recorded }));
@@ -290,10 +293,10 @@ test("recorded selection reuses the fresh main digest, rejects native-detected r
     canRecoverUnavailableSelection: () => { recoveryChecks++; return false; },
     runCanary: async () => assert.fail("no verified replacement"),
   };
-  afterMainRead = () => writeFile(main, "inert replacement");
+  beforeCustody = () => writeFile(main, "inert replacement");
   const changed = new CodexExecutableUpdateService(ownerOptions);
   await assert.rejects(changed.selectForStart(), /Codex executable changed during bundle verification/u);
-  assert.deepEqual(reads.slice(2), [main, helper]);
+  assert.deepEqual(reads, []);
   assert.equal(featureProbes, 1);
   assert.equal(changed.diagnostics().status, "selection-rejected");
   assert.equal(changed.diagnostics().reason, "recorded-identity-unverified");
@@ -302,9 +305,9 @@ test("recorded selection reuses the fresh main digest, rejects native-detected r
   assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).lastKnownGood, recorded);
 
   // Failed native custody released the files. A recorded executable that
-  // disappears after its first read still uses recovery/discovery.
+  // disappears before custody still uses recovery/discovery.
   await writeFile(main, original);
-  afterMainRead = () => unlink(main);
+  beforeCustody = () => unlink(main);
   const missing = new CodexExecutableUpdateService(ownerOptions);
   await assert.rejects(missing.selectForStart(), /No trusted installed official Codex/u);
   assert.equal(missing.diagnostics().status, "no-trusted-candidate");
