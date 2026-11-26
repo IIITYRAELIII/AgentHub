@@ -58,10 +58,10 @@ test("actual automatic initialize heals its startup failure without replaying co
   await service.waitForBackgroundWork();
   assert.equal(health.snapshot().ready, true);
   assert.equal(health.snapshot().startup.operations.find(operation => operation.id === "provider").state, "completed");
-  assert.deepEqual(calls.slice(before.length), ["backfill"]);
+  assert.deepEqual(calls.slice(before.length), ["timers", "projections", "notifications", "commands", "backfill"]);
   service.providerInitialized();
   await service.waitForBackgroundWork();
-  assert.deepEqual(calls.slice(before.length), ["backfill"]);
+  assert.deepEqual(calls.slice(before.length), ["timers", "projections", "notifications", "commands", "backfill"]);
 });
 
 test("old-run recovery is absent even when its former port throws", async () => {
@@ -102,7 +102,7 @@ test("failed provider retries once without repeating completed startup work", as
   await service.waitForBackgroundWork();
   assert.equal(health.snapshot().ready, true);
   assert.equal(health.snapshot().startup.startedAtMs, startedAtMs);
-  assert.deepEqual(calls.slice(before.length), ["backfill"]);
+  assert.deepEqual(calls.slice(before.length), ["timers", "backfill", "projections", "notifications", "commands"]);
   assert.equal(health.snapshot().startup.operations.find((entry) => entry.id === "provider").state, "completed");
   service.requestRetry({ startedAtMs });
   await service.waitForRetry();
@@ -175,7 +175,7 @@ test("startup preserves control, recovery and readiness order", async () => {
   );
 });
 
-test("startup isolates recoverable failures and still marks ready", async () => {
+test("startup isolates recoverable failures without starting Ready work prematurely", async () => {
   const captured = [];
   const { service, calls, health } = coordinator({
     captureException: (error, context) => captured.push([error.message, context.action]),
@@ -205,14 +205,13 @@ test("startup isolates recoverable failures and still marks ready", async () => 
   });
   assert.deepEqual(
     startup.operations.filter(({ state }) => state === "failed").map(({ id }) => id),
-    ["web", "provider", "background-jobs", "telegram"],
+    ["web", "provider", "background-jobs"],
   );
   assert.ok(calls.some((value) => value.includes("медиа-задачи: jobs")));
   assert.deepEqual(captured, [
     ["mini", "web"],
     ["provider", "provider"],
     ["jobs", "background-jobs"],
-    ["commands", "telegram"],
   ]);
 });
 
@@ -271,6 +270,34 @@ test("core-only startup restores runs but skips Telegram-only work", async () =>
       .map(({ id }) => id),
     ["telegram-delivery", "background-jobs", "telegram", "restart", "recovery"],
   );
+});
+
+test("both projection startup entry points wait for SQLite acknowledgement and actual Ready", async () => {
+  const entered = Promise.withResolvers();
+  const acknowledge = Promise.withResolvers();
+  const observations = [];
+  const { service, health, calls } = coordinator({
+    sqliteRecovery: { degraded: true, recoveryId: "held", message: "restored journal" },
+    acknowledgeSqliteRecovery: () => {
+      entered.resolve();
+      return acknowledge.promise;
+    },
+    startTimers: () => observations.push(["timers", health.snapshot().ready]),
+    retryTerminalProjections: async () => observations.push(["projections", health.snapshot().ready]),
+  });
+  const started = service.start();
+  try {
+    await entered.promise;
+    await setImmediate();
+    assert.equal(health.snapshot().ready, false);
+    assert.ok(calls.includes("ready"));
+    assert.deepEqual(observations, []);
+  } finally {
+    acknowledge.resolve();
+    await started;
+    await service.waitForBackgroundWork();
+  }
+  assert.deepEqual(observations, [["timers", true], ["projections", true]]);
 });
 
 test("replacement startup exposes sqlite recovery as degraded until acknowledgement", async () => {

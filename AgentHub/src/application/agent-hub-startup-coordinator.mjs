@@ -48,6 +48,7 @@ export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
 
 export class AgentHubStartupCoordinator {
   #initialStartupFinished = false;
+  #readyRecoveryPromise = null;
   #retryPromise = null;
   #metadataPromise = null;
   #metadataAbort = null;
@@ -311,8 +312,6 @@ export class AgentHubStartupCoordinator {
 
     await this.#runOperation("readiness", this.markReady);
 
-    await this.#runOperation("timers", async () => this.startTimers());
-
     if (this.sqliteRecovery?.degraded) {
       this.health.startOperation("recovery");
       await this.acknowledgeSqliteRecovery().then(() => {
@@ -335,8 +334,8 @@ export class AgentHubStartupCoordinator {
     if (this.startMiniAppTransports) {
       void this.startMiniAppTransports().catch(error => this.#capture(error, "web-transports"));
     }
-    this.#startNotificationRecovery();
     if (this.#providerInitializeObserved) this.providerInitialized();
+    await this.#startReadyRecovery();
     if (!providerFailed && providerRunning) this.#startMetadataBackfill();
     const status = this.health.snapshot();
     if (status.status === "ready") this.log(this.readyMessage());
@@ -371,7 +370,15 @@ export class AgentHubStartupCoordinator {
     }
     this.#providerUpdatePending = false;
     this.health.setCapability("provider", { critical: true, state: "ready" });
+    void this.#startReadyRecovery()?.catch(error => this.logError("Cannot start runtime timers:", error.message));
     this.#startMetadataBackfill();
+  }
+
+  #startReadyRecovery() {
+    if (this.#readyRecoveryPromise || !this.health.snapshot().ready) return this.#readyRecoveryPromise;
+    this.#readyRecoveryPromise = this.#runOperation("timers", async () => this.startTimers());
+    this.#startNotificationRecovery();
+    return this.#readyRecoveryPromise;
   }
 
   #startMetadataBackfill() {
@@ -521,6 +528,7 @@ export class AgentHubStartupCoordinator {
       }
     } finally {
       this.health.complete();
+      await this.#startReadyRecovery();
     }
   }
 }
