@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { readdir, realpath, stat } from "node:fs/promises";
+import { open, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { CODEX_REQUIRED_HELPER_MISSING, inspectCodexExecutableBundle,
@@ -10,6 +9,7 @@ import { CODEX_REQUIRED_HELPER_MISSING, inspectCodexExecutableBundle,
 const VERSION_PATTERN = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
 const CODEX_VERSION_OUTPUT = /\bcodex-cli\s+(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/i;
 const MAX_PROCESS_OUTPUT_BYTES = 64 * 1024;
+const CODEX_HASH_CHUNK_BYTES = 1024 * 1024;
 const CODEX_EXECUTABLE_SIGNATURE_REJECTED = "CODEX_EXECUTABLE_SIGNATURE_REJECTED";
 export const CODEX_CANDIDATE_MISSING = "CODEX_CANDIDATE_MISSING";
 const installPathMissing = error => ["ENOENT", "ENOTDIR"].includes(error?.code);
@@ -163,10 +163,18 @@ async function runBounded(command, args, {
   });
 }
 
-async function sha256File(file) {
+async function sha256File(file, { measure = (_phase, work) => work() } = {}) {
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(file)) hash.update(chunk);
-  return hash.digest("hex").toUpperCase();
+  const handle = await measure("recordedMainOpenMs", () => open(file, "r"));
+  try {
+    const chunks = handle.createReadStream({ highWaterMark: CODEX_HASH_CHUNK_BYTES, autoClose: false })[Symbol.asyncIterator]();
+    const first = await measure("recordedMainFirstReadMs", () => chunks.next());
+    if (!first.done) hash.update(first.value);
+    for await (const chunk of chunks) hash.update(chunk);
+    return hash.digest("hex").toUpperCase();
+  } finally {
+    await handle.close();
+  }
 }
 
 export async function verifyOpenAiAuthenticode(executable, options = {}) {
@@ -286,7 +294,8 @@ export async function verifyRecordedCodexExecutable(candidate, {
   }
   const info = await statImpl(canonicalPath);
   if (!info.isFile()) throw new Error("Codex executable candidate is not a file");
-  if (await measure("recordedMainHashMs", () => hashFile(canonicalPath)) !== candidate.sha256) {
+  const verifiedMainSha256 = await measure("recordedMainHashMs", () => hashFile(canonicalPath, { measure }));
+  if (verifiedMainSha256 !== candidate.sha256) {
     throw new Error("Recorded Codex executable SHA-256 changed");
   }
   // Transfer the lease only after comparing the effective feature and full
@@ -294,7 +303,7 @@ export async function verifyRecordedCodexExecutable(candidate, {
   let held;
   try {
     const bundle = await inspectBundle({ ...candidate, path: canonicalPath }, { hashFile, readFeatures, executableArgs,
-      acquireInspectionCustody, installRoot: canonicalRoot, expectedBundle: candidate.bundle, measure,
+      acquireInspectionCustody, installRoot: canonicalRoot, expectedBundle: candidate.bundle, verifiedMainSha256, measure,
       ...(retainCustody ? { retainCustody: custody => { held = custody; } } : {}) });
     if (candidate.bundle && !sameCodexBundleIdentity(bundle, candidate.bundle)) {
       throw Object.assign(new Error("Recorded Codex bundle identity changed"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
