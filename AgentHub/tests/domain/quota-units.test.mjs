@@ -66,6 +66,28 @@ test("other priced models and Fast get provisional numerical QU from the Sol ref
   assert.deepEqual([1, 5, 20, "pro"].map(quotaCapacity), [10000, 50000, 200000, null]);
 });
 
+test("both GPT-6.2 models are provisional, with no empirical QU rate", () => {
+  const usage = { inputTokens: 1_000_000, cachedInputTokens: 400_000, outputTokens: 100_000 };
+  for (const [model, credits] of [["gpt-6.2-sol", 56], ["gpt-6.2-astra", 224]]) {
+    const estimate = turnQuotaBreakdown(usage, { model, completedAt: "2026-11-23T12:00:00.000Z" });
+    assert.equal(estimate.apiEstimateCredits, credits);
+    assert.equal(estimate.total, credits * 8);
+    assert.equal(estimate.basis, "api-estimate");
+    assert.equal(estimate.uncalibrated, true);
+    for (const incomplete of [
+      { totalTokens: 1_000_000 }, { cachedInputTokens: 500_000 },
+      { inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 1_000_000 },
+    ]) {
+      const unknown = turnQuotaBreakdown(incomplete, { model });
+      assert.equal(unknown.basis, "unknown");
+      assert.equal(unknown.uncalibrated, true);
+      assert.equal(unknown.apiEstimateCredits, 0);
+      assert.equal(unknown.total, 0);
+    }
+    assert.equal(turnQuotaBreakdown({ totalTokens: 0 }, { model }).basis, "zero");
+  }
+});
+
 test("Spark's zero API price stays zero and a missing model is not invented", () => {
   const spark = turnQuotaBreakdown({ inputTokens: 1_000_000 }, {
     model: "gpt-5.3-codex-spark", completedAt: "2026-09-29T00:00:00Z",

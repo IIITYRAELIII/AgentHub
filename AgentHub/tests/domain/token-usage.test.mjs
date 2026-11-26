@@ -81,6 +81,25 @@ test("model rates and Fast multipliers are explicit", () => {
   assert.equal(fastModeCreditMultiplier(LUNA_6, "fast"), 2);
 });
 
+test("GPT-6.2 estimates use the published rates for their own model and speed", () => {
+  const usage = { inputTokens: 2_000_000, cachedInputTokens: 1_000_000,
+    cacheWriteInputTokens: 100_000, outputTokens: 1_000_000, reasoningOutputTokens: 200_000 };
+  const rows = [
+    ["gpt-6.2-sol", { input: 2, cachedInput: 0.1, cacheWriteInput: 2.5, output: 10 }, 303.75],
+    ["gpt-6.2-astra", { input: 8, cachedInput: 0.4, cacheWriteInput: 10, output: 40 }, 1215],
+  ];
+  for (const [model, dollars, total] of rows) {
+    const completedAt = "2026-11-23T12:00:00.000Z";
+    assert.deepEqual(modelPriceRates(model, { completedAt }), dollars);
+    assert.equal(turnCredits(usage, { model, completedAt }), total);
+    assert.equal(turnCredits(usage, { model, completedAt, serviceTier: "priority" }), total * 2);
+    const incomplete = turnCreditBreakdown({ totalTokens: 25 }, { model, completedAt });
+    assert.equal(incomplete.priced, false);
+    assert.equal(incomplete.missingTokenBreakdown, true);
+  }
+  assert.equal(modelPriceRates("gpt-6.2-unknown"), null);
+});
+
 test("GPT-6 Sol and Luna API estimates retain exact tokens and exclude cached input from full input", () => {
   const usage = { inputTokens: 2_000_000, cachedInputTokens: 1_000_000,
     outputTokens: 1_000_000, reasoningOutputTokens: 200_000 };

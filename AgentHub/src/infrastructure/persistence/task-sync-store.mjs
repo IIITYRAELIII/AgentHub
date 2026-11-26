@@ -7,13 +7,14 @@ import { DatabaseSync } from "node:sqlite";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 
 import { catalogTaskKey } from "../../domain/task-catalog-identity.mjs";
+import { CHAT_HISTORY_VISIBILITY } from "../../domain/history-page-visibility.mjs";
 import { rebaseActiveCodexUsers } from "../../domain/canonical-user-messages.mjs";
 import { withoutClaudeManagedTranscriptDuplicates } from "../../domain/claude-transcript.mjs";
 import {
   interstreamOriginAuthor,
   normalizeInterstreamOrigin,
 } from "../../domain/interstream-message.mjs";
-import { normalizedCodexResponseAnnotationReferences, normalizedResponseAnnotationTarget, preferredResponseAnnotationTarget } from "../../domain/codex-response-annotation.mjs";
+import { normalizedCodexResponseAnnotationReferences, normalizedResponseAnnotationTarget, preferredResponseAnnotationTarget, retainedResponseAnnotationTarget } from "../../domain/codex-response-annotation.mjs";
 import { normalizedResponseAnnotations, normalizedResponseAnnotationItemId } from "../../domain/response-annotation-source.mjs";
 import {
   durableUserCommandItemId,
@@ -23,7 +24,7 @@ import {
 } from "../../domain/stream-message-pin.mjs";
 
 const FORMAT_VERSION = 1;
-const TASK_SCHEMA_VERSION = 13;
+const TASK_SCHEMA_VERSION = 14;
 const MODEL_BACKFILL_VERSION = "1";
 const SUBAGENT_MODEL_BACKFILL_VERSION = "1";
 const SEARCH_BACKFILL_VERSION = "5";
@@ -417,7 +418,7 @@ function preserveDurableResponseAnnotationReferences(existingHistory, incomingHi
           && candidate.role === message.role).length === 1 && Array.isArray(responseAnnotationReferences)) {
           const previous = cleanResponseAnnotationReferences(existingMessage.responseAnnotationReferences);
           responseAnnotationReferences = responseAnnotationReferences.map(reference => {
-            const target = preferredResponseAnnotationTarget(previous.find(item => item.index === reference.index)?.target,
+            const target = preferredResponseAnnotationTarget(retainedResponseAnnotationTarget(previous, reference),
               reference.target);
             return target ? { ...reference, target } : reference;
           });
@@ -1075,6 +1076,7 @@ function configure(database) {
     INSERT INTO task_read_model_meta (key, value) VALUES ('schema_version', ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `).run(String(TASK_SCHEMA_VERSION));
+  configureHistoryOrder(database);
 }
 
 function taskFromRow(row, history = []) {
@@ -1127,7 +1129,7 @@ function historyPageQuery(references, {
   hiddenMessageTexts = [],
   hiddenMessageTextPrefixes = [],
   emptyCompletionText = "",
-} = {}) {
+} = {}, positions = null) {
   const params = [];
   const referenceSql = references.map((reference) => {
     params.push(reference.provider, reference.threadId, reference.sourceOrder);
@@ -1230,9 +1232,9 @@ function historyPageQuery(references, {
           AND (trim(messages.text) <> '' OR messages.attachments_json <> '[]')
       ) THEN 1 ELSE 0 END
   `;
-  const cte = `WITH selected_threads(provider, thread_id, source_order) AS (
+  const base = `WITH selected_threads(provider, thread_id, source_order) AS (
     VALUES ${referenceSql}
-  ), base_turns AS (
+  ), base_turns AS MATERIALIZED (
     SELECT turns.provider, turns.thread_id, turns.position, selected_threads.source_order,
       COALESCE(
         julianday(turns.started_at),
@@ -1250,8 +1252,13 @@ function historyPageQuery(references, {
     FROM task_read_model_turns turns
     JOIN selected_threads ON selected_threads.provider = turns.provider
       AND selected_threads.thread_id = turns.thread_id
-    WHERE ${visibleSql}
-  ), turn_groups AS (
+    WHERE ${visibleSql}${positions ? ` AND turns.position IN (${positions.map(() => "?").join(",")})` : ""}
+  )`;
+  if (positions) params.push(...positions);
+  return { base, cte: base + HISTORY_CHRONOLOGY, params };
+}
+
+const HISTORY_CHRONOLOGY = `, turn_groups AS (
     SELECT base_turns.*,
       SUM(CASE WHEN sort_time IS NOT NULL THEN 1 ELSE 0 END) OVER (
         ORDER BY source_order, position ROWS UNBOUNDED PRECEDING
@@ -1269,7 +1276,118 @@ function historyPageQuery(references, {
       ) AS chronology_anchor
     FROM turn_groups
   )`;
-  return { cte, params };
+
+function rebuildHistoryOrder(database, task, positions = null) {
+  const keys = [task.provider, task.threadId];
+  const { base, params } = historyPageQuery([{ ...task, sourceOrder: 0 }], CHAT_HISTORY_VISIBILITY, positions);
+  if (!positions) database.prepare("DELETE FROM chat_turn_order WHERE provider = ? AND thread_id = ?").run(...keys);
+  database.prepare(`INSERT OR REPLACE INTO chat_turn_order (provider, thread_id, position, sort_time, message_count)
+    ${base} SELECT provider, thread_id, position, sort_time, message_count FROM base_turns`).run(...params);
+  database.prepare(`INSERT OR REPLACE INTO chat_thread_totals
+    (provider, thread_id, turns, messages, earliest, latest, undated, first_time, last_time)
+    SELECT ?, ?, COUNT(*), COALESCE(SUM(message_count), 0), MIN(sort_time), MAX(sort_time),
+      COUNT(*) - COUNT(sort_time),
+      (SELECT sort_time FROM chat_turn_order WHERE provider = ? AND thread_id = ?
+        AND sort_time IS NOT NULL ORDER BY position LIMIT 1),
+      (SELECT sort_time FROM chat_turn_order WHERE provider = ? AND thread_id = ?
+        AND sort_time IS NOT NULL ORDER BY position DESC LIMIT 1)
+    FROM chat_turn_order WHERE provider = ? AND thread_id = ?`).run(...keys, ...keys, ...keys, ...keys);
+}
+
+function configureHistoryOrder(database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS chat_turn_order (
+      provider TEXT NOT NULL, thread_id TEXT NOT NULL, position INTEGER NOT NULL,
+      sort_time REAL, message_count INTEGER NOT NULL,
+      PRIMARY KEY (provider, thread_id, position),
+      FOREIGN KEY (provider, thread_id, position)
+        REFERENCES task_read_model_turns (provider, thread_id, position) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+    CREATE INDEX IF NOT EXISTS chat_turn_order_time ON chat_turn_order(provider, thread_id, sort_time, position);
+    CREATE TABLE IF NOT EXISTS chat_thread_totals (
+      provider TEXT NOT NULL, thread_id TEXT NOT NULL, turns INTEGER NOT NULL, messages INTEGER NOT NULL,
+      earliest REAL, latest REAL, undated INTEGER NOT NULL, first_time REAL, last_time REAL,
+      PRIMARY KEY (provider, thread_id),
+      FOREIGN KEY (provider, thread_id) REFERENCES task_read_model_tasks(provider, thread_id) ON DELETE CASCADE
+    ) WITHOUT ROWID;
+  `);
+  // An older writer or an offline import can change the same SQLite file. Invalidate
+  // its summary in that very transaction until the history owner rebuilds the links.
+  for (const [table, columns] of [
+    ["turns", "position, id, prompt, answer, started_at, completed_at, active, completed, attachments_json, provider, thread_id"],
+    ["messages", "turn_position, role, kind, text, time, attachments_json, provider, thread_id"],
+  ]) {
+    for (const event of ["INSERT", "DELETE", "UPDATE"]) {
+      const invalidate = scope => `DELETE FROM chat_thread_totals
+        WHERE provider = ${scope}.provider AND thread_id = ${scope}.thread_id;`;
+      database.exec(`CREATE TRIGGER IF NOT EXISTS chat_turn_order_${table}_${event}
+        AFTER ${event === "UPDATE" ? "UPDATE OF " + columns : event} ON task_read_model_${table}
+        BEGIN ${event !== "INSERT" ? invalidate("OLD") : ""} ${event !== "DELETE" ? invalidate("NEW") : ""} END`);
+    }
+  }
+}
+
+function indexedChatPage(database, references, before, limit, measure) {
+  const selected = refs => refs.map(() => "(?, ?, ?)").join(", ");
+  const bindings = refs => refs.flatMap(ref => [ref.provider, ref.threadId, ref.sourceOrder]);
+  const summaries = measure("history-thread-totals", () => database.prepare(`WITH refs(provider,thread_id,n) AS (VALUES ${selected(references)})
+    SELECT refs.provider,refs.thread_id AS threadId,n AS sourceOrder,s.turns,s.messages,
+      s.earliest,s.latest,s.undated,s.first_time,s.last_time,
+      s.turns IS NULL AND EXISTS (SELECT 1 FROM task_read_model_turns t WHERE t.provider=refs.provider
+        AND t.thread_id=refs.thread_id) AS dirty
+    FROM refs LEFT JOIN chat_thread_totals s USING(provider,thread_id) ORDER BY n`).all(...bindings(references)));
+  if (summaries.some(s => s.dirty)) return null;
+  const threads = summaries.filter(s => s.turns > 0);
+  const total = threads.reduce((sum, s) => sum + s.turns, 0);
+  const messageTotal = threads.reduce((sum, s) => sum + s.messages, 0);
+  const end = Math.min(before ?? total, total);
+  const start = Math.max(0, end - limit);
+  const result = { total, messageTotal, start, end, rows: [] };
+  if (start === end) return result;
+
+  let offset = 0;
+  const older = [];
+  const inside = [];
+  const newer = [];
+  for (const thread of threads) {
+    const next = offset + thread.turns;
+    if (next <= start) older.push(thread);
+    else if (offset >= end) newer.push(thread);
+    else inside.push(thread);
+    offset = next;
+  }
+  // Rotated Threads usually occupy disjoint time ranges. Legacy undated rows borrow
+  // the next dated row (or the previous at the end); include that possible boundary.
+  const latestOlder = older.reduce((time, s) => Math.max(time, s.latest ?? -Infinity), -Infinity);
+  const earliestNewer = newer.reduce((time, s) => Math.min(time, s.earliest ?? Infinity), Infinity);
+  const leftBound = older.some(s => s.undated) ? Math.max(latestOlder, inside[0].first_time) : latestOlder;
+  const rightBound = newer.some(s => s.undated) ? Math.min(earliestNewer, inside.at(-1).last_time) : earliestNewer;
+  const bounded = inside.every(s => !s.undated && s.earliest >= leftBound && s.latest <= rightBound);
+  const sources = bounded ? inside : threads;
+  let sql;
+  let args;
+  if (bounded && sources.length === 1) {
+    sql = `SELECT provider,thread_id,position,sort_time AS chronology_anchor,0 AS source_order
+      FROM chat_turn_order WHERE provider=? AND thread_id=?
+      ORDER BY sort_time DESC,position DESC LIMIT ? OFFSET ?`;
+    args = [sources[0].provider, sources[0].threadId];
+  } else {
+    const base = `WITH refs(provider,thread_id,source_order) AS (VALUES ${selected(sources)}),
+      base_turns AS (SELECT o.provider,o.thread_id,o.position,o.sort_time,refs.source_order
+        FROM refs JOIN chat_turn_order o USING(provider,thread_id))`;
+    sql = bounded
+      ? base + " SELECT *,sort_time AS chronology_anchor FROM base_turns ORDER BY sort_time DESC,source_order DESC,position DESC"
+      : base + HISTORY_CHRONOLOGY + " SELECT * FROM visible_turns ORDER BY chronology_anchor DESC,source_order DESC,position DESC";
+    sql += " LIMIT ? OFFSET ?";
+    args = bindings(sources);
+  }
+  const skippedNewer = bounded ? newer.reduce((sum, s) => sum + s.turns, 0) : 0;
+  const selectionStage = bounded ? "history-indexed-range" : "history-indexed-chronology";
+  result.rows = measure(selectionStage, () => database.prepare(`WITH picked AS MATERIALIZED (${sql})
+    SELECT t.* FROM picked LEFT JOIN task_read_model_turns t USING(provider,thread_id,position)
+    ORDER BY picked.chronology_anchor,picked.source_order,picked.position`)
+    .all(...args, end - start, total - end - skippedNewer));
+  return result;
 }
 
 export class LocalTaskSyncStore {
@@ -1278,6 +1396,7 @@ export class LocalTaskSyncStore {
   #terminalDatabaseFile;
   #messageCommandDatabaseFile;
   #database = null;
+  #orderBackfill = null;
   #historyLimit;
   #taskLimit;
   #canonicalizeProjectRoot;
@@ -1790,6 +1909,9 @@ export class LocalTaskSyncStore {
   #writeHistory(task, history, positions = null) {
     const provider = task.provider;
     const threadId = task.threadId;
+    const indexedPositions = positions && this.#database.prepare(
+      "SELECT 1 FROM chat_thread_totals WHERE provider=? AND thread_id=?",
+    ).get(provider, threadId) ? positions : null;
     if (positions) {
       const remove = this.#database.prepare(`
         DELETE FROM task_read_model_turns WHERE provider = ? AND thread_id = ? AND position = ?
@@ -1873,6 +1995,7 @@ export class LocalTaskSyncStore {
         );
       });
     });
+    rebuildHistoryOrder(this.#database, task, indexedPositions);
   }
 
   #writeSearchDocument(document, { replace = true } = {}) {
@@ -2216,6 +2339,36 @@ export class LocalTaskSyncStore {
     console.log(`Migrated ${tasks.length} task(s) from ${path.basename(this.#filePath)} to SQLite and removed the verified source (${sourceInfo.size} bytes).`);
   }
 
+  #scheduleOrderBackfill() {
+    if (this.#orderBackfill) return;
+    const db = this.#database;
+    const migrate = async () => {
+      const missing = db.prepare(`SELECT provider, thread_id AS threadId FROM task_read_model_tasks t
+        WHERE NOT EXISTS (SELECT 1 FROM chat_thread_totals s WHERE s.provider=t.provider AND s.thread_id=t.thread_id)
+        AND EXISTS (SELECT 1 FROM task_read_model_turns r WHERE r.provider=t.provider AND r.thread_id=t.thread_id)
+        ORDER BY t.updated_at_ms DESC LIMIT 1`);
+      for (;;) {
+        await new Promise(resolve => setImmediate(resolve));
+        if (this.#database !== db || !missing.get()) return;
+        await this.#mutations.run(() => {
+          if (this.#database !== db) return;
+          db.exec("BEGIN IMMEDIATE");
+          try {
+            const thread = missing.get();
+            if (thread) rebuildHistoryOrder(db, thread);
+            db.exec("COMMIT");
+          } catch (error) {
+            db.exec("ROLLBACK");
+            throw error;
+          }
+        }, { timeoutMs: this.#mutationTimeoutMs, requestId: "task-sync:history-order-backfill" });
+      }
+    };
+    this.#orderBackfill = migrate().catch(error => {
+      console.warn("Cannot backfill chat history order:", error.message);
+    }).finally(() => { this.#orderBackfill = null; });
+  }
+
   async load() {
     await this.#open();
     await this.#migrateLegacyFile();
@@ -2249,6 +2402,7 @@ export class LocalTaskSyncStore {
         () => this.#backfillJournalSearchIndex(),
       );
     }), { timeoutMs: this.#mutationTimeoutMs, requestId: "task-sync:load" });
+    this.#scheduleOrderBackfill();
     return this;
   }
 
@@ -2609,7 +2763,8 @@ export class LocalTaskSyncStore {
     return row ? this.#hydrateHistoryRows([row])[0] ?? null : null;
   }
 
-  async readHistoryPage(references, { timing, ...options } = {}) {
+  async readHistoryPage(references, options = {}) {
+    const { timing } = options;
     const read = () => this.historyPage(references, options);
     const page = timing ? timing.sync("history-sqlite-page", read) : read();
     const candidates = page.items.filter(({ turn }) => (
@@ -2631,57 +2786,67 @@ export class LocalTaskSyncStore {
   historyPage(references, {
     before,
     limit = 10,
+    timing,
     ...visibility
   } = {}) {
+    const measure = (stage, operation) => timing ? timing.sync(stage, operation) : operation();
+    const pageItems = rows => measure("history-hydrate-rows", () => this.#pageItems(rows));
     const normalizedReferences = normalizedHistoryReferences(references);
     if (!normalizedReferences.length) {
       return { total: 0, messageTotal: 0, start: 0, end: 0, items: [] };
     }
-    const safeLimit = Math.max(1, Math.min(Math.floor(Number(limit) || 10), 20));
-    const query = historyPageQuery(normalizedReferences, visibility);
-    const aggregate = this.#database.prepare(`${query.cte}
-      SELECT COUNT(*) AS total, COALESCE(SUM(message_count), 0) AS message_total
-      FROM base_turns
-    `).get(...query.params);
-    const total = Number(aggregate?.total) || 0;
+    const safeLimit = Math.max(1, Math.min(Math.floor(Number(limit) || 10), 30));
     const requestedEnd = Number(before);
-    const end = Number.isSafeInteger(requestedEnd)
-      ? Math.max(0, Math.min(requestedEnd, total))
-      : total;
-    const start = Math.max(0, end - safeLimit);
-    if (start === end) {
-      return {
-        total,
-        messageTotal: Number(aggregate?.message_total) || 0,
-        start,
-        end,
-        items: [],
-      };
+    const beforePosition = Number.isSafeInteger(requestedEnd) ? Math.max(0, requestedEnd) : null;
+    if (visibility.hiddenTurnIdPrefixes?.length === 1
+      && visibility.hiddenTurnIdPrefixes[0] === CHAT_HISTORY_VISIBILITY.hiddenTurnIdPrefixes[0]
+      && visibility.hiddenProvider === CHAT_HISTORY_VISIBILITY.hiddenProvider
+      && visibility.emptyCompletionText === CHAT_HISTORY_VISIBILITY.emptyCompletionText
+      && Object.keys(visibility).length === 3) {
+      this.#database.exec("SAVEPOINT chat_history_page");
+      try {
+        const page = indexedChatPage(this.#database, normalizedReferences, beforePosition, safeLimit, measure);
+        if (page) {
+          const { rows, ...bounds } = page;
+          return { ...bounds, items: pageItems(rows) };
+        }
+        this.#scheduleOrderBackfill();
+      } finally {
+        this.#database.exec("RELEASE chat_history_page");
+      }
     }
-    const rows = this.#database.prepare(`${query.cte}, selected_page AS (
+    const query = historyPageQuery(normalizedReferences, visibility);
+    // Share the narrow per-turn counts and chronology between totals and page selection.
+    const rows = measure("history-fallback-query", () => this.#database.prepare(`${query.cte}, totals AS (
+      SELECT COUNT(*) AS total, COALESCE(SUM(message_count), 0) AS message_total FROM base_turns
+    ), bounds AS (
+      SELECT total, message_total, MIN(COALESCE(?, total), total) AS page_end FROM totals
+    ), selected_page AS (
       SELECT provider, thread_id, position, chronology_anchor, source_order
       FROM visible_turns
       ORDER BY chronology_anchor, source_order, position
-      LIMIT ? OFFSET ?
+      LIMIT (SELECT MIN(page_end, ?) FROM bounds)
+      OFFSET (SELECT MAX(0, page_end - ?) FROM bounds)
     )
-      SELECT turns.* FROM selected_page
-      JOIN task_read_model_turns turns
+      SELECT bounds.*, turns.* FROM bounds
+      LEFT JOIN selected_page ON 1
+      LEFT JOIN task_read_model_turns turns
         ON turns.provider = selected_page.provider AND turns.thread_id = selected_page.thread_id
         AND turns.position = selected_page.position
       ORDER BY selected_page.chronology_anchor, selected_page.source_order, selected_page.position
-    `).all(...query.params, end - start, start);
-    const history = this.#hydrateHistoryRows(rows);
-    return {
-      total,
-      messageTotal: Number(aggregate?.message_total) || 0,
-      start,
-      end,
-      items: history.map((turn, index) => ({
-        provider: String(rows[index].provider),
-        threadId: String(rows[index].thread_id),
-        turn,
-      })),
-    };
+    `).all(...query.params, beforePosition, safeLimit, safeLimit));
+    const { total, message_total: messageTotal, page_end: end } = rows[0];
+    const start = Math.max(0, end - safeLimit);
+    if (start === end) return { total, messageTotal, start, end, items: [] };
+    return { total, messageTotal, start, end, items: pageItems(rows) };
+  }
+
+  #pageItems(rows) {
+    return this.#hydrateHistoryRows(rows).map((turn, index) => ({
+      provider: String(rows[index].provider),
+      threadId: String(rows[index].thread_id),
+      turn,
+    }));
   }
 
   snapshot(task, {

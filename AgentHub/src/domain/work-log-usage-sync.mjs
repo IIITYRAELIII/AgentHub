@@ -171,8 +171,19 @@ export function strongerUsageSyncEvent(left, right) {
   const observedAt = [winner.observedAt, loser.observedAt]
     .filter(Boolean)
     .sort((a, b) => (Date.parse(a) || 0) - (Date.parse(b) || 0))[0] || winner.observedAt;
+  let usage = winner.usage;
+  if (winner.eventId === loser.eventId && winner.deviceId === loser.deviceId && winner.model === loser.model
+    && winner.usageReported && loser.usageReported
+    && typeof usage?.measuredTokenFields !== "string" && typeof loser.usage?.measuredTokenFields === "string") {
+    const { measuredTokenFields, ...counters } = loser.usage;
+    if (Object.keys(counters).length === Object.keys(usage ?? {}).length
+      && Object.entries(counters).every(([field, count]) => usage?.[field] === count)) {
+      usage = { ...usage, measuredTokenFields };
+    }
+  }
   return {
     ...winner,
+    usage,
     serviceUsageKind: winner.serviceUsageKind || loser.serviceUsageKind,
     observedAt,
     limitSamples: mergeUsageLimitSamples(loser.limitSamples, winner.limitSamples),

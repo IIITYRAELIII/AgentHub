@@ -17,7 +17,7 @@ const PRICING_USAGE_FIELDS = [
 export const MODEL_PRICE_CHANGE_EFFECTIVE_FROM = "2026-09-08T00:00:00.000Z";
 export const CREDITS_PER_USD = 25;
 // Advance when a shipped price changes the derived journal projection.
-export const WORK_LOG_PRICING_PROJECTION_VERSION = "2026.10.1.2";
+export const WORK_LOG_PRICING_PROJECTION_VERSION = "2026.11.17.1";
 
 function priceVersion(effectiveFrom, usdPerMillion) {
   return Object.freeze({
@@ -35,6 +35,18 @@ function priceHistory(...versions) {
 // Astra has one verified price; no earlier official tariff is known. The
 // per-turn aggregate cannot identify long-context requests within that turn.
 const MODEL_PRICE_REGISTRY = new Map([
+  // Standard API short-context rates (USD per 1M), including 30-minute
+  // cache writes. https://developers.openai.com/api/docs/pricing
+  ["gpt-6.2-astra", priceHistory(
+    priceVersion("2026-11-17T00:00:00.000Z", {
+      input: 8, cachedInput: 0.4, cacheWriteInput: 10, output: 40,
+    }),
+  )],
+  ["gpt-6.2-sol", priceHistory(
+    priceVersion("2026-11-17T00:00:00.000Z", {
+      input: 2, cachedInput: 0.1, cacheWriteInput: 2.5, output: 10,
+    }),
+  )],
   ["gpt-6-astra", priceHistory(
     priceVersion(null, { input: 10, cachedInput: 1, output: 50 }),
   )],
@@ -91,6 +103,25 @@ const FRACTIONAL_CREDIT_FORMATTER = new Intl.NumberFormat("ru-RU", {
 
 function normalizedModel(value) {
   return String(value ?? "").trim().toLowerCase();
+}
+
+export function isGpt62UsageModel(model) {
+  const id = normalizedModel(model);
+  return id === "gpt-6.2-sol" || id === "gpt-6.2-astra";
+}
+
+function isReportedTokenCount(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function hasCompleteGpt62Usage(usage, normalized) {
+  const { inputTokens, cachedInputTokens, outputTokens, totalTokens } = measuredGpt62TokenUsage(usage);
+  if (totalTokens === 0 && !Object.values(normalized).some(value => value > 0)) return true;
+  return isReportedTokenCount(inputTokens) && isReportedTokenCount(outputTokens)
+    && (isReportedTokenCount(cachedInputTokens) || (inputTokens === 0 && cachedInputTokens === undefined))
+    && normalized.cachedInputTokens + (normalized.cacheWriteInputTokens ?? 0) <= inputTokens
+    && normalized.reasoningOutputTokens <= outputTokens
+    && (totalTokens === undefined || totalTokens === inputTokens + outputTokens);
 }
 
 export function normalizeServiceTier(value) {
@@ -158,7 +189,7 @@ export function fastModeCreditMultiplier(model, serviceTier) {
   const id = normalizedModel(model);
   if (id.startsWith("gpt-5.5") || id.startsWith("gpt-5.6")) return 2.5;
   if (id.startsWith("gpt-5.4") && !id.startsWith("gpt-5.4-mini")) return 2;
-  if (id === "gpt-6-sol" || id === "gpt-6.1-sol" || id === "gpt-6-luna") return 2;
+  if (["gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna", "gpt-6.2-sol", "gpt-6.2-astra"].includes(id)) return 2;
   return 1;
 }
 
@@ -244,6 +275,10 @@ export function turnCreditBreakdown(usage, {
       priced: !hasTokenUsage,
     };
   }
+  const pricedModel = canonicalPricedModel(model);
+  if (isGpt62UsageModel(pricedModel) && usage != null && !hasCompleteGpt62Usage(usage, normalized)) {
+    return { ...emptyCreditBreakdown(), estimate, total: estimate, priced: false, missingTokenBreakdown: true };
+  }
   const multiplier = fastModeCreditMultiplier(model, serviceTier);
   const cacheReadTokens = Math.min(normalized.inputTokens, normalized.cachedInputTokens);
   const cacheWriteTokens = Math.min(
@@ -254,7 +289,6 @@ export function turnCreditBreakdown(usage, {
   const reasoningTokens = Math.min(normalized.outputTokens, normalized.reasoningOutputTokens);
   const outputTokens = normalized.outputTokens - reasoningTokens;
   const perMillion = 1_000_000;
-  const pricedModel = canonicalPricedModel(model);
   // OpenAI charges cache writes at 1.25x uncached input for GPT-5.6 and later.
   // Older models keep their prior uncached estimate when no write tariff exists.
   const cacheWriteRate = rates.cacheWriteInput ?? (
@@ -363,28 +397,85 @@ export function normalizeTokenUsage(usage) {
       normalized[field] = Math.trunc(value);
     }
   }
+  if (typeof usage?.measuredTokenFields === "string") {
+    const names = new Set(usage.measuredTokenFields.split(","));
+    normalized.measuredTokenFields = TOKEN_USAGE_FIELDS.filter(field => names.has(field)
+      && isReportedTokenCount(usage[field])).join(",");
+  }
   return normalized;
 }
 
-export function tokenUsageDelta(current, previous, fallback) {
+export function captureMeasuredTokenUsage(usage) {
+  return normalizeTokenUsage({
+    ...usage,
+    measuredTokenFields: TOKEN_USAGE_FIELDS.filter(field => isReportedTokenCount(usage?.[field])).join(","),
+  });
+}
+
+function legacyDenseTokenUsage(usage) {
+  return TOKEN_USAGE_FIELDS.every(field => isReportedTokenCount(usage?.[field]));
+}
+
+function measuredTokenFields(usage) {
+  if (typeof usage?.measuredTokenFields === "string") return usage.measuredTokenFields.split(",");
+  const legacyDense = legacyDenseTokenUsage(usage);
+  return TOKEN_USAGE_FIELDS.filter(field => isReportedTokenCount(usage?.[field])
+    && (!legacyDense || usage[field] > 0));
+}
+
+export function normalizeJournalTokenUsage(usage, model) {
+  if (!isGpt62UsageModel(model) || typeof usage?.measuredTokenFields === "string"
+    || legacyDenseTokenUsage(usage)) return normalizeTokenUsage(usage);
+  return captureMeasuredTokenUsage(usage);
+}
+
+// Older dense records have no provenance for padded zeros. Keep their raw
+// counters and restrict pricing and display to the fields with evidence.
+export function measuredGpt62TokenUsage(usage) {
+  const fields = new Set(measuredTokenFields(usage));
+  return Object.fromEntries(Object.entries(usage ?? {}).filter(([field, count]) =>
+    isReportedTokenCount(count) && (fields.has(field) || PRICING_USAGE_FIELDS.includes(field))));
+}
+
+function combinedMeasuredTokenFields(left, right) {
+  if (typeof left?.measuredTokenFields !== "string" && typeof right?.measuredTokenFields !== "string") return {};
+  const shared = new Set(measuredTokenFields(left));
+  return { measuredTokenFields: measuredTokenFields(right).filter(field => shared.has(field)).join(",") };
+}
+
+export function tokenUsageDelta(current, previous, fallback, { recoverMeasuredFields = false } = {}) {
   if (!previous || [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].some(
     (field) => (current[field] ?? 0) < (previous[field] ?? 0),
   )) {
     return normalizeTokenUsage(fallback);
   }
-  return normalizeTokenUsage(Object.fromEntries(
-    [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].map((field) => [
-      field, (current[field] ?? 0) - (previous[field] ?? 0),
-    ]),
-  ));
+  const fields = [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS];
+  const delta = normalizeTokenUsage({
+    ...Object.fromEntries(fields.map(field => [field, (current[field] ?? 0) - (previous[field] ?? 0)])),
+    ...combinedMeasuredTokenFields(current, previous),
+  });
+  if (recoverMeasuredFields && typeof previous.measuredTokenFields !== "string") {
+    // On the first event of a new turn, an exact last request can supply the
+    // evidence absent from a pre-upgrade thread total. Never widen a running sum.
+    const required = ["inputTokens", "cachedInputTokens", "outputTokens", "totalTokens"];
+    const currentFields = measuredTokenFields(current);
+    const lastFields = measuredTokenFields(fallback);
+    if (required.every(field => currentFields.includes(field) && lastFields.includes(field))
+      && hasCompleteGpt62Usage(fallback, fallback)
+      && fields.every(field => (fallback[field] ?? 0) === (delta[field] ?? 0))) {
+      return { ...delta, measuredTokenFields: fallback.measuredTokenFields };
+    }
+  }
+  return delta;
 }
 
 export function addTokenUsage(total, addition) {
-  return normalizeTokenUsage(Object.fromEntries(
-    [...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].map((field) => [
+  return normalizeTokenUsage({
+    ...Object.fromEntries([...TOKEN_USAGE_FIELDS, ...PRICING_USAGE_FIELDS].map((field) => [
       field, (total?.[field] ?? 0) + (addition?.[field] ?? 0),
-    ]),
-  ));
+    ])),
+    ...combinedMeasuredTokenFields(total, addition),
+  });
 }
 
 export function formatTurnTokenUsage(tracker) {

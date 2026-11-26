@@ -6,7 +6,7 @@ import path from "node:path";
 import { startCodexAgentMessage, completeCodexAgentMessage, hydrateCodexAgentMessages, codexAgentMessageSourceText } from "../../../src/providers/codex/codex-agent-message-reducer.mjs";
 import { upsertRunReasoningBlock, replaceRunActivityGroups, preserveRunActivityAnnotationTargets } from "../../../src/domain/run-activity.mjs";
 import { parseCodexRolloutActivity } from "../../../src/providers/codex/codex-rollout-activity.mjs";
-import { assistantTraceAnnotationPresentation } from "../../../src/domain/codex-response-annotation.mjs";
+import { assistantTraceAnnotationPresentation, responseAnnotationTargetAtIndex } from "../../../src/domain/codex-response-annotation.mjs";
 import { LocalTaskSyncStore } from "../../../src/infrastructure/persistence/task-sync-store.mjs";
 import { codexRolloutHistory } from "../../../src/interfaces/telegram/task-view-controller.mjs";
 import { observer, row, message, start, turnId } from "./codex-rollout-answer.fixture.mjs";
@@ -31,7 +31,8 @@ test("late completion observation and terminal hydration retain the exact native
   const activity = parseCodexRolloutActivity(start() + user(a) + user(b) + message("answer-A", "commentary", text));
   const service = observer(async () => activity);
   const incoming = await service.read(run);
-  assert.equal(incoming.activityGroups[0].responseAnnotationTarget.itemId, "user-B", "completion order alone cannot reproduce the captured start");
+  assert.equal(responseAnnotationTargetAtIndex(incoming.activityGroups[0].responseAnnotationTarget, 1).unresolved, true,
+    "completion order alone cannot reproduce the captured start");
   service.applyObserved(run, incoming);
   assert.equal(run.activityGroups[0].responseAnnotationTarget.clientUserMessageId, "client-A");
   const projected = assistantTraceAnnotationPresentation(run.activityGroups[0]);
@@ -42,7 +43,7 @@ test("late completion observation and terminal hydration retain the exact native
   assert.equal(run.responseItems[0].responseAnnotationTarget.clientUserMessageId, "client-A");
   assert.equal(run.activityGroups[0].responseAnnotationTarget.clientUserMessageId, "client-A");
   const later = completeCodexAgentMessage(run, { turnId, item: { id: "answer-B", type: "agentMessage", phase: "final_answer", text: 'Answer B. :agent-annotation{index="1"}' } });
-  assert.equal(later.responseAnnotationReferences[0].target.clientUserMessageId, "client-B");
+  assert.equal(later.responseAnnotationReferences[0].target.unresolved, true);
 });
 
 test("captured targets never transfer to a foreign owner or changed native item", () => {
@@ -69,13 +70,13 @@ test("completed observation keeps a native final target only for the exact turn 
   const service = observer(async () => activity);
   const snapshot = await service.read(run);
   assert.equal(snapshot.active, false);
-  assert.equal(snapshot.responseAnnotationReferences[0].target.itemId, "user-B");
+  assert.equal(snapshot.responseAnnotationReferences[0].target.unresolved, true);
   service.applyObserved(run, snapshot);
   assert.equal(run.responseAnnotationReferences[0].target.clientUserMessageId, "client-A");
   service.applyObserved(run, { ...snapshot, responseItemId: "different-item" });
-  assert.equal(run.responseAnnotationReferences[0].target.itemId, "user-B");
+  assert.equal(run.responseAnnotationReferences[0].target.unresolved, true);
   service.applyObserved(run, { ...snapshot, turnId: "different-turn" });
-  assert.equal(run.responseAnnotationReferences[0].target.itemId, "user-B");
+  assert.equal(run.responseAnnotationReferences[0].target.unresolved, true);
 });
 
 test("SQLite retains native capture over late history and accepts stronger native capture after an inferred target", async () => {
@@ -83,8 +84,10 @@ test("SQLite retains native capture over late history and accepts stronger nativ
   const task = { provider: "codex", threadId: "thread-a", projectRoot: directory };
   const filePath = path.join(directory, "tasks.json"); let store;
   const run = nativeRun();
-  const finalText = 'Answer B. :agent-annotation{index="1"}';
+  const finalText = 'Final. :agent-annotation{index="1"}';
+  run.userMessages = [a];
   startCodexAgentMessage(run, { turnId, item: { id: "answer-B", type: "agentMessage", phase: "final_answer" } });
+  run.userMessages.push(b);
   completeCodexAgentMessage(run, { turnId, item: { id: "answer-B", type: "agentMessage", phase: "final_answer", text: finalText } });
   const activity = parseCodexRolloutActivity(start() + user(a) + user(b) + message("answer-A", "commentary", text)
     + message("answer-B", "final_answer", finalText));
@@ -97,17 +100,29 @@ test("SQLite retains native capture over late history and accepts stronger nativ
     await store.recordHistory(task, captured);
     await store.recordHistory(task, inferred);
     const partial = structuredClone(inferred);
-    partial[0].messages.find(value => value.itemId === "answer-B").responseAnnotationReferences[0].target = { itemId: "user-A" };
+    const projectedFinal = partial[0].messages.find(value => value.itemId === "answer-B");
+    projectedFinal.responseAnnotationReferences[0].target = { itemId: "user-B", batchScoped: true };
+    assert.deepEqual(projectedFinal.responseAnnotationReferences[0].position, run.responseAnnotationReferences[0].position);
     await store.recordHistory(task, partial);
     store.close(); store = new LocalTaskSyncStore({ filePath }); await store.load();
     const saved = store.history(task)[0];
     assert.equal(saved.activityGroups[0].responseAnnotationTarget.clientUserMessageId, "client-A");
-    assert.equal(saved.messages.find(value => value.itemId === "answer-B").responseAnnotationReferences[0].target.clientUserMessageId, "client-B");
+    const [capturedRef] = saved.messages.find(value => value.itemId === "answer-B").responseAnnotationReferences;
+    assert.equal(capturedRef.target.clientUserMessageId, "client-A");
+    const distinctStart = projectedFinal.text.length + 1;
+    projectedFinal.text += "\nЦитата 1";
+    projectedFinal.responseAnnotationReferences = [capturedRef, {
+      index: 1, target: { itemId: "user-B", batchScoped: true },
+      position: { start: distinctStart, end: distinctStart + 8 },
+    }];
+    await store.recordHistory(task, partial);
+    assert.deepEqual(store.history(task)[0].messages.find(value => value.itemId === "answer-B")
+      .responseAnnotationReferences.map(reference => reference.target.itemId), ["user-A", "user-B"]);
     const foreign = { ...task, threadId: "foreign-thread" };
     await store.recordHistory(foreign, inferred);
-    assert.equal(store.history(foreign)[0].activityGroups[0].responseAnnotationTarget.itemId, "user-B");
+    assert.equal(responseAnnotationTargetAtIndex(store.history(foreign)[0].activityGroups[0].responseAnnotationTarget, 1).unresolved, true);
     const changed = structuredClone(inferred); changed[0].activityGroups[0].sourceItemId = "different-native-item";
     await store.recordHistory(task, changed);
-    assert.equal(store.history(task)[0].activityGroups[0].responseAnnotationTarget.itemId, "user-B");
+    assert.equal(responseAnnotationTargetAtIndex(store.history(task)[0].activityGroups[0].responseAnnotationTarget, 1).unresolved, true);
   } finally { store?.close(); await rm(directory, { recursive: true, force: true }); }
 });

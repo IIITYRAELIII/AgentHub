@@ -1163,6 +1163,180 @@ test("manual standalone sync merges disjoint object stores through existing isol
   assert.equal((await service.synchronizeMainIntoDev(args)).headCommit, resolved);
 });
 
+test("batch Complete archives independently, preserves work and returns each original receipt", async t => {
+  const f = await publicFixture(t);
+  const workspaceId = f.task.workspaceId;
+  const create = text => f.raw.create({ text, bucket: "workspace", workspaceId });
+  const denied = create("Git inventory temporarily unavailable");
+  const later = create("Archive after separate failure");
+  const closed = create("Archive through the ordinary single tool");
+  const old = { task_id: closed.id, completion_mode: "archive", retain_artifacts: true };
+  const oldPreview = await f.call("hub_task_complete", { ...old, request_id: "batch-previous-single-preview" });
+  await f.call("hub_task_complete", { ...old, request_id: "batch-previous-single-archive",
+    confirm_cleanup: true, expected_cleanup_token: oldPreview.cleanupToken });
+  const earlier = f.board.task(closed.id);
+  const retained = path.join(f.managed.projectRoot, "local-work.txt");
+  await writeFile(retained, "unpublished local copy");
+  const inspect = f.taskGit.archiveCleanupPreview.bind(f.taskGit);
+  f.taskGit.archiveCleanupPreview = async (task, options) => {
+    if (task.id === denied.id) throw new Error("fixture: cannot inspect this checkout");
+    return inspect(task, options);
+  };
+
+  const batch = { request_id: "batch-mixed-outcomes",
+    task_ids: [f.task.id, denied.id, closed.id, "missing-task", later.id, f.task.id] };
+  const ordinary = await f.catalog.runMutation(() => f.catalog.createStream({ workspaceId, name: "Ordinary" }));
+  await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "ordinary", streamId: ordinary.id }));
+  const token = f.hub.contextToken({ provider: "codex", threadId: "ordinary" });
+  const authenticated = { ...batch, context_token: token };
+  const submitted = await f.hub.submitTaskOperation("hub_task_complete_batch", authenticated);
+  assert.equal(submitted.taskOperation.requestId, batch.request_id);
+  const done = await f.hub.joinSubmittedTaskOperation(authenticated);
+  assert.equal(done.taskOperation.status, "succeeded");
+  const results = done.result.results;
+  assert.deepEqual(results.map(({ taskId, outcome }) => [taskId, outcome]), [
+    [f.task.id, "archived"], [denied.id, "unknown"], [closed.id, "already_closed"],
+    ["missing-task", "not_found"], [later.id, "archived"],
+  ]);
+  const readback = await f.hub.call("hub_task_operation_get", { context_token: token, task_id: f.task.id,
+    operation_request_id: results[0].receipt.requestId, expected_arguments_hash: results[0].receipt.argumentsHash });
+  assert.equal(readback.taskOperation.status, "succeeded");
+  assert.equal(readback.result.workflowStatus, f.task.workflowStatus);
+  assert.equal(readback.result.description, f.task.description);
+  assert.ok(readback.result.archive.remainingArtifacts.some(item => item.path === f.managed.projectRoot));
+  assert.match(results[1].error, /cannot inspect/u);
+  assert.equal(f.board.task(denied.id).status, denied.status);
+  assert.equal(f.board.task(later.id).status, "done");
+  assert.deepEqual(f.board.task(closed.id), earlier);
+  assert.equal(await readFile(retained, "utf8"), "unpublished local copy");
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  assert.deepEqual(await f.hub.call("hub_task_complete_batch", authenticated), done.result);
+  await assert.rejects(f.hub.call("hub_task_complete_batch", { ...authenticated, task_ids: [later.id] }), /another operation/u);
+});
+
+test("batch Complete resumes its exact original after SQLite reopen without replaying closed items", async t => {
+  const f = await publicFixture(t);
+  const later = f.raw.create({ text: "Close after the restart", bucket: "workspace", workspaceId: f.task.workspaceId });
+  const batch = { request_id: "batch-reopen", task_ids: [f.task.id, later.id] };
+  const read = f.board.task.bind(f.board);
+  f.board.task = id => {
+    if (id === later.id) throw new Error("fixture: stop between children");
+    return read(id);
+  };
+  await assert.rejects(f.call("hub_task_complete_batch", batch), /stop between children/u);
+  const first = read(f.task.id);
+  assert.equal(first.status, "done");
+  const original = f.catalog.mcpOperation(batch.request_id);
+  assert.equal(original.status, "unknown");
+  const child = f.catalog.mcpOperations(f.task.workspaceId, { limit: 20 })
+    .find(row => row.result?.id === f.task.id && row.result.status === "done");
+  assert.equal(child?.status, "succeeded");
+  f.raw.close();
+  f.catalog.close();
+
+  const databaseFile = path.join(f.root, "journal.sqlite");
+  const catalog = new WorkspaceCatalogStore({ databaseFile });
+  await catalog.load();
+  const raw = new TaskBoardStore({ databaseFile });
+  f.beforeCleanup.push(() => { raw.close(); catalog.close(); });
+  const board = new TaskBoardService({ store: raw, workspaceCatalog: catalog });
+  const lifecycle = new TaskLifecycleService({ taskBoard: board, workspaceCatalog: catalog, taskGitWorkspaces: f.taskGit });
+  const hub = new HubMcpService({ workspaceCatalog: catalog, taskBoard: board, taskGitWorkspaces: f.taskGit,
+    taskLifecycle: lifecycle, workLog: { threadTurns: () => [] }, attachmentDirectory: f.root, secret: "fixture" });
+  const context_token = hub.contextToken({ provider: "codex", threadId: "rm" });
+  const authenticated = { ...batch, context_token };
+  await hub.submitTaskOperation("hub_task_complete_batch", authenticated);
+  const receipt = await hub.joinSubmittedTaskOperation(authenticated);
+  assert.equal(receipt.taskOperation.status, "succeeded");
+  assert.equal(receipt.taskOperation.argumentsHash, original.argumentsHash);
+  assert.deepEqual(receipt.result.results.map(item => item.outcome), ["archived", "archived"]);
+  assert.equal(receipt.result.results[0].receipt.requestId, child.requestId);
+  assert.deepEqual(catalog.mcpOperation(child.requestId), child);
+  assert.deepEqual(board.task(f.task.id), first);
+  assert.equal(board.task(later.id).status, "done");
+});
+
+test("batch Complete uses the existing delivery proof for Done before archive", async t => {
+  const f = await publicFixture(t);
+  const bad = await f.call("hub_task_complete_batch", { request_id: "batch-invalid-delivery", task_ids: [f.task.id],
+    manual_delivery: { ...f.input, manifestSha256: "0".repeat(64) } });
+  assert.equal(bad.results[0].stage, "done");
+  assert.notEqual(bad.results[0].outcome, "archived");
+  assert.equal(f.board.task(f.task.id).workflowStatus, f.task.workflowStatus);
+  assert.equal(f.board.task(f.task.id).status, f.task.status);
+  const good = await f.call("hub_task_complete_batch", { request_id: "batch-verified-delivery", task_ids: [f.task.id],
+    manual_delivery: f.input });
+  assert.equal(good.results[0].outcome, "archived");
+  assert.equal(good.results[0].workflowStatus, "done");
+  assert.equal(good.results[0].doneReceipt.status, "succeeded");
+  assert.equal(f.board.task(f.task.id).status, "done");
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+});
+
+test("batch Complete uses the admitted single archive receipt after a lost Task outcome", async t => {
+  const f = await publicFixture(t);
+  const finalize = f.raw.finalizeCleanupTransition.bind(f.raw);
+  let attempts = 0;
+  const retained = path.join(f.managed.projectRoot, "unique.txt");
+  await writeFile(retained, "preserve");
+  f.raw.finalizeCleanupTransition = (...args) => {
+    if (++attempts === 1) throw new Error("fixture refuses first archive commit");
+    return finalize(...args);
+  };
+  const batch = { request_id: "batch-lost-child", task_ids: [f.task.id] };
+  const response = await f.call("hub_task_complete_batch", batch);
+  const [item] = response.results;
+  assert.equal(item.outcome, "archived");
+  const original = f.catalog.mcpOperation(item.receipt.requestId);
+  assert.equal(original.status, "succeeded");
+  assert.equal(original.result.operatorReconciliation.kind, "task-archive-original-v1");
+  assert.equal(original.result.operatorReconciliation.lifecycleOperationId, original.requestId);
+  assert.equal(f.board.lifecycleOutcome(original.requestId).taskId, f.task.id);
+  assert.equal(await readFile(retained, "utf8"), "preserve");
+  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  assert.deepEqual(await f.call("hub_task_complete_batch", batch), response);
+  assert.equal(attempts, 2);
+});
+
+test("batch Complete retains verified Done when archive preview fails", async t => {
+  const f = await publicFixture(t);
+  const next = f.raw.create({ text: "Archive the next verified delivery", bucket: "workspace", workspaceId: f.task.workspaceId });
+  await f.taskGit.prepare({ taskId: next.id, projectRoot: f.repo, dependencyMode: "skip" });
+  const preview = f.taskGit.archiveCleanupPreview.bind(f.taskGit);
+  let blockedPreviews = 0;
+  f.taskGit.archiveCleanupPreview = async (task, options) => {
+    if (task.id === f.task.id) {
+      blockedPreviews += 1;
+      throw new Error("fixture: archive inventory unavailable after Done");
+    }
+    return preview(task, options);
+  };
+
+  const original = { request_id: "batch-partial-delivery", task_ids: [f.task.id, next.id], manual_delivery: f.input };
+  const response = await f.call("hub_task_complete_batch", original);
+  const [partial, archived] = response.results;
+  assert.equal(partial.taskId, f.task.id);
+  assert.equal(partial.stage, "preview");
+  assert.equal(partial.outcome, "unknown");
+  assert.equal(partial.receipt.status, "unknown");
+  assert.equal(f.board.task(f.task.id).workflowStatus, "done");
+  assert.notEqual(f.board.task(f.task.id).status, "done");
+  assert.equal(partial.workflowStatus, "done");
+  assert.equal(partial.doneReceipt.status, "succeeded");
+  const done = await f.call("hub_task_operation_get", { task_id: f.task.id,
+    operation_request_id: partial.doneReceipt.requestId, expected_arguments_hash: partial.doneReceipt.argumentsHash });
+  assert.equal(done.result.workflowStatus, "done");
+  assert.equal(archived.taskId, next.id);
+  assert.equal(archived.outcome, "archived");
+  assert.equal(archived.doneReceipt.status, "succeeded");
+  const partialRevision = f.board.task(f.task.id).revision;
+  const archivedRevision = f.board.task(next.id).revision;
+  assert.deepEqual(await f.call("hub_task_complete_batch", original), response);
+  assert.equal(blockedPreviews, 1);
+  assert.equal(f.board.task(f.task.id).revision, partialRevision);
+  assert.equal(f.board.task(next.id).revision, archivedRevision);
+});
+
 test("Task archive preserves unpublished work and reports the agent instruction only on MCP", async t => {
   const f = await publicFixture(t);
   const ignored = path.join(f.managed.projectRoot, "WIP", "evidence");

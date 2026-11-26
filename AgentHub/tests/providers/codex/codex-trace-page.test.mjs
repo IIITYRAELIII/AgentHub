@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, readFile, appendFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, appendFile, rename, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { readCodexTracePageInWorker } from "../../../src/providers/codex/codex-rollout-activity-worker-client.mjs";
@@ -118,5 +119,55 @@ test("trace lookup rejects duplicate identities, foreign turns and oversized blo
     assert.deepEqual((await readCodexTracePageInWorker(file, { turnId: "foreign" })).groups, []);
     await writeFile(file, jsonl([meta, row(1, "x".repeat(600_000))]));
     await assert.rejects(readCodexTracePageInWorker(file, { turnId }), /transport budget/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("exact reads verify the old prefix and see new evidence after append, rewrite, and replacement", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub546-exact-trace-"));
+  const file = path.join(directory, "rollout.jsonl");
+  const request = { turnId, groupId: "commentary:analysis-1" };
+  const start = { type: "event_msg", payload: { type: "task_started", turn_id: turnId } };
+  const ignored = { type: "response_item", payload: { type: "function_call_output", output: "unrelated old bytes" } };
+  const initial = jsonl([meta, ignored, start, row(1), row(2)]);
+  const digest = value => createHash("sha256").update(value).digest("hex");
+  try {
+    await writeFile(file, initial);
+    const first = await readCodexTracePageInWorker(file, request);
+    const frozen = { ...request, sourceSize: first.sourceSize, sourceHash: first.sourceHash, generation: first.generation };
+    assert.equal(first.sourceHash, digest(initial));
+    assert.deepEqual(await readCodexTracePageInWorker(file, frozen), first);
+    const appended = row(3);
+    delete appended.payload.internal_chat_message_metadata_passthrough;
+    await appendFile(file, jsonl([appended]));
+    const [grown, other, fixed] = await Promise.all([
+      readCodexTracePageInWorker(file, request),
+      readCodexTracePageInWorker(file, { ...request, groupId: "commentary:analysis-3" }),
+      readCodexTracePageInWorker(file, frozen),
+    ]);
+    assert.deepEqual(grown.groups, first.groups);
+    assert.equal(grown.sourceHash, digest(initial + jsonl([appended])));
+    assert.equal(other.groups[0].reasoning, "block-3");
+    assert.deepEqual(fixed, first);
+    await appendFile(file, jsonl([row(1)]));
+    await assert.rejects(readCodexTracePageInWorker(file, request), /ambiguous/);
+    await writeFile(file, initial.replace("unrelated old bytes", "unrelated new bytes"));
+    await assert.rejects(readCodexTracePageInWorker(file, frozen), /prefix changed/);
+    assert.deepEqual((await readCodexTracePageInWorker(file, request)).groups, first.groups);
+    await rename(file, path.join(directory, "prior.jsonl"));
+    await writeFile(file, initial.replace("block-1", "fresh-1"));
+    await assert.rejects(readCodexTracePageInWorker(file, frozen), /prefix changed/);
+    assert.equal((await readCodexTracePageInWorker(file, request)).groups[0].reasoning, "fresh-1");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("an incomplete last record is reconsidered when it acquires a newline", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "hub546-partial-trace-"));
+  const file = path.join(directory, "rollout.jsonl");
+  const request = { turnId, groupId: "commentary:analysis-1" };
+  try {
+    await writeFile(file, jsonl([meta, row(1)]) + JSON.stringify(row(1)));
+    assert.equal((await readCodexTracePageInWorker(file, request)).groups[0].reasoning, "block-1");
+    await appendFile(file, "\n");
+    await assert.rejects(readCodexTracePageInWorker(file, request), /ambiguous/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

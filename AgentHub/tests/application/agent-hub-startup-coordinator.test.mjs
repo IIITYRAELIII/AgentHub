@@ -432,3 +432,32 @@ test("Ready and existing startup trace do not depend on a never-resolving old-ru
   assert.equal(records.some(record => record.stage === "startup-runs"), false);
   assert.ok(records.some(record => record.stage === "startup-readiness" && record.outcome === "succeeded"));
 });
+
+test("failed retry retains both selection attempts on the original provider startup trace", async () => {
+  const records = [];
+  const health = createRuntimeHealth();
+  const { service } = coordinator({
+    health,
+    initializeProvider: async () => {
+      const startedAtMs = Date.now();
+      health.setDiagnosticSource("codexExecutableUpdate", () => ({
+        startupSelection: {
+          startedAtMs, durationMs: 11, outcome: "failed", phases: { inspectionCustodyMs: 9 },
+          previousAttempt: { startedAtMs, durationMs: 25, outcome: "failed", phases: { canaryMs: 23 } },
+        },
+      }));
+      throw new Error("fixture provider failed");
+    },
+    providerIsRunning: () => false,
+    commandTrace: new CommandTraceService({ store: {
+      appendBestEffort: span => { records.push(span); return true; },
+    } }), startupTraceId: "startup-selection-1",
+  });
+  await service.start();
+  const failure = records.find(row => row.stage === "startup-provider" && row.outcome === "failed");
+  assert.equal(failure.commandId, "startup:startup-selection-1");
+  assert.equal(failure.metadata.codexSelection.outcome, "failed");
+  assert.deepEqual(failure.metadata.codexSelection.phases, { inspectionCustodyMs: 9 });
+  assert.equal(failure.metadata.codexSelection.previousAttempt.outcome, "failed");
+  assert.deepEqual(failure.metadata.codexSelection.previousAttempt.phases, { canaryMs: 23 });
+});

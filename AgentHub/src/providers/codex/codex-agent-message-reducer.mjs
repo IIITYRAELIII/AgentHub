@@ -1,4 +1,4 @@
-import { codexAssistantResponseProjection, normalizedResponseAnnotationTarget, preferredResponseAnnotationTarget, responseAnnotationTargetForMessages } from "../../domain/codex-response-annotation.mjs";
+import { bindResponseAnnotationTarget, codexAssistantResponseProjection, normalizedResponseAnnotationTarget, preferredResponseAnnotationTarget, responseAnnotationTargetForMessages } from "../../domain/codex-response-annotation.mjs";
 
 const MAX_AGENT_MESSAGES = 64;
 const PROVIDER_TEXT = Symbol("codex-provider-text");
@@ -65,9 +65,8 @@ function setProviderText(item, value, knownProjection = null) {
   const projection = knownProjection ?? codexAssistantResponseProjection(text);
   item.text = projection.text;
   if (projection.responseAnnotationReferences?.length) {
-    item.responseAnnotationReferences = structuredClone(projection.responseAnnotationReferences);
-    if (item.responseAnnotationTarget) item.responseAnnotationReferences = item.responseAnnotationReferences
-      .map((reference) => ({ ...reference, target: { ...item.responseAnnotationTarget } }));
+    item.responseAnnotationReferences = structuredClone(
+      bindResponseAnnotationTarget(projection, item.responseAnnotationTarget).responseAnnotationReferences);
   } else delete item.responseAnnotationReferences;
 }
 

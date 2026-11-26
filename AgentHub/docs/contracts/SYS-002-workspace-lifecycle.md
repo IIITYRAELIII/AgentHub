@@ -8,6 +8,10 @@ does not require a folder allowlist, per-file grant or confirmation. Local brows
 download/copy and local/trusted-device runtime reveal retain their current
 authentication modes. Trusted-device downloads retain their existing one-time
 File Bridge tickets; they do not gain the direct local-browser endpoint.
+Android WebView requests the same one-time ticket using its HttpOnly device
+session, fetches the bytes from the same origin, and passes them to the
+existing Android document picker within its 20 MiB save limit. The native
+save port selects the destination flow; it grants no server authority.
 Path syntax, real-file/size checks and operating-system errors retain their
 existing behavior. Workspace roots may still resolve relative link text; they
 are not an access boundary for these actions. Creating a public external share
