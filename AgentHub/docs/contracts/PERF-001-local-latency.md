@@ -217,6 +217,10 @@ budget for agent evidence or change automatic preview reads
   rehashing the same bytes from the opened file. Any appended bytes in the
   requested snapshot still pass through the parser. The response carries the
   complete prefix hash and the same group and ambiguity checks (ADR-HUB-546).
+  Creating a quote renders the complete selection on the first click while
+  this exact read runs. The original client trace ID links provisional
+  quote paint, source read, verified draft binding and confirmed paint.
+  Provisional paint does not indicate that the quote can be submitted.
 Pages return at most 50 groups and 512 KiB. An oversized block fails visibly,
 without truncation. Exact provider/Thread/turn/item and duplicate-source checks
 remain mandatory.
