@@ -240,6 +240,53 @@ test("unsigned rg remains eligible in discovery, preflight and cold startup with
   assert.equal(featureChecks, beforeCold.featureChecks + 3);
 });
 
+test("a fresh recorded main digest avoids a second JS read but native custody rechecks replaced bytes", {
+  skip: process.platform !== "win32",
+}, async context => {
+  const stateFile = await fixture(context);
+  const environment = { LOCALAPPDATA: path.dirname(stateFile) };
+  const installRoot = path.join(environment.LOCALAPPDATA, "OpenAI", "Codex", "bin");
+  const install = path.join(installRoot, "fixture");
+  await mkdir(install, { recursive: true });
+  const root = await realpath(install);
+  const main = path.join(root, "codex.exe");
+  const helper = path.join(root, "rg.exe");
+  const original = "inert main bytes";
+  const adjacent = "inert helper bytes";
+  await writeFile(main, original);
+  await writeFile(helper, adjacent);
+  const digest = value => createHash("sha256").update(value).digest("hex").toUpperCase();
+  const publisher = 'CN="OpenAI OpCo, LLC"';
+  const files = [
+    { name: "codex.exe", sha256: digest(original), publisher },
+    { name: "rg.exe", sha256: digest(adjacent) },
+  ];
+  const recorded = { path: main, sha256: digest(original), publisher, source: "desktop", version: "0.152.0",
+    bundle: { schemaVersion: 1, installRoot: await realpath(installRoot), root, files, codeModeHost: false,
+      digest: codexBundleDigest(files, false) } };
+  let replaceAfterRead = false;
+  let featureProbes = 0;
+  const reads = [];
+  const options = { environment,
+    async hashFile(file) {
+      reads.push(file);
+      const sha256 = digest(await readFile(file));
+      if (replaceAfterRead && file === main) await writeFile(main, "inert replacement");
+      return sha256;
+    },
+    async readFeatures() { featureProbes++; return { codeModeHost: false }; },
+  };
+  assert.equal((await verifyRecordedCodexExecutable(recorded, options)).bundle.digest, recorded.bundle.digest);
+  assert.deepEqual(reads, [main, helper]);
+  assert.equal(featureProbes, 1);
+
+  replaceAfterRead = true;
+  await assert.rejects(verifyRecordedCodexExecutable(recorded, options), { code: "CODEX_BUNDLE_UNAVAILABLE" });
+  assert.deepEqual(reads.slice(2), [main, helper]);
+  assert.equal(featureProbes, 1);
+  await writeFile(main, original);
+});
+
 for (const policy of [
   "fallback", "no-candidate", "pinned", "disabled", "timeout",
   "rejected-alternative", "custody-unavailable", "missing-required-helper",

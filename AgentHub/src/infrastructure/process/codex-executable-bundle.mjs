@@ -49,8 +49,9 @@ export async function inspectCodexExecutableBundle(candidate, {
   acquireInspectionCustody = acquireCodexExecutableCustody,
   retainCustody,
   measure = (_phase, work) => work(),
+  verifiedMainSha256,
 } = {}) {
-  const root = path.dirname(candidate.path), files = [];
+  const root = path.dirname(candidate.path), members = [], files = [];
   const walk = async directory => {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name), info = await lstat(file);
@@ -58,12 +59,22 @@ export async function inspectCodexExecutableBundle(candidate, {
       if (info.isDirectory()) { await walk(file); continue; }
       if (!info.isFile() || await realpath(file) !== file) throw new Error("Codex bundle member canonical path changed");
       const name = path.relative(root, file).split(path.sep).join("/");
-      const sha256 = await hashFile(file);
-      if (file === candidate.path && sha256 !== candidate.sha256) throw new Error("Codex executable changed during bundle verification");
-      files.push({ name, sha256, ...(file === candidate.path && candidate.publisher ? { publisher: candidate.publisher } : {}) });
+      members.push({ file, name });
     }
   };
-  await measure("bundleInventoryMs", () => walk(root));
+  await measure("bundleInventoryMs", async () => {
+    await measure("bundleMetadataMs", () => walk(root));
+    await measure("bundleHashMs", async () => {
+      for (const { file, name } of members) {
+        const isMain = file === candidate.path;
+        // Recorded verification just hashed this path. Native custody below
+        // still hashes the newly opened handles before anything may execute.
+        const sha256 = isMain && verifiedMainSha256 !== undefined ? verifiedMainSha256 : await hashFile(file);
+        if (isMain && sha256 !== candidate.sha256) throw new Error("Codex executable changed during bundle verification");
+        files.push({ name, sha256, ...(isMain && candidate.publisher ? { publisher: candidate.publisher } : {}) });
+      }
+    });
+  });
   files.sort((left, right) => left.name.localeCompare(right.name, "en"));
   if (expectedBundle && (!validCodexBundle(expectedBundle) || !sameBundleFiles(files, expectedBundle.files))) {
     throw Object.assign(new Error("Recorded Codex bundle identity changed"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
