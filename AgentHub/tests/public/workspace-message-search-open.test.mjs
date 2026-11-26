@@ -189,8 +189,9 @@ for (const surface of ["web", "vscode"]) {
     assert.equal(f.calls[0].taskThreadId, former.threadId);
     assert.deepEqual(f.responses, ["hit-historical"]);
     const chat = f.page.locator("[data-chat-log]");
-    await chat.locator('[data-thread-id="thread-old"][data-item-id="user-historical"]').waitFor();
-    await chat.locator('[data-thread-id="thread-old"][data-item-id="final-historical"]').waitFor();
+    const messages = chat.locator('[data-thread-id="thread-old"][data-item-id]');
+    assert.deepEqual(await messages.evaluateAll(nodes => nodes.map(node => node.dataset.itemId)),
+      ["user-historical", "hit-historical", "final-historical"]);
   });
 }
 

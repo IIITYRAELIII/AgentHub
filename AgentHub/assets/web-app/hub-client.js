@@ -879,17 +879,31 @@ function reconciledMessages(taskIdValue) {
   // Live snapshots, durable history and the optimistic receipt can arrive in
   // either order. Re-run idempotent deduplication after all three were merged.
   const canonical = projectCanonicalMessages(visible);
-  const { searchHit, searchContext } = focusedHistoryWindowByTask.get(taskIdValue) ?? {};
+  const { searchHit, searchContext, searchOrder } = focusedHistoryWindowByTask.get(taskIdValue) ?? {};
   if (searchContext?.length && !canonical.some((message) => message.provider === searchHit.provider
     && message.threadId === searchHit.threadId && message.turnId === searchHit.turnId)) {
     canonical.push(...projectCanonicalMessages(searchContext));
   }
-  // Search may address an indexed item that the normal one-card-per-turn view
-  // folds into the final answer. Keep it outside canonical reconciliation.
-  if (searchHit && !canonical.some((message) => identityKey(message) === identityKey(searchHit))) {
-    canonical.push(searchHit);
+  const boundaries = completionBoundariesByTask.get(taskIdValue);
+  const hitKey = searchHit ? identityKey(searchHit) : "";
+  if (!hitKey || canonical.some((message) => identityKey(message) === hitKey)) {
+    return chronologicalMessages(canonical, boundaries);
   }
-  return chronologicalMessages(canonical, completionBoundariesByTask.get(taskIdValue));
+  // The exact hit may have been folded into the final answer. Its position in
+  // the stored turn can distinguish it even when both items share a timestamp.
+  const hitPosition = searchOrder.get(hitKey);
+  if (hitPosition != null) {
+    const ordered = chronologicalMessages(canonical, boundaries);
+    const next = ordered.findIndex((message) => searchOrder.get(identityKey(message)) > hitPosition);
+    const previous = next < 0
+      ? ordered.findLastIndex((message) => searchOrder.get(identityKey(message)) < hitPosition)
+      : -1;
+    if (next >= 0 || previous >= 0) {
+      ordered.splice(next >= 0 ? next : previous + 1, 0, searchHit);
+      return ordered;
+    }
+  }
+  return chronologicalMessages([...canonical, searchHit], boundaries);
 }
 
 function deferredEntriesForTask(snapshot, taskIdValue) {
@@ -3269,6 +3283,7 @@ function applyOpened(result, {
     focusedHistoryWindowByTask.set(id, {
       searchHit: exactNavigation.searchHit,
       searchContext: exactNavigation.searchContext,
+      searchOrder: exactNavigation.searchOrder,
     });
   } else if (selectTask && focusedHistoryWindowByTask.get(id)?.searchHit) {
     clearFocusedHistoryWindow(id);
@@ -5902,20 +5917,24 @@ agentHub.on("workspace-search:open", (result) => {
     const hitKey = identityKey(exactNavigation);
     const searchHit = focusedHistoryMessages(opened.focusedTurn).find((item) => identityKey(item) === hitKey);
     if (!searchHit) throw new Error("Не удалось открыть сообщение из поиска.");
-    const focused = opened.history.focusedItem;
-    const searchContext = focused?.id === params.turnId && focused.provider === params.provider
-      && focused.threadId === params.taskThreadId
+    const candidate = opened.history.focusedItem;
+    const focused = candidate?.id === params.turnId && candidate.provider === params.provider
+      && candidate.threadId === params.taskThreadId ? candidate : null;
+    const searchContext = focused
       ? historyMessages({ items: [focused] }).map(({ historyOrder, ...item }) => item)
       : [];
-    return { opened, searchHit, searchContext, history: opened.history };
-  }, ({ opened, searchHit, searchContext }) => {
+    const searchOrder = new Map((focused?.messages ?? []).map((item, index) => [
+      identityKey({ ...exactNavigation, itemId: item.itemId, role: item.role }), index,
+    ]));
+    return { opened, searchHit, searchContext, searchOrder, history: opened.history };
+  }, ({ opened, searchHit, searchContext, searchOrder }) => {
     workspaceSearchOpening = null;
     agentHub.closeWorkspaceMessageSearch({ restoreFocus: false });
     agentHub.showSelectedTask();
     replaceRoute("#/chat/"
       + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
       + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
-    applyOpened(opened, { exactNavigation: { ...exactNavigation, searchHit, searchContext } });
+    applyOpened(opened, { exactNavigation: { ...exactNavigation, searchHit, searchContext, searchOrder } });
   });
   const request = { id: result.id, generation: navigationIntents.capture() };
   workspaceSearchOpening = request;
