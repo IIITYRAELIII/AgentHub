@@ -350,9 +350,10 @@ export function createExecutionBootstrapPhase({
       const health = await api.handleDesktopControl({
         action: "runtime-health", params: {}, context: request.context,
       });
-      if (selection.hostState.stopping || !health.live || !health.ready || health.degraded
-          || health.installerCutover?.admissionClosed) return { retry: true };
-      const { contextToken, requestId, streamId, text } = request.params ?? {};
+      const { contextToken, requestId, streamId, text, expectedReleaseId } = request.params ?? {};
+      if (selection.hostState.stopping || !health.live || !health.ready
+          || health.installerCutover?.admissionClosed
+          || (expectedReleaseId && health.process?.releaseId !== expectedReleaseId)) return { retry: true };
       return infrastructure.hubMcpService.call("hub_stream_message_send", {
         context_token: contextToken, request_id: requestId, stream_id: streamId, text,
         mode: "steer", confirm_send: true,

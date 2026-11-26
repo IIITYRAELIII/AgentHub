@@ -10,7 +10,8 @@ test("execution phase shares recovery and Telegram with bootstrap and keeps opti
   const resources = { id: "one-resource-registry" };
   const runs = new Map();
   const sends = [];
-  const health = { live: true, ready: true, degraded: false, installerCutover: { admissionClosed: false } };
+  const health = { live: true, ready: true, degraded: true, process: { releaseId: "installed" },
+    installerCutover: { admissionClosed: false } };
   const bootstrap = boundPort();
   const { createExecutionBootstrapPhase } = await importCompositionWithPorts(
     new URL("../../src/composition/execution-bootstrap-phase-composition.mjs", import.meta.url), {
@@ -73,9 +74,10 @@ test("execution phase shares recovery and Telegram with bootstrap and keeps opti
   assert.equal(await bootstrapInput.handleDesktopControl(ordinary), ordinary);
   const notice = { action: "release-continuation", params: {
     contextToken: "fixture-capability", requestId: "release-attempt:continue", streamId: "stream", text: "Ready",
-    mode: "queue", origin: { streamId: "foreign" },
+    mode: "queue", origin: { streamId: "foreign" }, expectedReleaseId: "installed",
   } };
-  for (const block of [{ ready: false }, { live: false }, { degraded: true }, { installerCutover: { admissionClosed: true } }]) {
+  for (const block of [{ ready: false }, { live: false }, { process: { releaseId: "different" } },
+    { installerCutover: { admissionClosed: true } }]) {
     const previous = { ...health };
     Object.assign(health, block);
     assert.deepEqual(await bootstrapInput.handleDesktopControl(notice), { retry: true });

@@ -220,8 +220,11 @@ Release Tools continuation uses the authenticated local Desktop socket to call
 the existing Inter-Stream send owner with an explicit caller capability and
 `mode=steer`. The capability determines the sender. The original request ID
 determines the same `mcp:<request_id>` message across readback, retry and process
-replacement. Ready and installer cutover gate the socket route. Ordinary
-Desktop and browser sends keep their existing authorization and queue behavior.
+replacement. Ready and installer cutover gate the socket route. A failure in
+an optional integration does not prevent a Ready runtime from receiving the
+report. If the installer names the expected release, the socket checks it
+against that runtime before admission. Ordinary Desktop and browser sends
+keep their existing authorization and queue behavior.
 
 Provider-internal compaction in an existing exact Hub-owned active turn is not
 an idle-launch reservation. Ordinary steer may reach that same turn without
