@@ -483,6 +483,7 @@
       "title": "Task Git integration",
       "document": "REL-001-task-backed-release.md",
       "paths": [
+        "docs/decisions/ADR-HUB-562-release-changelog-ownership.md",
         "docs/decisions/ADR-HUB-254-github-account.md",
         "docs/decisions/ADR-HUB-511-github-token-refresh.md",
         "src/application/github-account-service.mjs",

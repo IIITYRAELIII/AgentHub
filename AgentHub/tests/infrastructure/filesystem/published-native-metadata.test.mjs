@@ -83,13 +83,15 @@ test("ordinary Test inherits exact published notes/version while main remains fi
   f.setPublication(original); await check();
 });
 
-test("ordinary Test still refuses unpublished release notes and package versions", async t => {
+test("ordinary Test keeps dev notes and still refuses unpublished package versions", async t => {
   const f = await fixture(t);
   await save(f.source.projectRoot, "CHANGELOG.md", "# History\n\nUnpublished Task notes.\n");
-  await commit(f.source.projectRoot, "unpublished notes");
-  await assert.rejects(f.service.snapshotAndMerge({ taskId: f.taskId, projectRoot: f.primary, operationId: "foreign-notes" }), /release-owned CHANGELOG/u);
-  await git(f.source.projectRoot, "sparse-checkout", "disable");
-  await git(f.source.projectRoot, "restore", `--source=${f.published}`, "--staged", "--worktree", "--", "CHANGELOG.md");
+  const notes = await commit(f.source.projectRoot, "unpublished notes");
+  const result = await f.service.snapshotAndMerge({ taskId: f.taskId, projectRoot: f.primary, operationId: "foreign-notes" });
+  assert.equal(result.integration.integrated, true);
+  assert.equal(result.snapshot.headCommit, notes);
+  assert.equal(await git(f.dev.projectRoot, "show", "HEAD:CHANGELOG.md"), await git(f.primary, "show", `${f.published}:CHANGELOG.md`));
+  assert.equal(await git(f.dev.projectRoot, "show", "HEAD:AgentHub/selected.mjs"), "export const selected = true;");
   const file = path.join(f.source.projectRoot, "AgentHub/package.json");
   const data = JSON.parse(await readFile(file, "utf8")); data.version = "9.9.9";
   await writeFile(file, JSON.stringify(data) + "\n"); await commit(f.source.projectRoot, "unpublished version");
@@ -110,7 +112,7 @@ test("missing publication generation gives no metadata credit but preserves ordi
   const { generation, ...legacy } = f.publication();
   f.setPublication(legacy);
   await assert.rejects(f.service.snapshotAndMerge({ taskId: f.taskId, projectRoot: f.primary,
-    operationId: "unproved-published-notes" }), /release-owned CHANGELOG/u);
+    operationId: "unproved-published-notes" }), /release-owned package-version/u);
   const taskId = "22222222-2222-4222-8222-222222222222";
   const source = await f.service.prepare({ taskId, taskNumber: "HUB-2", projectRoot: f.primary });
   await save(source.projectRoot, "AgentHub/legacy.mjs", "export const legacy = true;\n");
@@ -119,15 +121,16 @@ test("missing publication generation gives no metadata credit but preserves ordi
   assert.equal(result.integration.integrated, true);
 });
 
-test("published dev and copied metadata alone cannot authorize a source without published ancestry", async t => {
+test("copied root notes without published ancestry cannot replace dev notes", async t => {
   const f = await fixture(t), taskId = "33333333-3333-4333-8333-333333333333";
   const source = await f.service.prepare({ taskId, taskNumber: "HUB-3", projectRoot: f.primary });
   await git(source.projectRoot, "sparse-checkout", "disable");
   const notes = await git(f.primary, "show", `${f.published}:CHANGELOG.md`);
   await save(source.projectRoot, "CHANGELOG.md", notes + "\n");
   await commit(source.projectRoot, "copied published notes without publication ancestry");
-  await assert.rejects(f.service.snapshotAndMerge({ taskId, projectRoot: f.primary,
-    operationId: "dev-is-not-metadata-authority" }), /release-owned CHANGELOG/u);
+  await f.service.snapshotAndMerge({ taskId, projectRoot: f.primary, operationId: "dev-is-not-metadata-authority" });
+  assert.equal(await git(f.dev.projectRoot, "rev-parse", "HEAD:CHANGELOG.md"),
+    await git(f.primary, "rev-parse", `${f.published}:CHANGELOG.md`));
 });
 
 test("ordinary candidate refuses publication record drift before the owning commit", async t => {

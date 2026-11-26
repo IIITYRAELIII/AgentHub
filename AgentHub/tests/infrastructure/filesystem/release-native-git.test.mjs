@@ -7,7 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { TaskIntegrationGitService } from "../../../src/infrastructure/filesystem/task-integration-git.mjs";
-import { mergeSelectedResults } from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
+import { assertNativePreparedComposition, mergeSelectedResults, NATIVE_RELEASE_POLICY }
+  from "../../../src/infrastructure/filesystem/native-release-merge.mjs";
 import { runTaskGitCommand } from "../../../src/infrastructure/filesystem/task-git-workspace.mjs";
 
 
@@ -218,7 +219,7 @@ test("joint file uses Git merge; conflict retains last candidate and normal reso
   assert.equal((await git(candidate.releaseRoot, "show", "-s", "--format=%P", resolution)).split(" ")[1], b.resultCommit);
 });
 
-test("foreign merge side and release-owned metadata require explicit migration", async (t) => {
+test("a foreign merge side still requires explicit migration", async (t) => {
   const f = await fixture(t);
   const foreign = await f.result("Foreign", "foreign.txt", "unselected\n");
   const task = await f.result("Task", "own.txt", "own\n");
@@ -226,8 +227,86 @@ test("foreign merge side and release-owned metadata require explicit migration",
     "merge", "--no-ff", "--no-edit", foreign.resultCommit);
   task.resultCommit = await git(f.branches.get("Task"), "rev-parse", "HEAD");
   await assert.rejects(f.service.prepareCandidate(f.request([task])), { code: "RELEASE_NATIVE_HISTORY_REQUIRED" });
-  const metadata = await f.result("Metadata", "CHANGELOG.md", "unauthorized notes\n");
-  await assert.rejects(f.service.prepareCandidate(f.request([metadata])), /release-owned CHANGELOG/u);
+});
+
+test("PreRelease keeps the destination changelog on edit, deletion and addition", async t => {
+  const f = await fixture(t);
+  const added = await f.result("Added", "CHANGELOG.md", "task notes without an existing file\n");
+  const withoutNotes = await f.service.prepareCandidate(f.request([added], "without-notes"));
+  assert.equal(await git(withoutNotes.releaseRoot, "ls-tree", "PreRelease", "--", "CHANGELOG.md"), "");
+  await writeFile(path.join(f.primary, "CHANGELOG.md"), "old published notes\n");
+  const old = await commit(f.primary, "old publication");
+  const edit = await f.result("Edited", "CHANGELOG.md", "task notes from the old base\n", old);
+  edit.resultCommit = (await f.result("Edited", "selected.txt", "selected work\n", old)).resultCommit;
+  const deletion = await f.result("Deleted", "other.txt", "other work\n", old);
+  const deletionRoot = f.branches.get("Deleted");
+  await git(deletionRoot, "rm", "--", "CHANGELOG.md");
+  deletion.resultCommit = await commit(deletionRoot, "remove old notes in task");
+  await writeFile(path.join(f.primary, "CHANGELOG.md"), "current release notes\n");
+  const published = await commit(f.primary, "current publication");
+  await git(f.primary, "push", "origin", "main");
+
+  const request = { ...f.request([edit, deletion], "current-notes"), approvedBaseCommit: published };
+  const result = await f.service.prepareCandidate(request);
+  assert.equal(await git(result.releaseRoot, "show", "PreRelease:CHANGELOG.md"), "current release notes");
+  assert.equal(await git(result.releaseRoot, "show", "PreRelease:selected.txt"), "selected work");
+  assert.equal(await git(result.releaseRoot, "show", "PreRelease:other.txt"), "other work");
+  assert.deepEqual(Object.fromEntries(result.manifest.tasks.map(task => [task.taskId, task.resultCommit])),
+    { [edit.taskId]: edit.resultCommit, [deletion.taskId]: deletion.resultCommit });
+  assert.equal((await f.service.prepareCandidate(request)).preReleaseHead, result.preReleaseHead);
+  assert.equal(await git(f.branches.get("Edited"), "show", "HEAD:CHANGELOG.md"), "task notes from the old base");
+});
+
+test("native Task merges retain destination notes after interruption and keep real conflicts", async t => {
+  const f = await fixture(t);
+  await writeFile(path.join(f.primary, "CHANGELOG.md"), "initial\n");
+  const old = await commit(f.primary, "original notes");
+  const task = await f.result("OwnNotes", "CHANGELOG.md", "task change\n", old);
+  task.resultCommit = (await f.result("OwnNotes", "selected.txt", "accepted content\n", old)).resultCommit;
+  const conflicting = await f.result("OtherConflict", "CHANGELOG.md", "other task notes\n", old);
+  conflicting.resultCommit = (await f.result("OtherConflict", "shared.txt", "task conflict\n", old)).resultCommit;
+  await writeFile(path.join(f.primary, "CHANGELOG.md"), "published\n");
+  await writeFile(path.join(f.primary, "shared.txt"), "published content\n");
+  const baseCommit = await commit(f.primary, "published notes and code");
+  const gitAt = (cwd, args, options = {}) => runTaskGitCommand(args, { ...options, cwd });
+  const readJson = pathname => readFile(pathname, "utf8").then(JSON.parse, error => {
+    if (error.code === "ENOENT") return null; throw error;
+  });
+  const writeJson = (pathname, value) => writeFile(pathname, JSON.stringify(value));
+  const request = (policy, tasks) => ({ root: path.join(f.root, policy), sourceRoot: f.primary,
+    baseCommit, tasks, identity: { policy, baseCommit, tasks }, gitAt, readJson, writeJson });
+
+  const dev = request("native-dev-merge-v1", [task]);
+  let interrupted = false;
+  await assert.rejects(mergeSelectedResults({ ...dev, gitAt: async (cwd, args, options) => {
+    if (!interrupted && args.includes("commit") && args.includes("--no-edit")) {
+      interrupted = true;
+      throw new Error("interrupted before integration commit");
+    }
+    return gitAt(cwd, args, options);
+  } }), /interrupted before integration commit/u);
+  const result = await mergeSelectedResults(dev);
+  await assertNativePreparedComposition({ ...dev, ...result, git: (args, options) => gitAt(result.root, args, options) });
+  assert.equal(await git(result.root, "show", "HEAD:CHANGELOG.md"), "published");
+  assert.equal(await git(result.root, "show", "HEAD:selected.txt"), "accepted content");
+  assert.equal(await git(result.root, "show", "-s", "--format=%P", result.head), `${baseCommit} ${task.resultCommit}`);
+  assert.equal((await mergeSelectedResults(dev)).head, result.head);
+
+  const release = request(NATIVE_RELEASE_POLICY, [conflicting]);
+  await assert.rejects(mergeSelectedResults(release), error => {
+    assert.equal(error.code, "RELEASE_NATIVE_MERGE_CONFLICT");
+    assert.deepEqual(error.conflicts, ["shared.txt"]);
+    return true;
+  });
+  const checkout = path.join(release.root, "repository");
+  assert.equal(await readFile(path.join(checkout, "CHANGELOG.md"), "utf8"), "published\n");
+  assert.equal(await git(checkout, "rev-parse", "MERGE_HEAD"), conflicting.resultCommit);
+  await writeFile(path.join(checkout, "shared.txt"), "published + task content\n");
+  await commit(checkout, "resolve actual conflict");
+  const released = await mergeSelectedResults(release);
+  await assertNativePreparedComposition({ ...release, ...released, git: (args, options) => gitAt(released.root, args, options) });
+  assert.equal(await git(checkout, "show", "HEAD:CHANGELOG.md"), "published");
+  assert.equal(await git(checkout, "show", "HEAD:shared.txt"), "published + task content");
 });
 
 test("native candidate refuses existing package version changes but accepts dependency edits", async t => {
