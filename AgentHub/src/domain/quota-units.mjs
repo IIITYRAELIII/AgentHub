@@ -1,4 +1,4 @@
-import { modelCreditRates, normalizeTokenUsage, normalizeServiceTier, turnCreditBreakdown,
+import { isGpt62UsageModel, modelCreditRates, normalizeTokenUsage, normalizeServiceTier, turnCreditBreakdown,
   WORK_LOG_PRICING_PROJECTION_VERSION } from "./token-usage.mjs";
 
 export const QUOTA_CALIBRATION_VERSION = "preliminary-2026-09-29-gpt6sol-reference-v1";
@@ -68,10 +68,12 @@ export function turnQuotaBreakdown(usage, {
     };
   }
   const tariff = modelCreditRates(id, { completedAt });
-  const priced = turnCreditBreakdown(pricingTokens, {
+  // GPT-6.2 uses the same evidence and pricing decision in both units. The
+  // legacy total-as-input approximation would otherwise fabricate a tariff basis.
+  const priced = turnCreditBreakdown(isGpt62UsageModel(id) ? usage : pricingTokens, {
     model: id, serviceTier, estimatedCredits: imageEstimate, completedAt,
   });
-  if (tariff && (hasTokens || imageEstimate > 0)) {
+  if (tariff && !priced.missingTokenBreakdown && (hasTokens || imageEstimate > 0)) {
     const zeroPriced = priced.total === 0 && imageEstimate === 0;
     return {
       // Preserve the API-credit breakdown and project it onto the frozen
@@ -99,9 +101,9 @@ export function turnQuotaBreakdown(usage, {
   return {
     input: 0, cache: 0, cacheWrite: 0, output: 0, total: 0,
     apiEstimateCredits: 0,
-    uncalibrated: hasTokens,
+    uncalibrated: hasTokens || priced.missingTokenBreakdown === true,
     calibrationVersion: QUOTA_CALIBRATION_VERSION,
-    basis: hasTokens ? "unknown" : "zero",
+    basis: hasTokens || priced.missingTokenBreakdown ? "unknown" : "zero",
   };
 }
 

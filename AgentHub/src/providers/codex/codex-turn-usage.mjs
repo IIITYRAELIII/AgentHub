@@ -12,7 +12,8 @@ import { isCodexContextProbeClientId } from "../../domain/codex-service-usage-id
 import {
   codexAssistantResponseProjection,
 } from "../../domain/codex-response-annotation.mjs";
-import { addTokenUsage, emptyTokenUsage, normalizeTokenUsage } from "../../domain/token-usage.mjs";
+import { addTokenUsage, captureMeasuredTokenUsage, emptyTokenUsage, isGpt62UsageModel,
+  normalizeTokenUsage } from "../../domain/token-usage.mjs";
 import { mergeUsageLimitSamples } from "../../domain/usage-facts.mjs";
 import { displayUserPrompt } from "../../application/task-history.mjs";
 
@@ -336,8 +337,9 @@ const LONG_CONTEXT_USAGE_FIELDS = [
 ];
 const GPT_6_1_LONG_CONTEXT_THRESHOLD = 272_000;
 
-function normalizedRolloutUsage(value, { request = false } = {}) {
-  const usage = normalizeTokenUsage({
+function normalizedRolloutUsage(value, { request = false, model } = {}) {
+  const normalize = isGpt62UsageModel(model) ? captureMeasuredTokenUsage : normalizeTokenUsage;
+  const usage = normalize({
     inputTokens: value?.input_tokens,
     cachedInputTokens: value?.cached_input_tokens,
     cacheWriteInputTokens: value?.cache_write_input_tokens,
@@ -378,12 +380,12 @@ function addRequestPricingUsage(exact, request, { includeCacheWrite = false } = 
   return merged;
 }
 
-function exactTurnTokenUsage(entry) {
+function exactTurnTokenUsage(entry, model) {
   if (entry?.type !== "token_usage_record" || !entryTurnId(entry)) return null;
   const usage = entry.payload?.turn_token_usage;
   if (!usage || !["input_tokens", "cached_input_tokens", "output_tokens", "total_tokens"]
     .every((key) => Number.isSafeInteger(usage[key]) && usage[key] >= 0)) return null;
-  return normalizedRolloutUsage(usage);
+  return normalizedRolloutUsage(usage, { model });
 }
 
 function isoFromEpochSeconds(value) {
@@ -669,7 +671,7 @@ function createTurnAccumulator(turnId) {
 
     const exactTurnId = entryTurnId(entry);
     if (exactTurnId === requestedTurnId) acceptUserOperationIdentity(userOperation, entry);
-    const exactUsage = exactTurnTokenUsage(entry);
+    const exactUsage = exactTurnTokenUsage(entry, model || latestModel);
     if (exactUsage && exactTurnId === requestedTurnId) {
       usage = preserveRequestPricingUsage(exactUsage, usage);
       exactUsageReported = true;
@@ -757,10 +759,10 @@ function createTurnAccumulator(turnId) {
       || (activeTurnIds.size === 1 ? [...activeTurnIds][0] : "");
     if (attributedTurnId === requestedTurnId) {
       const requestUsage = normalizedRolloutUsage(entry.payload?.info?.last_token_usage, {
-        request: true,
+        request: true, model: model || latestModel,
       });
       if (!exactUsageReported) {
-        usage = addTokenUsage(usage, requestUsage);
+        usage = reported ? addTokenUsage(usage, requestUsage) : requestUsage;
       } else {
         usage = addRequestPricingUsage(usage, requestUsage, {
           includeCacheWrite: !exactCacheWriteReported,
@@ -1317,7 +1319,7 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     const exactTurnId = entryTurnId(entry);
     const exactTurn = ensureTurn(exactTurnId);
     acceptUserOperationIdentity(exactTurn, entry);
-    const exactUsage = exactTurnTokenUsage(entry);
+    const exactUsage = exactTurnTokenUsage(entry, exactTurn?.model || latestModel);
     if (exactUsage && exactTurn) {
       exactTurn.usage = preserveRequestPricingUsage(exactUsage, exactTurn.usage);
       exactTurn.exactUsageReported = true;
@@ -1424,13 +1426,11 @@ export async function scanCodexHistoricalRollout(transcriptPath, {
     const attributedTurn = ensureTurn(attributedTurnId);
     if (attributedTurn) {
       const requestUsage = normalizedRolloutUsage(entry.payload?.info?.last_token_usage, {
-        request: true,
+        request: true, model: attributedTurn.model || latestModel,
       });
       if (!attributedTurn.exactUsageReported) {
-        attributedTurn.usage = addTokenUsage(
-          attributedTurn.usage,
-          requestUsage,
-        );
+        attributedTurn.usage = attributedTurn.reported
+          ? addTokenUsage(attributedTurn.usage, requestUsage) : requestUsage;
       } else {
         attributedTurn.usage = addRequestPricingUsage(attributedTurn.usage, requestUsage, {
           includeCacheWrite: !attributedTurn.exactCacheWriteReported,

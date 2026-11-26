@@ -21,7 +21,7 @@ import { readSelectedCheckoutAuthority, verifySelectedCompositionFiles, verifySe
 import { canonicalPath } from "./config.mjs";
 import { taskWorkingTreeDiff } from "./task-git-diff.mjs";
 import * as legacySelectedV1 from "./legacy-selected-composition-materializer-v1.mjs";
-import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition, assertNativeMergeGraph, assertNativeMergedResults, nativeMergeBaseFields } from "./native-release-merge.mjs";
+import { mergeSelectedResults, assertNativeTaskHistories, assertNativePreparedComposition, assertNativeMergeGraph, assertNativeMergedResults, nativeMergeBaseFields, nativeIntegrationRecordFile } from "./native-release-merge.mjs";
 import { synchronizePublishedDev } from "./published-dev-sync.mjs";
 import { readManualTaskDelivery, readManualPublishedRepository } from "./manual-task-delivery.mjs";
 import { manualDeliveryReferenceSourceBinding } from "../../domain/task-checklist.mjs";
@@ -3703,11 +3703,22 @@ export class TaskGitWorkspaceService {
       runGit(["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: sourceRoot }),
       runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: sourceRoot }),
     ]);
-    if (head !== d.sourceCommit || base !== d.baseCommit || status
+    if (head !== (d.preservedSourceHead ?? d.sourceCommit) || base !== d.baseCommit || status
         || branch !== taskBranchName(d.sourceTaskId, repoRoot, binding.sourceTaskNumber)
         || await runGit(["rev-parse", `refs/heads/${branch}^{commit}`], { cwd: repoRoot }) !== head) {
       throw selectedCompositionRequiredError("absorbed source HEAD/base/branch or saved cleanliness changed");
     }
+    if (d.preservedSourceHead) {
+      if (!binding.priorResults?.some(prior => prior.taskId === d.sourceTaskId)) {
+        throw selectedCompositionRequiredError("saved source has no exact prior Test and return");
+      }
+      const suffix = (await this.#runOwned(["rev-list", "--first-parent", "--parents", "--max-count=4097",
+        head, `^${d.sourceCommit}`], { cwd: repoRoot, lease })).split(/\r?\n/u).filter(Boolean);
+      if (!suffix.length || suffix.length > 4096 || suffix.at(-1).split(" ")[1] !== d.sourceCommit) {
+        throw selectedCompositionRequiredError("saved source is outside the first-parent history of its preserved HEAD");
+      }
+    }
+    return { head, sourceCommit: d.sourceCommit };
   }
 
   #selectedMaterializationBinding(preview, lease) {
@@ -4129,10 +4140,7 @@ export class TaskGitWorkspaceService {
   }
 
   #nativeIntegrationFile(taskId, repoRoot, operationId) {
-    const operation = String(operationId ?? "").trim();
-    if (!operation) throw new Error("Native Test requires its original lifecycle operation id");
-    return path.join(this.dataDir, "task-native-integrations", normalizedTaskId(taskId),
-      taskRepositoryKey(repoRoot), `${createHash("sha256").update(operation).digest("hex")}.json`);
+    return nativeIntegrationRecordFile(this.dataDir, taskId, repoRoot, operationId);
   }
 
   async pendingNativeIntegrationOwned({ taskId, projectRoot, operationId, lease } = {}) {
@@ -4376,9 +4384,13 @@ export class TaskGitWorkspaceService {
     // later rolling dev/source checkout or its current config/physical bytes.
     await this.#nativeIntegrationComposition(record, lease, { historicalOnly: true });
     if (descriptor.absorptionHistory) await this.#nativeSelectedCompositionForResult(descriptor.absorptionHistory, lease);
+    const published = record.nativeHistoryAuthority?.baseline?.publishedBaseCommit
+      ?? record.nativeHistoryAuthority?.publishedMetadata?.commit ?? record.nativeHistoryAuthority?.publishedHistoryMetadata?.commit;
     await assertNativeTaskHistories({
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: descriptor.repositoryRoot, lease }),
       baseCommit: descriptor.mainCommit,
+      historyAuthority: published ? { publishedHistoryBase: published, dataDir: this.dataDir,
+        bases: [published], metadataBases: record.nativeHistoryAuthority.publishedHistoryMetadata ? [] : [published] } : null,
       tasks: [{ taskId: descriptor.taskId, baseCommit: descriptor.taskBaseCommit,
         resultCommit: descriptor.taskCommit, selectedComposition: descriptor }],
     });
@@ -4577,10 +4589,11 @@ export class TaskGitWorkspaceService {
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
     else if (binding?.baseline?.adoptions) await assertInstalledAgreedMainOrigin({ provenance: binding.baseline,
       git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
-    if (binding?.publishedMetadata) {
+    const expectedPublication = binding?.publishedMetadata ?? binding?.publishedHistoryMetadata;
+    if (expectedPublication) {
       const current = await publishedMetadataContext({ publication: await this.readPublication(), repositoryRoot: snapshot.repositoryRoot,
         git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease }) });
-      if (JSON.stringify(current) !== JSON.stringify(binding.publishedMetadata)) throw new Error("Native Test published metadata authority changed");
+      if (JSON.stringify(current) !== JSON.stringify(expectedPublication)) throw new Error("Native Test published metadata authority changed");
     }
   }
 
@@ -4603,7 +4616,7 @@ export class TaskGitWorkspaceService {
     }
   }
 
-  async #nativeHistoryAuthority(snapshot, dev, lease, expected = undefined) {
+  async #nativeHistoryAuthority(snapshot, dev, lease, expected = undefined, savedAbsorption = false) {
     const tasks = [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit }];
     const git = (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease });
     const adoptions = await readNativeUpstreamAdoptions({ git, tasks, repositoryRoot: snapshot.repositoryRoot,
@@ -4632,22 +4645,27 @@ export class TaskGitWorkspaceService {
         inheritedMainMetadata: [dev.headCommit],
         readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.dataDir, ...input }) });
     }
-    let publishedMetadata = null;
+    let publishedMetadata = null, publishedHistoryMetadata = null;
     // Older originals retain precisely their captured authority. New admissions
     // may inherit exact already-published metadata only after both source and dev
     // contain that immutable publication; dev alone never grants metadata credit.
-    if (!baseline && (expected === undefined || Object.hasOwn(expected, "publishedMetadata"))) {
+    if (!baseline && (expected === undefined || Object.hasOwn(expected, "publishedMetadata")
+        || Object.hasOwn(expected, "publishedHistoryMetadata"))) {
       const context = await publishedMetadataContext({ publication, repositoryRoot: snapshot.repositoryRoot, git });
-      if (context && await git(["merge-base", context.commit, snapshot.headCommit]) === context.commit
-          && await git(["merge-base", context.commit, dev.headCommit]) === context.commit) publishedMetadata = context;
+      if (context && await git(["merge-base", context.commit, dev.headCommit]) === context.commit) {
+        if (await git(["merge-base", context.commit, snapshot.headCommit]) === context.commit) publishedMetadata = context;
+        else if (expected === undefined ? savedAbsorption : Boolean(expected.publishedHistoryMetadata)) publishedHistoryMetadata = context;
+      }
     }
     const binding = { baseline, adoptions, ...(sourcePublication ? { sourcePublication } : {}),
-      ...(publishedMetadata ? { publishedMetadata } : {}) };
+      ...(publishedMetadata ? { publishedMetadata } : {}), ...(publishedHistoryMetadata ? { publishedHistoryMetadata } : {}) };
     if (expected !== undefined && JSON.stringify(binding) !== JSON.stringify(expected)) {
       throw new Error("Native Test installed source or adoption authority changed");
     }
     return { binding, bases: [dev.headCommit, ...(baseline ? [baseline.sourceBaseCommit,
       ...(baseline.ownGitPublication ? [baseline.ownGitPublication.commit] : [])] : [])],
+      publishedHistoryBase: baseline?.publishedBaseCommit ?? publishedMetadata?.commit ?? publishedHistoryMetadata?.commit,
+      dataDir: this.dataDir,
       metadataBases: [...(baseline ? [baseline.sourceBaseCommit, ...(baseline.ownGitPublication ? [baseline.ownGitPublication.commit] : [])] : []),
         ...(publishedMetadata ? [publishedMetadata.commit] : [])], adoptions };
   }
@@ -4693,7 +4711,8 @@ export class TaskGitWorkspaceService {
           validateAbsorption();
           await this.#assertSelectedAbsorptionGit(nativeAbsorptionInput, snapshot.repositoryRoot, ownedLease);
         }
-        const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, ownedLease);
+        const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, ownedLease, undefined,
+          Boolean(nativeAbsorptionInput || nativeAbsorptionHistory));
         await assertNativeTaskHistories({
           git: (args, options = {}) => this.#runOwned(args, { ...options, cwd: snapshot.repositoryRoot, lease: ownedLease }),
           baseCommit: dev.mainCommit,
@@ -6381,6 +6400,7 @@ export class TaskGitWorkspaceService {
         const sourceHead = await runGit(["rev-parse", "HEAD^{commit}"], { cwd: workspace.projectRoot });
         if (sourceHead !== workspace.headCommit) throw new Error("Source Task changed during combined closure");
         let priorNativeSource = null;
+        let selectedSourceCommit = sourceHead;
         if (nativeAbsorption) {
           const proof = selectedCompositionFields({ taskId: target.id, resultCommit: targetHead,
             selectedComposition: nativeAbsorption }).selectedComposition;
@@ -6391,16 +6411,19 @@ export class TaskGitWorkspaceService {
           await this.#nativeSelectedCompositionForResult(proof, devLease);
           const input = normalizedSelectedAbsorption(proof.absorptionInput);
           const d = selectedAbsorptionHandoff({ requestId: input.requestId, text: input.text }).declaration;
-          if (d.sourceTaskId !== source.id || d.sourceTaskRevision !== source.revision || d.sourceCommit !== sourceHead) {
+          if (d.sourceTaskId !== source.id || d.sourceTaskRevision !== source.revision) {
             throw selectedCompositionRequiredError("combined native absorbed source changed");
           }
+          const selection = await this.#assertSelectedAbsorptionGit(input, repoRoot, devLease);
+          if (selection.head !== sourceHead) throw selectedCompositionRequiredError("combined native source HEAD changed");
+          selectedSourceCommit = selection.sourceCommit;
           const prior = input.priorResults?.find(result => result.taskId === source.id);
           const sourceRefs = (source.gitReferences ?? []).filter(ref => samePath(ref.projectRoot, repoRoot));
           if (sourceRefs.length ? sourceRefs.length !== 1 || !prior || sourceRefs[0].resultCommit !== prior.resultCommit
             : Boolean(prior)) throw selectedCompositionRequiredError("combined native prior source result changed");
           priorNativeSource = prior ? { ...prior, devCommit: proof.devCommit } : null;
         }
-        const results = [...new Set([sourceHead, ...(source.gitReferences ?? [])
+        const results = [...new Set([selectedSourceCommit, ...(source.gitReferences ?? [])
           .filter((ref) => samePath(ref.projectRoot, repoRoot)).map((ref) => ref.resultCommit)])];
         let squashTransfer = null;
         try {
@@ -6465,6 +6488,7 @@ export class TaskGitWorkspaceService {
         }
         evidence.push({
           projectRoot: repoRoot, sourceHead, targetHead, results,
+          ...(selectedSourceCommit !== sourceHead ? { selectedSourceCommit } : {}),
           ...(squashTransfer ? { squashTransferHash: squashTransfer.transferHash } : {}),
           ...(nativeAbsorption ? { nativeAbsorptionHash: nativeAbsorption.descriptorHash } : {}),
         });

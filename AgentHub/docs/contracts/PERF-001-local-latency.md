@@ -200,9 +200,9 @@ from that cache. A rewrite or cache reconstruction starts a new token. These
 small scalar fields participate in the same budget and require no extra read.
 
 Explicit “All stages” reads use the existing history owner and rollout worker,
-without provider calls, history writes or automatic polling. They stream a fixed
-source prefix in 64 KiB chunks and retain at most 4 MiB for a raw record or its
-internal projected JSON representation. Raw records over 4 MiB are admitted only
+  without provider calls, history writes or automatic polling. They stream a fixed
+  source prefix in 64 KiB parser chunks and retain at most 4 MiB for a raw record
+  or its internal projected JSON representation. Raw records over 4 MiB are admitted only
 when complete structural and escape validation positively identifies a top-level
 `compacted` record or `response_item` with `payload.type=message` and
 `payload.role=user`. Their large string values may be omitted only from that
@@ -212,7 +212,11 @@ Oversized agent, lifecycle, unknown or unclassifiable records remain errors;
 invalid JSON, invalid escapes, incomplete records and a projected representation
 over 4 MiB also fail closed. This scoped exception does not raise the record
 budget for agent evidence or change automatic preview reads
-(ADR-HUB-237-exact-trace-record-bounds).
+  (ADR-HUB-237-exact-trace-record-bounds). An exact-group read may reuse a
+  bounded worker-local projection of a newline-terminated prefix only after
+  rehashing the same bytes from the opened file. Any appended bytes in the
+  requested snapshot still pass through the parser. The response carries the
+  complete prefix hash and the same group and ambiguity checks (ADR-HUB-546).
 Pages return at most 50 groups and 512 KiB. An oversized block fails visibly,
 without truncation. Exact provider/Thread/turn/item and duplicate-source checks
 remain mandatory.
@@ -439,6 +443,14 @@ under the same workspace-catalog-load startup identity. Contention retries
 only catalog SQLite work. Catalog schema changes commit atomically; an exhausted
 or unrelated SQLite failure remains a startup failure. Missing terminal phases
 and a passing private restart do not establish a historical lock holder.
+
+The terminal provider startup span includes the Codex selection outcome and
+durations from the same attempt, including recorded identity, bundle inventory,
+signature and process probes, custody, canary and state persistence when used.
+If selection is retried during rollback or unavailable-bundle recovery, the
+same span also retains the preceding selection attempt from this startup.
+These are bounded, content-free timings. Child phase durations can be inside
+the recorded or discovery duration and must not be added to their parent.
 
 
 Retention is at most seven days and 250,000 spans. The existing worker prunes at
@@ -758,7 +770,7 @@ skipped fail-closed: they cannot rewrite message identities and remain available
 to their owning terminal store. No SQL window, payload-length expression or
 temporary result materializes/sorts the payloads for all 200 candidates.
 
-Opening a history page reuses terminal-identity recovery for at most its 20
+Opening a history page reuses terminal-identity recovery for at most its 30
 exact terminal identities, including those older than the startup window.
 It retains the same per-payload and aggregate byte bounds. Primary-key terminal
 lookups and indexed exact-turn read-model queries never hydrate the rest of a
@@ -974,6 +986,16 @@ optional column hydration, avoiding a second cold read of the selected page.
 These spans and gated browser measurements distinguish removed I/O dependencies
 from actual production server/SQLite latency; they do not establish a universal
 latency percentage or a deployed improvement before installation and observation.
+
+An optional history follow-up owned by the selected chat releases its browser
+HTTP request when a different navigation supersedes it, including while the
+follow-up waits to dispatch. Explicit history requests and background reads for
+other still-owned columns keep their existing owners. The original exact-final
+read trace records session wait, available browser dispatch and response-header
+intervals, and the same document identity used for snapshot paint. The browser
+dispatch interval includes scheduling and connection setup. Missing resource
+timing is unknown. The origin's request callback does not timestamp socket
+arrival or establish that the server event loop was available earlier.
 
 Leaving Chat for Dashboard must not expand the hidden conversation's DOM. A
 zero-sized history viewport is not underfilled; automatic paging rechecks the
@@ -1193,7 +1215,8 @@ phases. The browser measures request-to-headers, body transfer and JSON
 parsing separately when its resource timing includes the matching HTTP
 request. Node response finish describes handoff to the OS, and a gzip callback
 interval can include native-worker queue and event-loop scheduling. Neither
-is exclusive network time. A cold two-turn page of up to 128 KiB can use
-identity encoding when accepted, allowing the complete latest exchange to
-paint independently of the shared gzip pool. Wider reads and all trace-page
-requests retain ordinary compression. See ADR-HUB-517.
+is exclusive network time. A cold chat page requests up to 30 turns. The
+first page on loopback uses identity encoding when accepted. Remote first pages
+up to 128 KiB can also bypass the shared gzip pool. Larger remote responses,
+ordinary background reads and trace pages retain negotiated compression.
+See ADR-HUB-517 and ADR-HUB-536.

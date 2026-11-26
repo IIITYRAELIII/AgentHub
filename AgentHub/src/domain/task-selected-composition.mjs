@@ -15,7 +15,7 @@ export function selectedAbsorptionHandoff(value) {
     throw selectedCompositionRequiredError("absorption handoff is not a structured declaration");
   }
   const fields = ["version", "kind", "workspaceId", "sourceTaskId", "sourceTaskRevision", "survivorTaskId",
-    "baseCommit", "sourceCommit", "sourceTree", "survivorParentCommit", "absorptionCommit", "saved", "stopped"];
+    "baseCommit", "sourceCommit", "sourceTree", "preservedSourceHead", "survivorParentCommit", "absorptionCommit", "saved", "stopped"];
   if (!declaration || Array.isArray(declaration) || Object.keys(declaration).some((key) => !fields.includes(key))
       || declaration.version !== 1 || declaration.kind !== "task-absorption-handoff-v1"
       || declaration.saved !== true || declaration.stopped !== true
@@ -23,6 +23,9 @@ export function selectedAbsorptionHandoff(value) {
       || ["workspaceId", "sourceTaskId", "survivorTaskId"].some((key) => (
         typeof declaration[key] !== "string" || !declaration[key] || declaration[key].length > 300
       )) || declaration.sourceTaskId === declaration.survivorTaskId
+      || Object.hasOwn(declaration, "preservedSourceHead")
+        && (!/^[a-f0-9]{40}$/u.test(declaration.preservedSourceHead ?? "")
+          || declaration.preservedSourceHead === declaration.sourceCommit)
       || ["baseCommit", "sourceCommit", "sourceTree", "survivorParentCommit", "absorptionCommit"]
         .some((key) => !/^[0-9a-f]{40}$/u.test(declaration[key] ?? ""))) {
     throw selectedCompositionRequiredError("absorption handoff declaration changed");
@@ -77,6 +80,7 @@ export function assertSelectedAbsorptionTasks(value, source, survivor) {
       || survivor.workspaceId !== d.workspaceId || source.streamId !== input.origin.streamId
       || source.status !== "started" || survivor.status !== "started"
       || source.workflowStatus !== "in_progress" || survivor.workflowStatus !== "in_progress"
+      || d.preservedSourceHead && !input.priorResults?.some(prior => prior.taskId === d.sourceTaskId)
       || [source, survivor].some(task => {
         const refs = task.gitReferences ?? [], prior = input.priorResults?.find(entry => entry.taskId === task.id);
         return refs.length ? refs.length !== 1 || !prior || refs[0].resultCommit !== prior.resultCommit

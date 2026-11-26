@@ -86,6 +86,28 @@ test("remote paired download uses ticket; WebView uses its existing native bridg
   assert.equal(webview.bridges[0].action, "save-link");
 });
 
+test("Android does not fetch invalid tickets or pass incomplete files to the save port", async () => {
+  const valid = { downloadPath: "/api/workspace-file/transfer/fixture", bytes: 5 };
+  for (const [ticket, expected, requests] of [
+    [{ ...valid, bytes: 20 * 1024 * 1024 + 1 }, /20 МиБ/u, 1],
+    [{ ...valid, downloadPath: "//elsewhere.example/api/workspace-file/transfer/fixture" }, /Некорректный билет/u, 1],
+    [valid, /Получен неполный файл/u, 2],
+  ]) {
+    const c = client({ paired: false, local: false, fetch: async (url, init) => {
+      if (url === "/api/workspace-file/transfer-ticket") return json({ ok: true, ...ticket });
+      assert.equal(url, valid.downloadPath);
+      assert.equal(init.mode, "same-origin");
+      assert.equal(init.redirect, "error");
+      return new Response("four");
+    } });
+    c.window.AgentHubAndroid = { saveDataUrl() {} };
+    await assert.rejects(c.save(file()), expected);
+    assert.equal(c.calls.length, requests);
+    assert.equal(c.blobs.length, 0);
+    assert.equal(c.downloads.length, 0);
+  }
+});
+
 test("unknown session failures and file denial never turn into a ticket retry", async () => {
   const offline = new Error("network down");
   const c = client({ fetch: async () => { throw offline; } });

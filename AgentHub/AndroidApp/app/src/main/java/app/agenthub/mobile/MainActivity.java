@@ -8,8 +8,10 @@ import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageInstaller;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
@@ -23,6 +25,7 @@ import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.SslErrorHandler;
@@ -37,6 +40,7 @@ import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -379,8 +383,43 @@ public final class MainActivity extends Activity {
                 if (request.isForMainFrame()) showPairing(serverUrl, "Agent Hub недоступен.");
             }
         });
-        setContentView(webView);
+        setHubContentView();
         webView.loadUrl(serverUrl);
+    }
+
+    private void setHubContentView() {
+        if (Build.VERSION.SDK_INT < 35) {
+            setContentView(webView);
+            return;
+        }
+        FrameLayout content = new FrameLayout(this);
+        content.setBackgroundColor(Color.rgb(7, 17, 22));
+        content.addView(webView, new FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // WebView M139+ exposes the keyboard by resizing the visual viewport.
+        // Older providers need native IME padding to keep the composer visible.
+        int viewportInsets = WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
+            | (webViewResizesForKeyboard() ? 0 : WindowInsets.Type.ime());
+        content.setOnApplyWindowInsetsListener((view, insets) -> {
+            Insets viewport = insets.getInsets(viewportInsets);
+            view.setPadding(viewport.left, viewport.top, viewport.right, viewport.bottom);
+            // Keep dispatching changes, but only apply each inset once.
+            return new WindowInsets.Builder(insets).setInsets(viewportInsets, Insets.NONE).build();
+        });
+        setContentView(content);
+        content.requestApplyInsets();
+    }
+
+    private static boolean webViewResizesForKeyboard() {
+        PackageInfo provider = WebView.getCurrentWebViewPackage();
+        String version = provider == null ? null : provider.versionName;
+        if (version == null) return false;
+        int separator = version.indexOf('.');
+        try {
+            return Integer.parseInt(separator < 0 ? version : version.substring(0, separator)) >= 139;
+        } catch (NumberFormatException ignored) {
+            return false;
+        }
     }
 
     private Uri[] selectedFiles(int resultCode, Intent data) {

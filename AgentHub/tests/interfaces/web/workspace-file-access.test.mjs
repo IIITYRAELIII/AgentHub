@@ -32,9 +32,10 @@ test("workspace file HTTP keeps protected-local priority, device tickets and pat
     assert.equal(ticket.ok, true);
     assert.equal(await (await fetch(new URL(ticket.downloadPath, url))).text(), "synthetic extension");
     assert.equal((await fetch(new URL(ticket.downloadPath, url))).status, 404);
-    for (const bad of [outside, path.join(files, "missing.epf")]) {
-      assert.equal((await ticketFor(bad)).status, 400);
-    }
+    const outsideTicket = await (await ticketFor(outside)).json();
+    assert.equal(outsideTicket.ok, true);
+    assert.equal(await (await fetch(new URL(outsideTicket.downloadPath, url))).text(), "outside");
+    assert.equal((await ticketFor(path.join(files, "missing.epf"))).status, 400);
     const post = await fetch(`${url}api/local-session`, { method: "POST",
       headers: { Authorization: `local ${secret}`, "Content-Type": "application/json" }, body: "{}" });
     assert.equal(post.status, 200);
@@ -43,7 +44,11 @@ test("workspace file HTTP keeps protected-local priority, device tickets and pat
     assert.equal((await fetch(`${url}api/local-session`, { method: "HEAD", headers: protectedHeaders })).status, 204);
     assert.equal((await fetch(direct, { headers: protectedHeaders })).status, 200);
     assert.equal((await fetch(direct, { headers: { Cookie: cookie } })).status, 200);
-    assert.equal((await fetch(`${url}api/workspace-file?path=${encodeURIComponent(outside)}`, { headers: { Cookie: cookie } })).status, 404);
+    const outsideFile = await fetch(`${url}api/workspace-file?path=${encodeURIComponent(outside)}`, {
+      headers: { Cookie: cookie },
+    });
+    assert.equal(outsideFile.status, 200);
+    assert.equal(await outsideFile.text(), "outside");
     // A forwarded device still has exactly device authority; cookie/hostname do
     // not become a local-only proof when the request is forwarded.
     const forwarded = { ...protectedHeaders, "X-Forwarded-For": "203.0.113.5", "X-Forwarded-Proto": "https" };

@@ -253,6 +253,8 @@ export async function verifyRecordedCodexExecutable(candidate, {
   readFeatures = readCodexExecutableFeatures,
   acquireInspectionCustody,
   executableArgs = [],
+  retainCustody,
+  measure = (_phase, work) => work(),
 } = {}) {
   if (platform !== "win32") throw new Error("Recorded Codex executable verification is Windows-only");
   if (!validRecordedCodexIdentity(candidate)) throw new Error("Recorded Codex executable identity is invalid");
@@ -284,13 +286,27 @@ export async function verifyRecordedCodexExecutable(candidate, {
   }
   const info = await statImpl(canonicalPath);
   if (!info.isFile()) throw new Error("Codex executable candidate is not a file");
-  if (await hashFile(canonicalPath) !== candidate.sha256) throw new Error("Recorded Codex executable SHA-256 changed");
-  const bundle = await inspectBundle({ ...candidate, path: canonicalPath }, { hashFile, readFeatures, executableArgs,
-    acquireInspectionCustody, installRoot: canonicalRoot, expectedBundle: candidate.bundle });
-  if (candidate.bundle && !sameCodexBundleIdentity(bundle, candidate.bundle)) {
-    throw Object.assign(new Error("Recorded Codex bundle identity changed"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
+  if (await measure("recordedMainHashMs", () => hashFile(canonicalPath)) !== candidate.sha256) {
+    throw new Error("Recorded Codex executable SHA-256 changed");
   }
-  return bundle ? { ...candidate, bundle } : candidate;
+  // Transfer the lease only after comparing the effective feature and full
+  // recorded identity. Other callers still receive a verification-only result.
+  let held;
+  try {
+    const bundle = await inspectBundle({ ...candidate, path: canonicalPath }, { hashFile, readFeatures, executableArgs,
+      acquireInspectionCustody, installRoot: canonicalRoot, expectedBundle: candidate.bundle, measure,
+      ...(retainCustody ? { retainCustody: custody => { held = custody; } } : {}) });
+    if (candidate.bundle && !sameCodexBundleIdentity(bundle, candidate.bundle)) {
+      throw Object.assign(new Error("Recorded Codex bundle identity changed"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
+    }
+    if (held) {
+      retainCustody(held);
+      held = null;
+    }
+    return bundle ? { ...candidate, bundle } : candidate;
+  } finally {
+    if (held) await measure("inspectionReleaseMs", () => held.release());
+  }
 }
 
 export async function enumerateOfficialCodexPaths({
@@ -332,6 +348,7 @@ export async function inspectOfficialCodexCandidate(candidate, {
   readFeatures = readCodexExecutableFeatures,
   acquireInspectionCustody,
   executableArgs = [],
+  measure = (_phase, work) => work(),
 } = {}) {
   let canonicalRoot, canonicalPath;
   try {
@@ -351,10 +368,10 @@ export async function inspectOfficialCodexCandidate(candidate, {
   if (trusted) {
     const current = { ...trusted, path: canonicalPath };
     const bundle = await inspectBundle(current, { hashFile, readFeatures, executableArgs,
-      acquireInspectionCustody, installRoot: canonicalRoot });
+      acquireInspectionCustody, installRoot: canonicalRoot, measure });
     return bundle ? { ...current, bundle } : current;
   }
-  const signature = await verifySignature(canonicalPath);
+  const signature = await measure("signatureMs", () => verifySignature(canonicalPath));
   const hashAfterSignature = await hashFile(canonicalPath);
   if (hashBeforeSignature !== hashAfterSignature) {
     throw new Error("Codex executable changed during signature verification");
@@ -363,7 +380,7 @@ export async function inspectOfficialCodexCandidate(candidate, {
     { code: CODEX_EXECUTABLE_SIGNATURE_REJECTED });
   let version;
   const beforeFeatures = async () => {
-    version = await readVersion(canonicalPath);
+    version = await measure("versionProbeMs", () => readVersion(canonicalPath));
     if (!parseCodexVersion(version)) throw new Error("Codex executable returned an unsupported version");
     if (hashAfterSignature !== await hashFile(canonicalPath)) {
       throw new Error("Codex executable changed during version verification");
@@ -377,7 +394,7 @@ export async function inspectOfficialCodexCandidate(candidate, {
     source: candidate.source,
   };
   const bundle = await inspectBundle(inspected, { hashFile, readFeatures, executableArgs,
-    beforeFeatures, acquireInspectionCustody, installRoot: canonicalRoot });
+    beforeFeatures, acquireInspectionCustody, installRoot: canonicalRoot, measure });
   if (!parseCodexVersion(version)) throw new Error("Codex executable returned an unsupported version");
   return { ...inspected, version, ...(bundle ? { bundle } : {}) };
 }
