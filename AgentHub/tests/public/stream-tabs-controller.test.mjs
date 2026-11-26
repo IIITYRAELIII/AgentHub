@@ -147,6 +147,10 @@ async function openStreamTabsDomFixture(page, {
         body: JSON.stringify(typeof snapshot === "function" ? snapshot() : snapshot ?? initialSnapshot) });
       return;
     }
+    if (requestUrl.pathname === "/health") {
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+      return;
+    }
     if (requestUrl.pathname === "/api/control" && route.request().method() === "POST") {
       const request = route.request().postDataJSON();
       const response = await control?.(request) ?? { status: 200, body: { ok: true, result: initialSnapshot } };

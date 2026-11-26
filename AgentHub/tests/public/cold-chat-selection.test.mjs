@@ -47,7 +47,10 @@ for (const [shape, mobile] of [["ordinary", false], ["heavy", false], ["ordinary
           ? { "hub-client.js": await readFile(process.env.AGENT_HUB_TEST_CLIENT_ASSET, "utf8") } : {};
         const errors = await openFixture(page, { fixtureSnapshot: initial, surface: "web", assetOverrides });
         stage = "open";
-        if (mobile) await page.locator('[data-mobile-dialogs-tab="chat"]').click();
+        if (mobile) {
+          await page.locator('[data-mobile-dialogs-tab="chat"]').click();
+          await page.locator("[data-mobile-stream-switch]").click();
+        }
         const performanceSession = await page.context().newCDPSession(page);
         await performanceSession.send("Performance.enable");
         const count = shape === "heavy" ? 20 : 2;

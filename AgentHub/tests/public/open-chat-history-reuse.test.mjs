@@ -168,6 +168,13 @@ test("cached navigation paints before selection; a new final clears only after e
       traceBatches.push(route.request().postDataJSON());
       await route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
     });
+    const drainTrace = async () => {
+      for (let batch = 0; batch < 16; batch += 1) {
+        await page.waitForFunction(() => !window.AgentHubCommandTrace.diagnostics().flushing);
+        await page.evaluate(() => window.AgentHubCommandTrace.flush());
+        if (await page.evaluate(() => window.AgentHubCommandTrace.diagnostics().pending === 0)) break;
+      }
+    };
     await page.evaluate(histories => { window.__critical.histories = histories; }, { "stream-a": history("a"), "stream-b": history("b") });
     const click = suffix => page.locator(`.stream-tabs-track [data-stream-tab-id="stream-${suffix}"]`).click();
     await click("b");
@@ -211,18 +218,17 @@ test("cached navigation paints before selection; a new final clears only after e
     assert.equal(serverReads[1].result, undefined);
     assert.equal(painted.acknowledgement.params.final.revision, 2);
     assert.ok(painted.acknowledgement.renderedRevision.includes(2));
+    // Deliver the fixture's earlier traces before releasing the held read receipt.
+    await drainTrace();
     releaseAck();
     await page.waitForFunction(() => !document.querySelector(".stream-tabs-track [data-stream-task-id='stream-b']").hasAttribute("data-answer-ready"));
     const clearedAtMs = await page.evaluate(start => performance.now() - start, started);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const durable = await service.snapshot();
     assert.equal(durable.tasks.find(task => task.threadId === "thread-b").unread, false);
     assert.equal(serverReads[1].result.marked, true);
     assert.notEqual(serverReads[0].params.clientTraceId, serverReads[1].params.clientTraceId);
-    for (let batch = 0; batch < 16; batch += 1) {
-      await page.waitForFunction(() => !window.AgentHubCommandTrace.diagnostics().flushing);
-      await page.evaluate(() => window.AgentHubCommandTrace.flush());
-      if (await page.evaluate(() => window.AgentHubCommandTrace.diagnostics().pending === 0)) break;
-    }
+    await drainTrace();
     const events = traceBatches.flatMap(batch => batch.events ?? []);
     const ackId = serverReads[1].params.clientTraceId;
     const ackEvents = events.filter(event => event.commandId === ackId);

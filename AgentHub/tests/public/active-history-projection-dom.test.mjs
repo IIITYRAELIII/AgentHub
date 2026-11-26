@@ -41,6 +41,8 @@ for (const count of [1, 35]) {
       });
       await page.evaluate(() => { window.__agentHubFixture.mode = "accept"; });
       await submit(page, { text: "Accepted question" });
+      await page.waitForFunction(() => JSON.parse(localStorage.getItem("fixture:bridge-log") ?? "[]")
+        .some(request => request.action === "send-message"));
       const clientId = (await bridgeCalls(page,"send-message")).at(-1).params.clientUserMessageId;
       run = { ...identity, id: "run-active", turnId: "turn-active", operationKind: "user-turn", projectionState: "active",
         promptPreview: "Accepted question", responseText: "Unfinished answer", clientUserMessageId: clientId, startedAt,
