@@ -464,8 +464,6 @@ export class TaskOperationReconciliationService {
       return { workspace, task, receipt, transition, outcome, operationId, projectRoot: proof.projectRoot,
         guardId: exactGuardId, state: "no_effect", noEffect: proof, receiptSettled: Boolean(settled) };
     }
-    if (!root) throw new Error("Unknown workflow operation identity requires a project root");
-
     const nativeResolutionReview = options.nativeResolutionReview ?? null;
     const originalReview = transition?.evidence?.nativeResolutionReview
       ?? outcome?.result?.evidence?.nativeResolutionReview ?? null;
@@ -473,7 +471,7 @@ export class TaskOperationReconciliationService {
     const reviewMatches = JSON.stringify(canonicalValue(originalReview)) === JSON.stringify(canonicalValue(nativeResolutionReview))
       && (!originalReview || (reviewReceipt?.toolName === "hub_stream_message_send"
         && reviewReceipt.status === "succeeded" && reviewReceipt.receiptState === "succeeded"
-        && reviewReceipt.workspaceId === receipt?.workspaceId && reviewReceipt.provider === receipt?.provider
+        && reviewReceipt.workspaceId === receipt?.workspaceId
         && reviewReceipt.result?.target?.streamId === receipt?.streamId));
     const metadataRecovery = !squash && !selected && !initial && !cutover && !exactGuardId
       && reviewMatches && nativeTestMetadataDrift(task, transition);
@@ -505,6 +503,13 @@ export class TaskOperationReconciliationService {
       cutover, task, transition, outcome, projectRoot: root, targetWorkflowStatus,
     });
     const workflowCasMatches = exactWorkflowCasEvidence({ workflowCas, task, transition, outcome });
+    const databaseOnly = !transition && !exactGuardId && !initial && !selected && !squash && !cutover
+      && receiptMatches && outcomeMatches && workflowCasMatches && outcome?.result?.evidence?.outcome === "not_required"
+      && sameTaskState(task, outcome.result.task)
+      && JSON.stringify(canonicalValue(normalizedTaskGitReferences(outcome.result.priorTask?.gitReferences)))
+        === JSON.stringify(canonicalValue(normalizedTaskGitReferences(outcome.result.task?.gitReferences)));
+    if (databaseOnly) return { workspace, task, receipt, outcome, operationId, projectRoot: null, state: "succeeded", databaseOnly };
+    if (!root) throw new Error("Original workflow repository identity is missing");
     const initialEvidence = transition?.evidence?.initialNativeTest ?? outcome?.result?.evidence?.initialNativeTest;
     const initialPrior = transition?.priorTask ?? outcome?.result?.priorTask;
     const returnedCommit = initial?.initial_native_test.returnedResultCommit;
@@ -703,7 +708,7 @@ export class TaskOperationReconciliationService {
         projectRoot: identity.projectRoot,
         guardId: identity.guardId,
         proof: recovery?.proof ?? null,
-        resultCommit: identity.outcome.result.evidence.resultCommit,
+        resultCommit: identity.outcome.result.evidence.resultCommit ?? null,
         taskRevision: identity.task.revision,
         ...(identity.outcome.result.evidence.nativeAwaitRecovery?.interruptedError ? {
           originalPreparationError: identity.outcome.result.evidence.nativeAwaitRecovery.interruptedError,
@@ -798,9 +803,6 @@ export class TaskOperationReconciliationService {
       initial = this.#identity(options);
       if (initial.state === "invalid_input") this.#validationTrace(initial.operationId,
         "task-workflow-invalid-validation", validationStarted, "succeeded");
-      if (initial.state !== "no_effect" && initial.workspace.settings?.releaseWorkflowEnabled !== true) {
-        throw new Error("Unknown workflow reconciliation requires an enabled release workflow");
-      }
     } catch (error) {
       throw new TaskOperationReconciliationRefusedError(error);
     }
@@ -808,7 +810,7 @@ export class TaskOperationReconciliationService {
     // The existing receipt owner's exact UNKNOWN CAS is the only mutation;
     // the terminal outcome already fences any later lifecycle admission.
     // Settlement errors remain ambiguous, not a new pre-effect certificate.
-    if (initial.state === "no_effect") return this.#settle(initial);
+    if (initial.state === "no_effect" || initial.databaseOnly) return this.#settle(initial);
     const lockStarted = performance.now();
     let lockEntered = false;
     try {

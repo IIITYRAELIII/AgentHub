@@ -18,8 +18,11 @@ export function readClaimCustodyFence(database, scope, id) {
     if (scope === "original") return state;
     const consumed = database.prepare("SELECT * FROM hub_task_turn_bindings WHERE operation_id = ?").get(state.successorClaimRequestId);
     if (!consumed) return state;
-    if (consumed.task_id !== state.taskId || consumed.provider !== state.original.provider
-        || consumed.provider_thread_id !== state.original.threadId) throw new TaskClaimCustodyRejectedError("Foreign custody binding");
+    const intake = database.prepare("SELECT * FROM hub_mcp_operations WHERE request_id = ?").get(state.successorClaimRequestId);
+    if (consumed.task_id !== state.taskId || !intake || intake.tool_name !== "hub_task_claim"
+        || intake.workspace_id !== state.workspaceId || intake.arguments_hash !== state.successorArgumentsHash
+        || consumed.provider !== intake.provider
+        || consumed.provider_thread_id !== intake.provider_thread_id) throw new TaskClaimCustodyRejectedError("Foreign custody binding");
   }
   return null;
 }
@@ -95,8 +98,14 @@ export function configureClaimCustodyNamespaceFences(database) {
     WHERE claim_custody_json IS NOT NULL`);
   // This also applies to old open connections/cached INSERT/UPSERT/REPLACE
   // statements. No foreign tool can occupy or rekey the declared successor ID.
-  for (const event of ["INSERT", "UPDATE"]) database.exec(`
-    CREATE TRIGGER IF NOT EXISTS hub_claim_successor_intake_${event.toLowerCase()}
+  database.exec("SAVEPOINT task_claim_successor_schema");
+  try {
+  for (const event of ["INSERT", "UPDATE"]) {
+    const trigger = `hub_claim_successor_intake_${event.toLowerCase()}`;
+    const existing = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(trigger);
+    if (existing?.sql?.includes("$.original.streamId")) database.exec(`DROP TRIGGER ${trigger}`);
+    database.exec(`
+    CREATE TRIGGER IF NOT EXISTS ${trigger}
     BEFORE ${event} ON hub_mcp_operations
     WHEN EXISTS (SELECT 1 FROM hub_mcp_operations authority
       WHERE authority.claim_custody_json IS NOT NULL
@@ -104,16 +113,22 @@ export function configureClaimCustodyNamespaceFences(database) {
         AND (json_extract(authority.claim_custody_json, '$.phase') IS NOT 'fenced'
           OR NEW.tool_name IS NOT 'hub_task_claim'
           OR NEW.workspace_id IS NOT json_extract(authority.claim_custody_json, '$.workspaceId')
-          OR NEW.stream_id IS NOT json_extract(authority.claim_custody_json, '$.original.streamId')
-          OR NEW.provider IS NOT json_extract(authority.claim_custody_json, '$.original.provider')
-          OR NEW.provider_thread_id IS NOT json_extract(authority.claim_custody_json, '$.original.threadId')
-          OR NEW.arguments_hash IS NOT json_extract(authority.claim_custody_json, '$.successorArgumentsHash'))
+          OR NEW.arguments_hash IS NOT json_extract(authority.claim_custody_json, '$.successorArgumentsHash')
+          OR EXISTS (SELECT 1 FROM hub_mcp_operations intake WHERE intake.request_id = NEW.request_id
+            AND (intake.stream_id IS NOT NEW.stream_id OR intake.provider IS NOT NEW.provider
+              OR intake.provider_thread_id IS NOT NEW.provider_thread_id)))
         AND NOT (json_extract(authority.claim_custody_json, '$.phase') = 'planned'
           AND EXISTS (SELECT 1 FROM hub_mcp_operations fence WHERE fence.claim_custody_json IS NOT NULL
             AND json_extract(fence.claim_custody_json, '$.phase') = 'fenced'
             AND json_extract(fence.claim_custody_json, '$.planRequestId') = authority.request_id)))
     BEGIN SELECT RAISE(ABORT, 'MCP request_id was already used for another operation: declared successor authority'); END;
-  `);
+    `);
+  }
+  database.exec("RELEASE task_claim_successor_schema");
+  } catch (error) {
+    database.exec("ROLLBACK TO task_claim_successor_schema; RELEASE task_claim_successor_schema");
+    throw error;
+  }
   const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
   const scoped = [];
   for (const { name } of tables) {

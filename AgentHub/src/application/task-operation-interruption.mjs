@@ -96,14 +96,21 @@ export class TaskOperationInterruption {
       cancellation: row.taskExecution.cancellation ? publicCancellation(row.taskExecution.cancellation) : null,
     }));
   }
+  async reconcileRequested(options) {
+    const cancellation = this.catalog.mcpOperation(options.operationRequestId)?.taskExecution?.cancellation;
+    if (!cancellation || !["requested", "stopped"].includes(cancellation.phase)
+        || cancellation.cancellationRequestId !== options.cancellationRequestId) {
+      throw new Error("No exact requested cancellation to reconcile");
+    }
+    return this.cancel(options);
+  }
+
   async cancel({ actor, taskId, operationRequestId, originalArguments = null,
     expectedArgumentsHash, expectedTaskRevision, cancellationRequestId, runtimeWitness = null, guardRecovery = null }) {
     const original = this.catalog.mcpOperation(operationRequestId);
     const task = this.tasks.task(taskId);
     if (!original || !task || !INTERRUPTIBLE_TASK_TOOLS.has(original.toolName)
-      || (!actor.user && actor.workspaceId !== original.workspaceId)
-      || (!actor.user && !actor.releaseManager && actor.streamId !== original.streamId)
-      || original.argumentsHash !== expectedArgumentsHash) throw new Error("Task operation cancellation identity or authority differs");
+      || original.argumentsHash !== expectedArgumentsHash) throw new Error("Task operation cancellation identity differs");
     const old = original.taskExecution;
     if (old && old.taskId !== taskId) throw new Error("Task operation cancellation Task identity differs");
     if (typeof cancellationRequestId !== "string" || !cancellationRequestId.trim()) throw new Error("Cancellation request id is required");
@@ -148,7 +155,9 @@ export class TaskOperationInterruption {
       let jobRecoveries;
       try {
         if (guardRecovery) {
-          if (!actor.releaseManager || !old?.cancellation) throw new Error("Only Release Manager can recover the exact requested cancellation");
+          if (!old?.cancellation || old.cancellation.cancellationRequestId !== cancellationRequestId) {
+            throw new Error("Guard recovery requires the exact requested cancellation");
+          }
           await this.taskGit.recoverProcessTreeGuard(taskId, { ...guardRecovery, operationId: operationRequestId, lease });
         }
         jobRecoveries = await this.taskGit.recoverCancelledProcessTreeGuardsOwned?.(taskId, {

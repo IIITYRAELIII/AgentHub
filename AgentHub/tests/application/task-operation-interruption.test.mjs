@@ -96,14 +96,17 @@ test("queued claim is cancelled without entering prepare; another Task lock owne
   assert.equal((await stopping).phase, "stopped");
 });
 
-test("foreign actor/Task/argument binding refuses before cancellation or native observation", async t => {
+test("cancellation checks exact arguments and records a different caller's identity", async t => {
   const f = await claimCustodyFixture(t);
   const before = f.catalog.mcpOperation(f.original.requestId);
   await assert.rejects(cancel(f, f.original, { expected_arguments_hash: "0".repeat(64) }), /identity/);
   await assert.rejects(cancel(f, f.original, { original_arguments: { ...f.originalArgs, dependency_mode: "skip" } }), /original Task arguments/);
   const token = f.hub.contextToken({ provider: "codex", threadId: `${f.prior.streamId}-thread` });
-  await assert.rejects(cancel(f, f.original, { context_token: token }), /identity or authority/);
   assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), before);
+  await cancel(f, f.original, { context_token: token });
+  const request = f.catalog.mcpOperation(f.original.requestId).taskExecution.cancellation;
+  assert.equal(request.actor.streamId, f.prior.streamId);
+  assert.equal(request.original.streamId, before.streamId);
 });
 
 test("completed claim wins cancellation race without changing its result", async t => {

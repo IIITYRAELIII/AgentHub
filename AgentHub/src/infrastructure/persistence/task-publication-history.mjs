@@ -9,7 +9,7 @@ import { releaseIdentitySha256, completedReleaseGenerationEvidence, restoreRelea
 
 // A point read of the explicitly named failed original, never latest release or
 // publication eligibility. Closing its service card does not settle its effects.
-export function readAbandonedReleaseServiceGeneration({ dataDir, workspaceId, streamId, input, checklist } = {}) {
+export function readAbandonedReleaseServiceGeneration({ dataDir, workspaceId, input, checklist } = {}) {
   if (!input?.operationId || !Number.isSafeInteger(input.expectedRevision)
       || input.expectedRevision < 1 || !Number.isSafeInteger(input.expectedGeneration) || input.expectedGeneration < 1) {
     throw new Error("Abandoned release requires exact original revision and generation");
@@ -25,7 +25,7 @@ export function readAbandonedReleaseServiceGeneration({ dataDir, workspaceId, st
     const row = database.prepare("SELECT operation_json FROM release_operations WHERE operation_id=? AND workspace_id=? AND state='failed'")
       .get(input.operationId, workspaceId);
     const operation = row && JSON.parse(row.operation_json);
-    if (!operation || operation.operationId !== input.operationId || operation.workspaceId !== workspaceId || operation.streamId !== streamId
+    if (!operation || operation.operationId !== input.operationId || operation.workspaceId !== workspaceId || !operation.streamId
         || operation.revision !== input.expectedRevision || operation.currentGeneration !== input.expectedGeneration
         || operation.state !== "failed" || operation.owner != null || !operation.completedAt) {
       throw new Error("Abandoned release original is not the exact idle FAILED boundary");
@@ -61,7 +61,7 @@ export function readAbandonedReleaseServiceGeneration({ dataDir, workspaceId, st
         || JSON.stringify(selected(references)) !== JSON.stringify(expected)) {
       throw new Error("Abandoned release service checklist differs from the original selection");
     }
-    return { operationId: operation.operationId, revision: operation.revision, generation: operation.currentGeneration,
+    return { streamId: operation.streamId, operationId: operation.operationId, revision: operation.revision, generation: operation.currentGeneration,
       state: operation.state, completedAt: operation.completedAt, lastError: operation.lastError,
       identitySha256: releaseIdentitySha256(operation), generationIdentitySha256: identitySha256,
       selectedResults: generation.selectedResults, repositoryRoots: generation.candidates.map(item => item.repositoryRoot),

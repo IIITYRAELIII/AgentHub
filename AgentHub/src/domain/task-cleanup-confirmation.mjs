@@ -9,6 +9,10 @@ export class TaskCleanupConfirmationRejectedError extends Error {
   }
 }
 
+export function taskCleanupIsConfirmed(args) {
+  return args?.confirm_cleanup ?? Boolean(args?.expected_cleanup_token);
+}
+
 export function cleanupConfirmationCapsule(result) {
   if (result?.confirmationRequired !== true || !["complete", "delete"].includes(result.action)
       || !/^[a-f0-9]{64}$/u.test(result.cleanupToken ?? "") || !result.task?.id

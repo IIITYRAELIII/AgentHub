@@ -75,7 +75,7 @@ test("two exact recovery intents have one durable winner and one assignment", as
   assert.equal(claimed.revision, f.prior.revision + 1); assert.equal(f.prepares(), 0);
 });
 
-for (const field of ["taskRevision", "caller", "hash", "source", "wip", "foreignRM"]) {
+for (const field of ["taskRevision", "caller", "hash", "source", "wip"]) {
   test(`custody refuses stale ${field} pins without assignment`, async t => {
     const f = await fixture(t); const input = structuredClone(f.prepare);
     if (field === "taskRevision") input.claim_custody.expected_task_revision += 1;
@@ -83,7 +83,6 @@ for (const field of ["taskRevision", "caller", "hash", "source", "wip", "foreign
     if (field === "hash") input.claim_custody.expected_original.argumentsHash = "f".repeat(64);
     if (field === "source") input.claim_custody.source.headCommit = "f".repeat(40);
     if (field === "wip") await writeFile(path.join(f.source.projectRoot, "WIP/useful.txt"), "new evidence");
-    if (field === "foreignRM") input.context_token = f.successorToken;
     await assert.rejects(f.hub.call("hub_task_operation_reconcile", input));
     assert.deepEqual(f.tasks.task(f.prior.id), f.prior);
     assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), f.original);
@@ -194,14 +193,20 @@ test("stale Task after fencing cannot be silently rebound to a new CAS", async t
   assert.deepEqual(f.tasks.task(f.prior.id), current); assert.equal(f.prepares(), 0);
 });
 
-test("same recovery ID with changed business args and foreign successor cannot consume authority", async t => {
-  const f = await fixture(t); await fenced(f);
-  await assert.rejects(f.hub.call("hub_task_claim", { ...f.consume, context_token: f.managerToken }), /Successor claim differs/);
+test("custody uses exact successor arguments and the actual current claimant", async t => {
+  const f = await fixture(t);
+  const plan = await f.hub.call("hub_task_operation_reconcile", { ...f.prepare, context_token: f.successorToken });
+  f.retire();
+  await f.hub.call("hub_task_operation_reconcile", f.fence(plan));
   const originalSuccessor = f.catalog.mcpOperation(f.consume.request_id);
   await assert.rejects(f.hub.call("hub_task_claim", { ...f.consume, dependency_mode: "skip" }),
     { code: "TASK_CLAIM_CUSTODY_REJECTED" });
   assert.deepEqual(f.catalog.mcpOperation(f.consume.request_id), originalSuccessor);
   assert.deepEqual(f.tasks.task(f.prior.id), f.prior); assert.equal(f.prepares(), 0);
+  const claimed = await f.hub.call("hub_task_claim", { ...f.consume, context_token: f.managerToken });
+  assert.equal(claimed.streamId, f.manager.id);
+  assert.equal(f.catalog.mcpOperation(f.consume.request_id).streamId, f.manager.id);
+  assert.deepEqual(f.catalog.mcpOperation(f.original.requestId), f.original);
 });
 
 

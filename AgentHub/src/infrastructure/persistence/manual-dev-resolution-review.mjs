@@ -18,22 +18,15 @@ export async function verifyManualDevResolutionReview({ dataDir, review, binding
     const sender = receipt && catalog.stream(receipt.streamId);
     const receiver = receipt && catalog.stream(receipt.result?.target?.streamId);
     const task = board.task(binding.taskId);
-    const executor = task?.streamId && catalog.stream(task.streamId);
-    const executorProvider = executor && catalog.activeThread(executor.id)?.provider;
     const origin = { workspaceId: receipt?.workspaceId, streamId: receipt?.streamId,
       provider: receipt?.provider, sourceThreadId: receipt?.threadId, requestId: receipt?.requestId };
     if (receipt?.toolName !== "hub_stream_message_send" || receipt.status !== "succeeded" || receipt.receiptState !== "succeeded"
-        || receipt.result?.delivery?.accepted !== true || !sender || !receiver || !task?.streamId
-        || sender.id === receiver.id || sender.id === task.streamId
+        || receipt.result?.delivery?.accepted !== true || !sender || !receiver || !task
         || sender.workspaceId !== receiver.workspaceId || sender.workspaceId !== receipt.workspaceId
         || task.workspaceId !== receipt.workspaceId || binding.workspaceId !== receipt.workspaceId
-        || !executorProvider || executor.workspaceId !== task.workspaceId || executorProvider !== receipt.provider
-        || receiver.settings?.releaseManager !== true
-        || catalog.activeThread(receiver.id)?.provider !== receipt.provider
-        || /astra/iu.test(String(sender.settings?.model ?? ""))
         || interstreamAuditContentHash(review.text, { origin }) !== receipt.interstreamContentHash
         || taskGitIdentityHash(declaration.binding) !== taskGitIdentityHash(binding)) {
-      throw Error("Native merge review receipt, exact context or independent authority changed");
+      throw Error("Native merge review receipt or exact context changed");
     }
     return { requestId: receipt.requestId, argumentsHash: receipt.argumentsHash,
       contentHash: receipt.interstreamContentHash, origin };

@@ -2507,8 +2507,7 @@ export class TaskBoardStore {
           streamId: raw.stream_id, threadId: raw.provider_thread_id, provider: raw.provider, toolName: raw.tool_name,
           argumentsHash: raw.arguments_hash, claimCustody: JSON.parse(raw.claim_custody_json ?? "null") });
         if (!fence || fence.phase !== "fenced" || fence.taskId !== taskId || fence.workspaceId !== workspaceId
-            || fence.successorClaimRequestId !== operationId || fence.original.provider !== provider
-            || fence.original.threadId !== threadId || fence.original.streamId !== streamId
+            || fence.successorClaimRequestId !== operationId
             || Number(current.row_revision) !== fence.taskRevision || current.stream_id !== fence.envelope.expected_owner_stream_id) {
           throw new TaskClaimCustodyRejectedError("Custody assignment identity or Task CAS differs");
         }
@@ -3288,8 +3287,7 @@ export class TaskBoardStore {
           ? database.prepare("SELECT settings_json FROM hub_streams WHERE id = ? AND workspace_id = ?").get(current.stream_id, current.workspace_id) : null;
         const configuredRoot = workspace && taskProjectRoot({ workspace: { settings: parsedSettings(workspace.settings_json) },
           stream: stream ? { settings: parsedSettings(stream.settings_json) } : null });
-        if (!configuredRoot || !projectRoot || !sameResolvedPath(configuredRoot, projectRoot)
-            || parsedSettings(workspace.settings_json).releaseWorkflowEnabled !== true) {
+        if (!configuredRoot || !projectRoot || !sameResolvedPath(configuredRoot, projectRoot)) {
           throw new Error("Unadmitted Await repository or Workspace changed");
         }
         const noEffect = { version: 1, code: "WORKFLOW_AWAIT_NOT_ADMITTED", taskId, projectRoot,
