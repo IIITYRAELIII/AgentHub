@@ -245,6 +245,7 @@ const {
   historyContainsLatestAnswer,
   historyRefreshSourceRequired,
   historyMatchesIdentity,
+  identityKey,
   historicalMessagesForDisplay,
   hubErrorMessage,
   httpControlError,
@@ -877,7 +878,14 @@ function reconciledMessages(taskIdValue) {
   });
   // Live snapshots, durable history and the optimistic receipt can arrive in
   // either order. Re-run idempotent deduplication after all three were merged.
-  return chronologicalMessages(projectCanonicalMessages(visible), completionBoundariesByTask.get(taskIdValue));
+  const canonical = projectCanonicalMessages(visible);
+  const searchHit = focusedHistoryWindowByTask.get(taskIdValue)?.searchHit;
+  // Search may address an indexed item that the normal one-card-per-turn view
+  // folds into the final answer. Keep it outside canonical reconciliation.
+  if (searchHit && !canonical.some((message) => identityKey(message) === identityKey(searchHit))) {
+    canonical.push(searchHit);
+  }
+  return chronologicalMessages(canonical, completionBoundariesByTask.get(taskIdValue));
 }
 
 function deferredEntriesForTask(snapshot, taskIdValue) {
@@ -3074,7 +3082,7 @@ function focusedHistoryMessages(focusedTurn) {
 
 function displayedHistory(id, base = historyWindowByTask.get(id) ?? []) {
   const focused = focusedHistoryWindowByTask.get(id);
-  return focused ? mergeNewestHistory(base, focused.messages) : base;
+  return focused && !focused.searchHit ? mergeNewestHistory(base, focused.messages) : base;
 }
 
 function setHistoryWindow(id, messages) {
@@ -3116,7 +3124,7 @@ function reconcileFocusedHistoryWindows(pins) {
   if (!Array.isArray(pins)) return [];
   const changed = [];
   for (const [id, focused] of focusedHistoryWindowByTask) {
-    if (pins.some((pin) => pinMatchesFocusedHistory(pin, focused))) continue;
+    if (focused.searchHit || pins.some((pin) => pinMatchesFocusedHistory(pin, focused))) continue;
     if (clearFocusedHistoryWindow(id)) changed.push(id);
   }
   return changed;
@@ -3253,7 +3261,12 @@ function applyOpened(result, {
     return;
   }
   const retainsPinnedFocus = Boolean(result.focusedTurn && exactNavigation?.pinId);
-  const newest = historyMessages(history, retainsPinnedFocus ? null : result.focusedTurn);
+  if (exactNavigation?.searchHit) {
+    focusedHistoryWindowByTask.set(id, { searchHit: exactNavigation.searchHit });
+  } else if (selectTask && focusedHistoryWindowByTask.get(id)?.searchHit) {
+    clearFocusedHistoryWindow(id);
+  }
+  const newest = historyMessages(history, retainsPinnedFocus || exactNavigation?.searchHit ? null : result.focusedTurn);
   const existingPage = historyPageByTask.get(id);
   const previousPage = existingPage && sameIdentity(existingPage.identity, history) ? existingPage : null;
   const preserveOlder = !result.focusedTurn
@@ -5844,7 +5857,13 @@ agentHub.on("workspace-search:query", ({ workspaceId, query, offset, limit, appe
     agentHub.toast(message);
   });
 });
+let workspaceSearchOpening = null;
+agentHub.on("workspace-search:cancel-open", () => {
+  if (workspaceSearchOpening && currentNavigation(workspaceSearchOpening)) beginNavigation();
+  workspaceSearchOpening = null;
+});
 agentHub.on("workspace-search:open", (result) => {
+  if (workspaceSearchOpening?.id === result.id && currentNavigation(workspaceSearchOpening)) return null;
   const params = {
     workspaceId: result.workspaceId,
     streamId: result.streamId,
@@ -5854,20 +5873,43 @@ agentHub.on("workspace-search:open", (result) => {
     turnThreadId: result.turnThreadId,
     turnId: result.turnId,
     itemId: result.itemId,
+    role: result.role,
     limit: 20,
   };
-  return runNavigation(
-    { streamId: params.streamId, provider: params.provider, threadId: params.taskThreadId },
-    () => control("workspace-message-open", params),
-    (opened) => {
-      applyOpened(opened);
-      agentHub.closeWorkspaceMessageSearch({ restoreFocus: false });
-      document.querySelector("[data-view-button='chat']")?.click();
-      replaceRoute("#/chat/"
-        + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
-        + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
-    },
-  );
+  const exactNavigation = {
+    provider: params.provider, threadId: params.taskThreadId, turnId: params.turnId,
+    itemId: params.itemId, role: params.role, workspaceSearch: true,
+  };
+  const identity = { streamId: params.streamId, provider: params.provider, threadId: params.taskThreadId };
+  const opening = runNavigation(identity, async () => {
+    const opened = await control("workspace-message-open", params);
+    const message = opened?.focusedMessage;
+    // The history envelope follows the Stream head. The addressed item can
+    // belong to a different provider or an earlier Thread of that Stream.
+    if (opened?.history?.streamId !== params.streamId || !message
+      || message.provider !== params.provider || message.threadId !== params.taskThreadId
+      || message.turnThreadId !== params.turnThreadId || message.turnId !== params.turnId
+      || message.itemId !== params.itemId || message.role !== params.role) {
+      throw new Error("Agent Hub вернул другое сообщение из поиска.");
+    }
+    const hitKey = identityKey(exactNavigation);
+    const searchHit = focusedHistoryMessages(opened.focusedTurn).find((item) => identityKey(item) === hitKey);
+    if (!searchHit) throw new Error("Не удалось открыть сообщение из поиска.");
+    return { opened, searchHit, history: opened.history };
+  }, ({ opened, searchHit }) => {
+    workspaceSearchOpening = null;
+    agentHub.closeWorkspaceMessageSearch({ restoreFocus: false });
+    agentHub.showSelectedTask();
+    replaceRoute("#/chat/"
+      + `${encodeURIComponent(params.provider)}/${encodeURIComponent(params.taskThreadId)}`
+      + `/turn/${encodeURIComponent(params.turnThreadId)}/${encodeURIComponent(params.turnId)}`);
+    applyOpened(opened, { exactNavigation: { ...exactNavigation, searchHit } });
+  });
+  const request = { id: result.id, generation: navigationIntents.capture() };
+  workspaceSearchOpening = request;
+  return opening.finally(() => {
+    if (workspaceSearchOpening === request) workspaceSearchOpening = null;
+  });
 });
 agentHub.on("context:compact", () => runAction(async () => {
   const result = await control("compact-context", exactSelectedTaskParams());
