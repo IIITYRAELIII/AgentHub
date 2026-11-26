@@ -9,7 +9,9 @@ import { codexAssistantResponseProjection } from "../../src/domain/codex-respons
 import { claudeTranscriptHistory } from "../../src/application/task-history.mjs";
 import { PreTurnInstructionStore } from "../../src/infrastructure/persistence/pre-turn-instruction-store.mjs";
 import { fileURLToPath } from "node:url";
-import { codexTraceEntry } from "../../src/providers/codex/codex-rollout-activity.mjs";
+import { codexTraceEntry, parseCodexRolloutActivity } from "../../src/providers/codex/codex-rollout-activity.mjs";
+import { codexRolloutHistory } from "../../src/interfaces/telegram/task-view-controller.mjs";
+import { row, message, start, turnId } from "../providers/codex/codex-rollout-answer.fixture.mjs";
 import { clientPerformanceTraceSpans } from "../../src/application/client-performance-trace.mjs";
 
 const WEB_APP_ROOT = new URL("../../assets/web-app/", import.meta.url);
@@ -283,6 +285,87 @@ test("positioned annotations interleave four nonsorted answers through stream hi
       }
       assert.deepEqual(diagnostics,[]);
     } finally {await page.close();}
+  }
+});
+
+test("4+1+1 batches keep unique links and an intact list through live, final and reload", { timeout: 45_000 }, async () => {
+  const provider = "codex";
+  const threadId = "thread-1";
+  const users = [4, 1, 1].map((count, batch) => row("response_item", {
+    type: "message", role: "user", id: `user-${batch}`,
+    internal_chat_message_metadata_passthrough: { turn_id: turnId },
+    content: [{ type: "input_text", text: `<response-annotations>${JSON.stringify(Array.from({ length: count },
+      (_, index) => ({ text: `Selection ${batch + 1}.${index + 1}`, annotation: index ? "" : `Batch ${batch + 1} note` })))
+    }</response-annotations>\n<user-request>Batch ${batch + 1}</user-request>` }],
+  })).join("");
+  const raw = [1, 2, 3, 4, 1, 1].map((index, offset) =>
+    `${offset < 5 ? "- " : ""}:agent-annotation{index="${index}"} Answer ${offset + 1}`)
+    .join("\n") + '\n\n```text\n:agent-annotation{index="4"}\n```';
+  const [turn] = codexRolloutHistory(parseCodexRolloutActivity(start() + users + message("batch-answer", "final_answer", raw)
+    + row("event_msg", { type: "task_complete", turn_id: turnId, last_agent_message: raw })));
+  const messages = turn.messages.map(item => ({ ...item, id: item.itemId, provider, threadId, turnId }));
+  const sources = messages.filter(item => item.role === "user");
+  const answer = { ...messages.find(item => item.role === "agent"), id: "batch-answer" };
+  assert.equal(sources.length, 3);
+  assert.deepEqual(sources.map(item => item.responseAnnotations.length), [4, 1, 1]);
+  assert.equal(answer.responseAnnotationReferences[0].target.unresolved, true);
+
+  const legacyText = Array.from({ length: 4 }, (_, i) => `- \nЦитата ${i + 1}\nAnswer ${i + 1}`)
+    .join("\n") + '\n- Answer 5\nAnswer 6\n\n```text\n:agent-annotation{index="4"}\n```';
+  const legacy = { ...answer, text: legacyText, responseAnnotationReferences: Array.from({ length: 4 }, (_, i) => {
+    const label = `Цитата ${i + 1}`;
+    const start = legacyText.indexOf(label);
+    return { index: i + 1, position: { start, end: start + label.length },
+      target: { itemId: sources[2].itemId, origin: "native-item" } };
+  }) };
+
+  for (const width of [1280, 390]) {
+    const page = await browser.newPage({ viewport: { width, height: 860 } });
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    const showChat = () => page.evaluate(() => window.AgentHub.showSelectedTask());
+    const assertVisible = async (body) => {
+      assert.deepEqual(await body.locator("ul > li").evaluateAll(items => items.map(item =>
+        item.textContent.match(/Answer [1-5]/u)?.[0])), ["Answer 1", "Answer 2", "Answer 3", "Answer 4", "Answer 5"]);
+      assert.equal(await body.locator("ul").count(), 1);
+      assert.deepEqual(await body.locator("button[data-response-citation-index]").evaluateAll(buttons =>
+        buttons.map(button => button.dataset.responseCitationIndex)), ["2", "3", "4"]);
+      assert.equal(await body.locator(".msg-response-citation.is-fallback").count(), 1);
+      assert.equal(await body.locator(".msg-response-citation.is-fallback").evaluate(node => getComputedStyle(node).borderTopWidth), "0px");
+      const text = await body.textContent();
+      assert.match(text, /Answer 6/u);
+      assert.match(text, /Selection 1\.2/u);
+      assert.doesNotMatch(text, /Batch [23] note/u);
+      assert.doesNotMatch(text, /(^|\n)\s*-\s*($|\n)/u);
+      assert.match(await body.locator("pre").textContent(), /:agent-annotation\{index="4"\}/u);
+    };
+    try {
+      await openWebApp(page);
+      await seedMessages(page, sources, { running: true });
+      if (width === 390) await showChat();
+      await page.evaluate(value => window.AgentHub.setLive("task-1", { ...value, id: undefined, responsePhase: "final" }), answer);
+      await assertVisible(page.locator("[data-live-body]"));
+
+      await page.evaluate(() => window.AgentHub.setLive("task-1", null));
+      await seedMessages(page, [...sources, answer]);
+      if (width === 390) await showChat();
+      const body = page.locator('[data-message-id="batch-answer"] .msg-body');
+      await assertVisible(body);
+      await body.locator('button[data-response-citation-index="2"]').click();
+      await page.locator(`[data-message-id="${sources[0].itemId}"] [data-response-annotation-index="2"].is-citation-target`).waitFor();
+
+      await page.reload();
+      await seedMessages(page, JSON.parse(JSON.stringify([...sources, legacy])));
+      if (width === 390) await showChat();
+      await assertVisible(body);
+      assert.equal(await page.title(), "Agent Hub");
+      assert.equal(page.url(), "http://127.0.0.1/");
+      assert.deepEqual(errors, []);
+      if (process.env.AGENT_HUB_QA_SCREENSHOT) {
+        await body.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: `${process.env.AGENT_HUB_QA_SCREENSHOT}-citation-batches-${width}.png` });
+      }
+    } finally { await page.close(); }
   }
 });
 

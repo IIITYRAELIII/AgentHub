@@ -131,10 +131,28 @@ export class AgentHubStartupCoordinator {
     ]) {
       const operation = this[name];
       if (commandTrace?.measureBestEffort && typeof operation === "function") {
-        this[name] = (...args) => commandTrace.measureBestEffort({
-          commandId: `startup:${startupTraceId}`, stage: `startup-${stage}`,
-          transport: "server-runtime", metadata: { startupTraceId, operationId: stage },
-        }, () => operation(...args));
+        this[name] = (...args) => {
+          const startedAtMs = Date.now();
+          const metadata = { startupTraceId, operationId: stage };
+          return commandTrace.measureBestEffort({
+            commandId: `startup:${startupTraceId}`, stage: `startup-${stage}`,
+            transport: "server-runtime", metadata,
+          }, async () => {
+            try { return await operation(...args); }
+            finally {
+              if (stage === "provider") {
+                try {
+                  const selection = health.readDiagnostic("codexExecutableUpdate")?.startupSelection;
+                  if (selection?.startedAtMs >= startedAtMs && selection.outcome) {
+                    const { previousAttempt, ...current } = selection;
+                    metadata.codexSelection = current;
+                    if (previousAttempt?.startedAtMs >= startedAtMs) current.previousAttempt = previousAttempt;
+                  }
+                } catch { /* Diagnostics cannot change the provider outcome. */ }
+              }
+            }
+          });
+        };
       }
     }
   }

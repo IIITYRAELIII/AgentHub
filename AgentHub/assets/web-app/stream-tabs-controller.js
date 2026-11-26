@@ -1212,11 +1212,11 @@
             <h3 class="stream-card-settings-group-title" id="stream-settings-status-title">Потоки</h3>
             <div class="stream-card-settings-section stream-card-settings-inline-section">
               <span class="stream-card-settings-kicker">Эффект</span>
-              <select data-stream-status-effect-select
+              <span class="stream-card-settings-segmented" role="group"
                 aria-label="Эффект активности и готового ответа потока">
-                <option value="static">Статичный</option>
-                <option value="dynamic">Динамичный</option>
-              </select>
+                <button type="button" data-stream-effect-mode="static">Статичный</button>
+                <button type="button" data-stream-effect-mode="dynamic">Динамичный</button>
+              </span>
             </div>
           </section>
           <section class="stream-card-settings-group" aria-labelledby="stream-settings-top-title">
@@ -1383,9 +1383,14 @@
         );
         this.update(wrapper);
       });
-      wrapper.querySelector("[data-stream-status-effect-select]").addEventListener("change", (event) => {
-        this.applyViewSetting("streamStatusEffect", event.currentTarget.value);
-        this.update(wrapper);
+      wrapper.querySelectorAll("[data-stream-effect-mode]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const mode = button.dataset.streamEffectMode;
+          if (mode !== normalizeStatusEffect(this.root.dataset.streamStatusEffect)) {
+            this.applyViewSetting("streamStatusEffect", mode);
+            this.update(wrapper);
+          }
+        });
       });
       const range = wrapper.querySelector("[data-stream-card-width]");
       range.addEventListener("input", (event) => {
@@ -1511,8 +1516,10 @@
         "aria-checked",
         String(this.root.hasAttribute("data-activity-tasks-always-separate")),
       );
-      const effectSelect = wrapper.querySelector("[data-stream-status-effect-select]");
-      if (effectSelect) effectSelect.value = normalizeStatusEffect(this.root.dataset.streamStatusEffect);
+      const effect = normalizeStatusEffect(this.root.dataset.streamStatusEffect);
+      wrapper.querySelectorAll("[data-stream-effect-mode]").forEach((button) => {
+        button.setAttribute("aria-pressed", String(button.dataset.streamEffectMode === effect));
+      });
       const rangeWrap = wrapper.querySelector("[data-stream-card-range]");
       if (rangeWrap) rangeWrap.hidden = this.widthMode !== STREAM_CARD_WIDTH_MODES.FIXED;
       this.updateCardPresentation();

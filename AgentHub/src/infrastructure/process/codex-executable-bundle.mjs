@@ -47,6 +47,8 @@ export async function inspectCodexExecutableBundle(candidate, {
   installRoot = path.dirname(path.dirname(candidate.path)),
   beforeFeatures = async () => {},
   acquireInspectionCustody = acquireCodexExecutableCustody,
+  retainCustody,
+  measure = (_phase, work) => work(),
 } = {}) {
   const root = path.dirname(candidate.path), files = [];
   const walk = async directory => {
@@ -61,28 +63,33 @@ export async function inspectCodexExecutableBundle(candidate, {
       files.push({ name, sha256, ...(file === candidate.path && candidate.publisher ? { publisher: candidate.publisher } : {}) });
     }
   };
-  await walk(root);
+  await measure("bundleInventoryMs", () => walk(root));
   files.sort((left, right) => left.name.localeCompare(right.name, "en"));
   if (expectedBundle && (!validCodexBundle(expectedBundle) || !sameBundleFiles(files, expectedBundle.files))) {
     throw Object.assign(new Error("Recorded Codex bundle identity changed"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
   }
   // Probe the executable only while the complete verified bundle is held.
-  const custody = await acquireInspectionCustody({ installRoot, root, files });
-  let features;
+  const custody = await measure("inspectionCustodyMs", () => acquireInspectionCustody({ installRoot, root, files }));
+  let retained = false;
   try {
     custody.assertAlive();
     await beforeFeatures();
     custody.assertAlive();
-    features = await readFeatures(candidate.path, { executableArgs });
+    const features = await measure("featureProbeMs", () => readFeatures(candidate.path, { executableArgs }));
     custody.assertAlive();
+    const codeModeHost = features.codeModeHost === true;
+    if (codeModeHost && !files.some(file => file.name.toLowerCase() === "codex-code-mode-host.exe")) {
+      throw Object.assign(new Error("Required Codex code-mode host is missing from the selected bundle"), {
+        code: "CODEX_BUNDLE_UNAVAILABLE", reason: CODEX_REQUIRED_HELPER_MISSING,
+      });
+    }
+    const bundle = { schemaVersion: 1, installRoot, root, files, codeModeHost, digest: codexBundleDigest(files, codeModeHost) };
+    if (retainCustody) {
+      retainCustody(custody);
+      retained = true;
+    }
+    return bundle;
   } finally {
-    await custody.release();
+    if (!retained) await measure("inspectionReleaseMs", () => custody.release());
   }
-  const codeModeHost = features.codeModeHost === true;
-  if (codeModeHost && !files.some(file => file.name.toLowerCase() === "codex-code-mode-host.exe")) {
-    throw Object.assign(new Error("Required Codex code-mode host is missing from the selected bundle"), {
-      code: "CODEX_BUNDLE_UNAVAILABLE", reason: CODEX_REQUIRED_HELPER_MISSING,
-    });
-  }
-  return { schemaVersion: 1, installRoot, root, files, codeModeHost, digest: codexBundleDigest(files, codeModeHost) };
 }

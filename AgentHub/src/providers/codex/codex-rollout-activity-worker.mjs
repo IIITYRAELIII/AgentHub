@@ -43,10 +43,15 @@ async function execute(message) {
 
 async function respond(message) {
   const startedAt = performance.timeOrigin + performance.now();
-  const timing = () => Number.isFinite(message.sentAt) ? {
-    queueWaitMs: Math.max(0, startedAt - message.sentAt),
-    readMs: performance.timeOrigin + performance.now() - startedAt,
-  } : null;
+  const timing = () => {
+    if (!Number.isFinite(message.sentAt)) return null;
+    const finishedAt = performance.timeOrigin + performance.now();
+    return {
+      queueWaitMs: Math.max(0, startedAt - message.sentAt),
+      readMs: finishedAt - startedAt,
+      ...(message.operation === "trace-page" && message.options?.groupId ? { finishedAt } : {}),
+    };
+  };
   try {
     const result = await execute(message);
     parentPort.postMessage({

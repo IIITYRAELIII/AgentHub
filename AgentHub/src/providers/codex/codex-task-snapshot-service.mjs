@@ -1,5 +1,5 @@
 import { preserveRunActivityAnnotationTargets } from "../../domain/run-activity.mjs";
-import { codexAssistantResponseProjection, preferredResponseAnnotationTarget } from "../../domain/codex-response-annotation.mjs";
+import { codexAssistantResponseProjection, preferredResponseAnnotationTarget, responseAnnotationTargetAtIndex } from "../../domain/codex-response-annotation.mjs";
 import {
   codexExplicitFinalTurnAnswer,
   codexFinalTurnAnswer,
@@ -423,8 +423,9 @@ export class CodexTaskSnapshotService {
         ? (run.responseItems ?? []).filter(item => item.id === snapshot.responseItemId && item.turnId === run.turnId)
         : [];
       run.responseAnnotationReferences = snapshot.responseAnnotationReferences.map(reference => {
-        const target = preferredResponseAnnotationTarget(matchingItems.length === 1
-          ? matchingItems[0].responseAnnotationTarget : null, reference.target);
+        const capture = matchingItems.length === 1 ? matchingItems[0].responseAnnotationTarget : null;
+        const target = preferredResponseAnnotationTarget(
+          responseAnnotationTargetAtIndex(capture, reference.index), reference.target);
         return structuredClone(target ? { ...reference, target } : reference);
       });
     }

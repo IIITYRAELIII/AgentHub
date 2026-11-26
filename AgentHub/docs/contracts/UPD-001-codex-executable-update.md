@@ -111,10 +111,16 @@ availability. See ADR-0138.
   safe-tool canary evidence must pass that
   strengthened check once before use. This migration ends when all retained
   identities carry their bundle and exact safe-tool proof.
+- Keep the exact successful safe-tool proof of the last-known-good bundle
+  independently of later background results. A failed replacement does not
+  invalidate that proof. A legacy record without matching evidence must earn it
+  before launching code mode.
 - Before spawn the selected bundle is held through read-only native file and
   directory handles that forbid writes/deletion/rename, validate canonical plain
   paths, and hash the held files. The lifecycle re-reads exact durable
   selection and proves custody is still live immediately before spawn.
+  A freshly inspected recorded bundle can transfer that same live custody to
+  selection after the complete recorded identity and feature checks succeed.
   The Windows custody process reads its JSON request as explicit UTF-8 on
   stdin so canonical paths and file names are independent of the console code page.
   Custody lasts until that exact owned App

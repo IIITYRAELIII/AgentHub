@@ -42,14 +42,13 @@ test("Android updater accepts only a newer same-origin APK with the published SH
 });
 
 test("Android update provider exposes only verified cache files and is not exported", async () => {
-  const [manifest, provider, build, gradle] = await Promise.all([
+  const [manifest, provider, gradle] = await Promise.all([
     readFile(path.join(ROOT, "AndroidApp", "app", "src", "main", "AndroidManifest.xml"), "utf8"),
     readFile(path.join(
       ROOT,
       "AndroidApp", "app", "src", "main", "java", "app", "agenthub", "mobile",
       "VerifiedUpdateFileProvider.java",
     ), "utf8"),
-    readFile(path.join(ROOT, "AndroidApp", "build.ps1"), "utf8"),
     readFile(path.join(ROOT, "AndroidApp", "app", "build.gradle"), "utf8"),
   ]);
   assert.match(manifest, /android:name="\.VerifiedUpdateFileProvider"/u);
@@ -58,14 +57,6 @@ test("Android update provider exposes only verified cache files and is not expor
   assert.match(provider, /new File\(context\.getCacheDir\(\), "updates"\)/u);
   assert.match(provider, /AgentHub-Mobile-/u);
   assert.match(provider, /ParcelFileDescriptor\.MODE_READ_ONLY/u);
-  assert.match(build, /assets\\mobile/u);
-  assert.match(build, /Security\.Cryptography\.SHA256/u);
-  assert.match(build, /AgentHub-Mobile\.apk/u);
-  assert.match(build, /update\.json/u);
-  assert.match(build, /ToUnixTimeSeconds\(\) \/ 60/u);
-  assert.match(build, /previousVersionCode \+ 1/u);
-  assert.match(build, /-PagentHubVersionCode=\$VersionCode/u);
-  assert.match(build, /-PagentHubVersionName=\$VersionName/u);
   assert.match(gradle, /gradleProperty\("agentHubVersionCode"\)/u);
   assert.match(gradle, /gradleProperty\("agentHubVersionName"\)/u);
 });

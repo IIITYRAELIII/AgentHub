@@ -24,6 +24,9 @@ import {
   fastModeCreditMultiplier,
   formatCredits,
   formatTaskCreditBreakdown,
+  isGpt62UsageModel,
+  measuredGpt62TokenUsage,
+  normalizeJournalTokenUsage,
   normalizeServiceTier,
   normalizeTokenUsage,
   turnCreditBreakdown,
@@ -293,7 +296,7 @@ export function normalizedLedger(value = {}, { defaultProjectRoot = "" } = {}) {
       turns[key] = {
         workLogId,
         projectRoot: normalizeProjectRoot(record?.projectRoot, defaultProjectRoot),
-        usage: normalizeTokenUsage(record?.usage),
+        usage: normalizeJournalTokenUsage(record?.usage, record?.model),
         usageReported,
         estimatedCredits,
         estimateKind,
@@ -1479,7 +1482,7 @@ function ledgerByWorkLogId(turns = {}) {
     if (!record?.workLogId) continue;
     const id = normalizeWorkLogId(record?.workLogId);
     if (records.has(id)) throw new Error(`WORK_LOG placeholder ${id} is assigned more than once`);
-    records.set(id, { ...record, usage: normalizeTokenUsage(record?.usage) });
+    records.set(id, { ...record, usage: normalizeJournalTokenUsage(record?.usage, record?.model) });
   }
   return records;
 }
@@ -1588,9 +1591,22 @@ function formatTurnEntry(
   const breakdown = recordCreditBreakdown(record);
   const quota = recordQuotaBreakdown(record);
   const quotaQualifier = !quota.uncalibrated ? ""
-    : record?.usageReported === false || quota.basis === "unknown"
+    : record?.usageReported === false || breakdown.missingTokenBreakdown || quota.basis === "unknown"
       ? " · неполное покрытие" : " · предварительная оценка";
-  const sol61 = String(record?.model ?? "").trim().toLowerCase() === "gpt-6.1-sol";
+  const modelId = String(record?.model ?? "").trim().toLowerCase();
+  const gpt62 = isGpt62UsageModel(modelId);
+  const usage = gpt62 && record?.usageReported !== false ? measuredGpt62TokenUsage(record?.usage) : null;
+  const tokenParts = usage ? [
+    ["Вход", usage.inputTokens], ["Из кэша", usage.cachedInputTokens],
+    ["Выход", usage.outputTokens], ["Всего", usage.totalTokens],
+    ...(usage.cacheWriteInputTokens > 0 ? [["Запись кэша", usage.cacheWriteInputTokens]] : []),
+  ].filter(([, count]) => Number.isSafeInteger(count) && count >= 0) : [];
+  const tokens = tokenParts.length
+    ? `<div data-work-log-turn-tokens><strong>Токены:</strong> ${tokenParts.map(
+      ([name, count]) => `${name} ${count.toLocaleString("ru-RU")}`,
+    ).join(" · ")}</div>`
+    : "";
+  const sol61 = modelId === "gpt-6.1-sol";
   const longContextQualifier = sol61 && Number(record?.usage?.longContextInputTokens) > 0
     ? " · длинный контекст >272K учтён"
     : sol61 && Number(record?.usage?.inputTokens) > 272_000
@@ -1602,7 +1618,7 @@ function formatTurnEntry(
   const ownCredits = record?.usageReported === false && recordTotal <= 0
     ? "нет данных"
     : !breakdown.priced && recordTotal <= 0
-      ? "нет тарифа"
+      ? breakdown.missingTokenBreakdown ? "нет разбивки токенов" : "нет тарифа"
       : highlightUsageUnits(formatCredits(recordTotal), recordTotal, quota.total, quota.uncalibrated);
   const credits = displayedTotal > 0
     ? highlightUsageUnits(formatCredits(displayedTotal), displayedTotal,
@@ -1623,14 +1639,15 @@ function formatTurnEntry(
   const pricing = record?.model
     ? `<div data-work-log-turn-pricing>${
       escapeHtmlText(record.model)
-    }${record.serviceTier === "fast" ? ` · Fast ×${String(fastMultiplier).replace(".", ",")}` : ""}</div>`
+    }${record.serviceTier === "fast" ? ` · Fast ×${String(fastMultiplier).replace(".", ",")}` : ""}${gpt62 && creditsKnown && breakdown.priced ? " · Credits по ставке API" : ""}</div>`
     : "";
   const metaDetails = [
     `<div data-work-log-turn-facts>${pricing}`
       + `<div data-work-log-turn-context><strong>Длит.:</strong> ${
         formatDuration(durationStartForRecord(record), record?.completedAt)
       }</div>`
-      + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${formatQuotaUnits(quota.total)}${quotaQualifier}${longContextQualifier}${quota.apiEstimateCredits > 0 ? ` · API-основа: ${formatCredits(quota.apiEstimateCredits)}; опора GPT-6 Sol ≈ ${PROVISIONAL_QU_PER_API_CREDIT} QU/cr` : ""}</div>`
+      + `<div data-work-log-turn-quota><strong>Quota Units:</strong> ${gpt62 && quota.uncalibrated && quota.total === 0 ? "— QU" : formatQuotaUnits(quota.total)}${quotaQualifier}${longContextQualifier}${quota.apiEstimateCredits > 0 ? ` · API-основа: ${formatCredits(quota.apiEstimateCredits)}; опора GPT-6 Sol ≈ ${PROVISIONAL_QU_PER_API_CREDIT} QU/cr` : ""}</div>`
+      + tokens
       + (descendantCount > 0
         ? `<div data-work-log-turn-own-usage><strong>Свой расход:</strong> ${ownCredits}</div>`
         : "")
@@ -3070,7 +3087,7 @@ export function incomingLedgerRecord({
   runId,
   projectRoot,
   workLogId = null,
-  usage,
+  usage: providerUsage,
   usageReported,
   estimatedCredits,
   estimateKind,
@@ -3104,6 +3121,7 @@ export function incomingLedgerRecord({
   observedAt,
   status,
 }) {
+  const usage = isGpt62UsageModel(model) ? normalizeJournalTokenUsage(providerUsage, model) : providerUsage;
   const normalizedServiceUsageKind = ["context-probe", "context-compaction"].includes(serviceUsageKind)
     ? serviceUsageKind : "";
   const accountFields = normalizedAccountFields(normalizedServiceUsageKind ? {

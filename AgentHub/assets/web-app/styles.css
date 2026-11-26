@@ -7398,8 +7398,7 @@ html[data-surface="mobile"]
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  html:not([data-surface="mobile"]) .stream-card-settings-duration input,
-  html:not([data-surface="mobile"]) [data-stream-status-effect-select] {
+  html:not([data-surface="mobile"]) .stream-card-settings-duration input {
     background: var(--surface-1);
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-sm);
@@ -7452,6 +7451,11 @@ html[data-surface="mobile"]
     color: var(--text-muted);
     min-height: 1.8rem;
     white-space: nowrap;
+  }
+
+  html:not([data-surface="mobile"]) .stream-card-settings-segmented [data-stream-effect-mode] {
+    font-size: 0.75rem;
+    padding-inline: 0.125rem;
   }
 
   html:not([data-surface="mobile"])
@@ -12426,14 +12430,19 @@ html[data-view="background"] .background-view {
   outline-offset: 2px;
 }
 
-.msg-response-citation.is-fallback {
-  cursor: default;
+.msg-response-citation.is-fallback,
+.msg-response-citation.is-fallback:hover {
+  background: none;
+  border: none;
+  cursor: inherit;
+  display: inline;
+  padding: 0;
+  transform: none;
+  width: auto;
 }
 
-.msg-response-citation.is-fallback:hover {
-  background: color-mix(in srgb, var(--surface-1) 86%, transparent);
-  border-color: var(--accent-line);
-  transform: none;
+li > .msg-response-citation:not(.is-fallback) {
+  margin-bottom: 0.25rem;
 }
 
 .msg-response-citation-label {

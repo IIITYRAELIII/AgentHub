@@ -430,7 +430,7 @@ function varyHeader(...values) {
 export function createJsonResponder({ compress = gzip, maxConcurrentCompressions = 2 } = {}) {
   let activeCompressions = 0;
   return function json(response, statusCode, value, method = "GET", options = {}) {
-    const { acceptEncoding = "", headers = {}, timing = null, coldHistory = false, ...sendOptions } = options;
+    const { acceptEncoding = "", headers = {}, timing = null, coldHistory = false, localHistory = false, ...sendOptions } = options;
     const encode = () => Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
     const body = timing ? timing.sync("http-json-encode", encode) : encode();
     const identityAllowed = !coldHistory || acceptedEncodingQuality(acceptEncoding, "identity", 1) > 0;
@@ -458,9 +458,9 @@ export function createJsonResponder({ compress = gzip, maxConcurrentCompressions
         },
       });
     };
-    // A small first page can reach the browser while background native work
-    // occupies the gzip pool. Preserve compression for larger responses.
-    const sendColdHistoryDirectly = coldHistory && identityAllowed && body.length <= COLD_HISTORY_IDENTITY_MAX_BYTES;
+    // A first page on loopback need not wait for the shared native gzip pool.
+    const sendColdHistoryDirectly = coldHistory && identityAllowed
+      && (localHistory || body.length <= COLD_HISTORY_IDENTITY_MAX_BYTES);
     const compressionAtCapacity = activeCompressions >= maxConcurrentCompressions;
     if (!identityAllowed && (!wantsGzip || compressionAtCapacity)) {
       // No accepted body is available. Do not send identity or grow the gzip queue.
@@ -1318,7 +1318,9 @@ export class MiniAppServer {
           timing,
           ...(timing && commandId ? { headers: { "Server-Timing": `hub-history;desc="${commandId}"` } } : {}),
           coldHistory: action === "task-history" && params.coldHistory === true
-            && params.limit === 2 && params.before == null && params.refreshSource !== true && !params.tracePage,
+            && (params.limit === 30 || params.limit === 2) && params.before == null
+            && params.refreshSource !== true && !params.tracePage,
+          localHistory: action === "task-history" && loopbackRequest(request),
         });
       } catch (error) {
         const statusCode = Number(error?.statusCode) === 409 ? 409 : 400;

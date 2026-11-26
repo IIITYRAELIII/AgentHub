@@ -1,5 +1,5 @@
 import { unlink } from "node:fs/promises";
-import { emptyTokenUsage } from "../../domain/token-usage.mjs";
+import { emptyTokenUsage, isGpt62UsageModel } from "../../domain/token-usage.mjs";
 import {
   appendCodexAgentMessageDelta,
   completeCodexAgentMessage,
@@ -272,6 +272,7 @@ export class CodexEventService {
           // is a preliminary size estimate rather than exact model usage.
           // The compaction owner retains it separately from later user usage.
           provisionalContext,
+          ...(isGpt62UsageModel(run?.modelId) ? { model: run.modelId } : {}),
         });
         if (provisionalContext && compaction?.id) d.recordContextEstimate?.({
           operationId: compaction.id, threadId: params.threadId, turnId: eventTurnId,

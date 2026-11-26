@@ -11,6 +11,7 @@ import {
   durableUserCommandItemId,
 } from "../../src/domain/stream-message-pin.mjs";
 import { TASK_EXECUTION_OWNERS } from "../../src/domain/task-execution-owner.mjs";
+import { CHAT_HISTORY_VISIBILITY } from "../../src/domain/history-page-visibility.mjs";
 import { LocalTaskSyncStore } from "../../src/infrastructure/persistence/task-sync-store.mjs";
 import { mergeDurableTaskHistory } from "../../src/interfaces/desktop/desktop-task-history.mjs";
 import { readCodexRolloutActivity } from "../../src/providers/codex/codex-rollout-activity.mjs";
@@ -264,6 +265,53 @@ test("history page keeps legacy undated turns in durable provider sequence", asy
   } finally {
     store.close();
     await rm(path.dirname(filePath), { recursive: true, force: true });
+  }
+});
+
+test("chat order links page rotated and overlapping Threads with the same exact cursors as filtered history", async t => {
+  const filePath = await storeFile();
+  const store = new LocalTaskSyncStore({ filePath });
+  await store.load();
+  t.after(() => store.close());
+  const threads = ["old", "middle", "head"].map(threadId => ({ ...task, threadId }));
+  const historic = (id, time) => ({
+    id, prompt: id, answer: id, completed: true,
+    ...(time == null ? {} : { startedAt: new Date(time).toISOString() }),
+  });
+  for (const [index, thread] of threads.entries()) {
+    const turns = Array.from({ length: index === 1 ? 12 : 36 }, (_, n) =>
+      historic(thread.threadId + n, (index * 50 + n) * 1000));
+    await store.recordHistory(thread, turns);
+  }
+  const compare = () => {
+    for (const refs of [threads, [...threads].reverse()]) {
+      for (const before of [undefined, 0, 1, 35, 47, 54, 65, 85]) {
+        const query = { ...CHAT_HISTORY_VISIBILITY, before, limit: 30 };
+        const indexed = store.historyPage(refs, query);
+        // The general SQL path additionally excludes a prompt absent from this fixture.
+        assert.deepEqual(indexed, store.historyPage(refs, { ...query, hiddenPrompts: ["absent-prompt"] }));
+      }
+    }
+  };
+  compare();
+  await store.recordHistory(threads[0], [
+    historic("overlap", 101000), historic("equal", 102000), historic("no-date", null),
+    historic("auto-compact-hidden", 150000),
+  ]);
+  compare();
+
+  const db = new DatabaseSync(path.join(path.dirname(filePath), "journal.sqlite"));
+  try {
+    db.prepare("UPDATE task_read_model_turns SET started_at = NULL WHERE id=?").run("head0");
+    compare();
+    // An older writer invalidated the stored order. Wait for the store's
+    // asynchronous repair, then compare the indexed result to canonical SQL again.
+    await t.waitFor(() => Boolean(db.prepare(
+      "SELECT 1 FROM chat_thread_totals WHERE thread_id=?",
+    ).get("head")));
+    compare();
+  } finally {
+    db.close();
   }
 });
 
@@ -2580,6 +2628,13 @@ test("task sync pages multiple Thread histories directly in SQLite", async () =>
     { provider: "claude", threadId: "thread-current", id: "thread-current-turn-1" },
     { provider: "claude", threadId: "thread-current", id: "thread-current-turn-2" },
   ]);
+  const firstPageBoundary = store.historyPage(references, {
+    before: 0, hiddenProvider: "codex", hiddenTurnIdPrefixes: ["auto-compact-"],
+  });
+  assert.deepEqual(firstPageBoundary, { total: 8, messageTotal: 16, start: 0, end: 0, items: [] });
+  assert.deepEqual(store.historyPage([{ provider: "codex", threadId: "absent" }]), {
+    total: 0, messageTotal: 0, start: 0, end: 0, items: [],
+  });
 });
 
 test("task sync store preserves source occurrence identity across restart", async () => {

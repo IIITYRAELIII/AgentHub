@@ -7,7 +7,7 @@ const commandTrace = window.AgentHubCommandTrace;
 const traceIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9:._-]{0,199}$/u;
 // This marker identifies the executing client code path, not a file hash or
 // the release currently served by the Hub.
-const clientAssetRevision = "hub489.client.1";
+const clientAssetRevision = "hub500.client.1";
 const documentInstanceId = commandTrace.newId();
 let previousDocumentInstanceId = "";
 try {
@@ -77,6 +77,26 @@ function startBrowserDownload(downloadPath, name) {
   document.body.append(link);
   link.click();
   link.remove();
+}
+
+async function saveAndroidWorkspaceFile(ticket, name) {
+  // MainActivity's existing saveDataUrl bridge accepts at most 20 MiB.
+  if (!Number.isSafeInteger(ticket.bytes) || ticket.bytes <= 0 || ticket.bytes > 20 * 1024 * 1024) {
+    throw new Error("Android сохраняет файлы размером до 20 МиБ");
+  }
+  const downloadPath = String(ticket.downloadPath ?? "");
+  if (!/^\/api\/workspace-file\/transfer\/[A-Za-z0-9_-]+$/u.test(downloadPath)) {
+    throw new Error("Некорректный билет скачивания файла");
+  }
+  const response = await hubFetch(downloadPath, {
+    cache: "no-store",
+    mode: "same-origin",
+    redirect: "error",
+  }, false);
+  if (!response.ok) throw new Error(`Не удалось скачать файл: HTTP ${response.status}`);
+  const blob = await response.blob();
+  if (blob.size !== ticket.bytes) throw new Error("Получен неполный файл");
+  await saveBlob(blob, name);
 }
 
 async function launchWorkspaceFileBridge(action, localPath) {
@@ -214,8 +234,7 @@ const MAX_OUTGOING_MESSAGES_PER_TASK = 100;
 const acknowledgedFinalByTask = new Map();
 const confirmedReadCursorByThread = new Map();
 const readMarker = window.AgentHubReadMarker;
-const READ_MARKER_CODE = "hub291.read-marker.3";
-const readMarkerDocumentId = commandTrace.newId();
+const READ_MARKER_CODE = "hub500.read-marker.1";
 function retainReadMarker(map, key, value) {
   const replaced = map.get(key);
   if (replaced !== value && replaced?.phase === "paint") cancelReadPaint(key, replaced, "superseded");
@@ -622,6 +641,14 @@ function invalidateHistoryRequests(id) {
 
 function beginNavigation(identity = null) {
   const generation = navigationIntents.begin();
+  for (const state of historyLoadStates.values()) {
+    if (state.selectionRead && !sameIdentity(state.selectionRead.identity, identity)) {
+      state.selectionRead.controller.abort();
+    }
+    if (state.pending?.onlyWhenSelected && !sameIdentity(state.pending.identity, identity)) {
+      state.pending = null;
+    }
+  }
   return {
     generation,
     identity: identity ? stableIdentity(identity) : null,
@@ -1637,19 +1664,37 @@ async function hubFetch(input, init, retrySession = true, traceId) {
 
 async function hubFetchResponse(input, init, retrySession = true, traceId) {
   try {
-    const measured = (action, operation) => traceId?.traceUploadId
-      ? commandTrace.upload(action, operation, { uploadId: traceId.traceUploadId,
-        uploadAttemptId: traceId.traceAttemptId,
-        httpRequestId: traceId.traceHttpRequestId,
-        messageRequestId: traceId.traceRequestId, chunkIndex: traceId.traceChunkIndex }) : operation();
+    const measured = (action, operation) => {
+      if (traceId?.traceUploadId) {
+        return commandTrace.upload(action, operation, { uploadId: traceId.traceUploadId,
+          uploadAttemptId: traceId.traceAttemptId,
+          httpRequestId: traceId.traceHttpRequestId,
+          messageRequestId: traceId.traceRequestId, chunkIndex: traceId.traceChunkIndex });
+      }
+      if (traceId?.exactTracePage && action !== "transport") {
+        return commandTrace.measure("ui-control", `http-history-device-${action}`, operation, traceId.traceRequestId);
+      }
+      return operation();
+    };
     // Refreshing the session re-issues the HttpOnly cookie that the request below
     // carries automatically as a same-origin request.
-    await measured("session", () => window.AgentHubBrowserDevice?.ensureSession?.());
+    init?.signal?.throwIfAborted?.();
+    const ensureSession = async (phase, force) => {
+      const started = traceId?.onSession ? performance.now() : 0;
+      try {
+        await measured(phase, () => window.AgentHubBrowserDevice?.ensureSession?.(force));
+      } finally {
+        traceId?.onSession?.(performance.now() - started);
+      }
+    };
+    await ensureSession("session", false);
+    init?.signal?.throwIfAborted?.();
+    traceId?.onFetch?.();
     const response = await measured("transport", () => fetch(input, init));
     if (response.status !== 401 || !retrySession || !window.AgentHubBrowserDevice?.ensureSession) {
       return response;
     }
-    await measured("session-refresh", () => window.AgentHubBrowserDevice.ensureSession(true));
+    await ensureSession("session-refresh", true);
     return hubFetchResponse(input, init, false, traceId);
   } catch (error) {
     throw markConnectionFailure(error);
@@ -1658,6 +1703,7 @@ async function hubFetchResponse(input, init, retrySession = true, traceId) {
 
 async function hubFetchWithin(input, init, timeoutMs, traceId) {
   const controller = new AbortController();
+  const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
   const effectiveTimeoutMs = Math.max(1, Number(timeoutMs) || 1);
   let timedOut = false;
   const timer = window.setTimeout(() => {
@@ -1665,7 +1711,7 @@ async function hubFetchWithin(input, init, timeoutMs, traceId) {
     controller.abort();
   }, effectiveTimeoutMs);
   try {
-    return await hubFetch(input, { ...init, signal: controller.signal }, true, traceId);
+    return await hubFetch(input, { ...init, signal }, true, traceId);
   } catch (error) {
     if (!timedOut) throw error;
     const timeout = new Error(`Agent Hub не подтвердил команду за ${Math.ceil(effectiveTimeoutMs / 1_000)} с.`);
@@ -1867,6 +1913,40 @@ async function prepareSnapshotTransport() {
   if (vscode) await window.__agentHubDirectTransport?.available?.();
 }
 
+function readMarkerHttpAttempt(params) {
+  const httpRequestId = commandTrace.newId();
+  const pathname = `/api/control?readTrace=${encodeURIComponent(httpRequestId)}`;
+  const resource = commandTrace.watchResource?.(new URL(pathname, location.href).href);
+  const started = performance.now();
+  let fetchCount = 0;
+  let fetchInvokedAtMs;
+  let sessionWaitMs = 0;
+  return {
+    pathname,
+    traceRequestId: params.clientTraceId,
+    onSession(duration) {
+      sessionWaitMs += duration;
+    },
+    onFetch() {
+      fetchCount += 1;
+      fetchInvokedAtMs = Date.now();
+    },
+    finish(outcome, statusCode) {
+      const observedResource = resource?.();
+      const entry = fetchCount === 1 ? observedResource : null;
+      commandTrace.record("ui-control", "read-marker-http", performance.now() - started, params.clientTraceId, {
+        ...readMarkerMetadata(params.streamId, params.final),
+        httpRequestId, fetchCount, fetchInvokedAtMs, sessionWaitMs, statusCode,
+        ...(entry?.requestStart > 0 && entry.requestStart >= entry.fetchStart
+          ? { fetchToRequestMs: entry.requestStart - entry.fetchStart } : {}),
+        ...(entry?.responseStart > 0 && entry.responseStart >= entry.requestStart && entry.requestStart > 0
+          ? { requestToHeadersMs: entry.responseStart - entry.requestStart } : {}),
+        ...(entry?.nextHopProtocol ? { httpProtocol: entry.nextHopProtocol } : {}),
+      }, Date.now(), outcome);
+    },
+  };
+}
+
 async function readHistoryHttpResponse(response, traceId, requestId) {
   const measure = (action, operation) => commandTrace.measure("ui-control", action, operation, traceId);
   try {
@@ -1887,11 +1967,16 @@ async function readHistoryHttpResponse(response, traceId, requestId) {
   }
 }
 
-async function httpControl(action, params = {}) {
+async function httpControl(action, params = {}, signal) {
   if (action === "snapshot" && !params.messageReceiptIds?.length) return readSnapshot(params);
-  await localSessionReady;
-  const commandId = crypto.randomUUID();
   const historyTraceId = action === "task-history" ? params.clientTraceId : "";
+  const exactTracePage = Boolean(historyTraceId && params.tracePage?.groupId);
+  if (exactTracePage) {
+    await commandTrace.measure("ui-control", "http-history-local-session", () => localSessionReady, historyTraceId);
+  } else {
+    await localSessionReady;
+  }
+  const commandId = crypto.randomUUID();
   const payload = await retryConnectionFailure(async () => {
     const requestParams = params.clientTiming
       ? {
@@ -1904,19 +1989,32 @@ async function httpControl(action, params = {}) {
           },
         }
       : params;
-    const response = await hubFetchWithin("/api/control", {
-      method: "POST",
-      headers: {
-        ...authorizationHeaders(),
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ action, params: requestParams, commandId }),
-    }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS, params.clientTraceId);
-    const result = await (historyTraceId
-      ? readHistoryHttpResponse(response, historyTraceId, commandId)
-      : response.json()).catch(() => ({}));
-    if (!response.ok || result.ok === false) throw httpControlError(response.status, result);
-    return result;
+    const attempt = action === "mark-task-read" ? readMarkerHttpAttempt(params) : null;
+    const transportTrace = attempt ?? (exactTracePage
+      ? { traceRequestId: historyTraceId, exactTracePage } : params.clientTraceId);
+    let outcome = "failed";
+    let statusCode;
+    try {
+      const response = await hubFetchWithin(attempt?.pathname ?? "/api/control", {
+        method: "POST",
+        headers: {
+          ...authorizationHeaders(),
+          "Content-Type": "application/json",
+        },
+        signal,
+        body: JSON.stringify({ action, params: requestParams, commandId }),
+      }, LONG_CONTROL_ACTIONS.has(action) ? LONG_CONTROL_TIMEOUT_MS : DEFAULT_CONTROL_TIMEOUT_MS,
+      transportTrace);
+      statusCode = response.status;
+      const result = await (historyTraceId
+        ? readHistoryHttpResponse(response, historyTraceId, commandId)
+        : response.json()).catch(() => ({}));
+      if (!response.ok || result.ok === false) throw httpControlError(response.status, result);
+      outcome = "succeeded";
+      return result;
+    } finally {
+      attempt?.finish(outcome, statusCode);
+    }
   }, {
     delaysMs: HTTP_CONTROL_RETRY_DELAYS_MS,
     wait: (delayMs) => new Promise((resolve) => window.setTimeout(resolve, delayMs)),
@@ -2013,7 +2111,7 @@ async function waitTaskOperationResult(admission, params) {
   return { ...await control("snapshot"), lifecycleResult };
 }
 
-async function control(action, params = {}) {
+async function control(action, params = {}, { signal } = {}) {
   if (action === "snapshot") {
     // Resolve the exact unresolved projections even after their receipt ages
     // out of the recent window. The canonical ledger owns their outcome.
@@ -2039,7 +2137,7 @@ async function control(action, params = {}) {
     let transportAcknowledged = false;
     try {
       let result;
-      try { result = await controlTransport(action, tracedParams); }
+      try { result = await controlTransport(action, tracedParams, signal); }
       catch (error) {
         if (!taskOperationId || (!isConnectionFailure(error) && !looksLikeConnectionFailure(error))) throw error;
         // The first admission reply may be lost. The client already chose the
@@ -2080,7 +2178,7 @@ async function control(action, params = {}) {
   }, commandId);
 }
 
-async function controlTransport(action, params = {}) {
+async function controlTransport(action, params = {}, signal) {
   const directTransport = window.__agentHubDirectTransport;
   let directAvailable = false;
   if (vscode && directTransport) {
@@ -2091,6 +2189,7 @@ async function controlTransport(action, params = {}) {
       directAvailable = await directTransport.available();
     }
   }
+  signal?.throwIfAborted?.();
   const bridged = directAvailable ? null : bridgeCall(action, params);
   if (bridged) return bridged;
   if (vscode && action === "send-message") {
@@ -2100,7 +2199,7 @@ async function controlTransport(action, params = {}) {
       delayMs: VSCODE_DIRECT_SEND_HEDGE_DELAY_MS,
     });
   }
-  return httpControl(action, params);
+  return httpControl(action, params, signal);
 }
 
 window.AgentHubWebDiagnostics?.bindReporter?.((event) => control("report-diagnostic", event));
@@ -2647,7 +2746,7 @@ function selectedRunFacts(snapshot, id) {
   const selected = tasks.find((task) => taskId(
     task.provider, task.threadId, task.streamId,
   ) === id) ?? (!id ? tasks.find((task) => task.selected === true) : null);
-  if (!selected) return { run: "unknown", providerStart: "missing", clientId: "", turnId: "",
+  if (!selected) return { run: "unknown", providerStart: "missing", unread: null, clientId: "", turnId: "",
     provider: "", threadId: "", streamId: "", finalTurnId: "", finalRevision: "" };
   const run = selected.run;
   const active = selected.running === true && run?.operationKind === "user-turn"
@@ -2657,6 +2756,7 @@ function selectedRunFacts(snapshot, id) {
       : active && window.AgentHubStreamTabs.isExactActiveUserTurn(selected) ? "active"
         : active ? "absorbed" : "other",
     providerStart: run?.providerStart || selected.providerStart ? "present" : "missing",
+    unread: selected.unread === true,
     clientId: boundedTraceIdentifier(run?.clientUserMessageId),
     turnId: boundedTraceIdentifier(run?.turnId),
     provider: boundedTraceIdentifier(selected.provider),
@@ -2675,6 +2775,7 @@ function traceSnapshotGate(snapshot, { decision, id = selectedTaskId, before = l
   const key = [decision, id, previous.run, next.run, previous.providerStart,
     next.providerStart, previous.turnId, next.turnId, previous.clientId, next.clientId,
     previous.finalTurnId, next.finalTurnId, previous.finalRevision, next.finalRevision,
+    previous.unread, next.unread,
     releaseId].join("\0");
   const at = Date.now();
   if (lastSnapshotGateTrace.key === key && at - lastSnapshotGateTrace.at < 30_000) return;
@@ -2692,6 +2793,7 @@ function traceSnapshotGate(snapshot, { decision, id = selectedTaskId, before = l
     streamId: next.streamId || previous.streamId,
     beforeRun: previous.run, afterRun: next.run,
     beforeProviderStart: previous.providerStart, afterProviderStart: next.providerStart,
+    beforeUnread: previous.unread, afterUnread: next.unread,
   };
   commandTrace.record("ui-snapshot", "selected-gate", 0, commandId, metadata);
   if (decision !== "applied" || document.hidden) return;
@@ -2701,6 +2803,7 @@ function traceSnapshotGate(snapshot, { decision, id = selectedTaskId, before = l
     commandTrace.record("ui-render", "snapshot-live-dom", 0, commandId, {
       ...metadata,
       render: renderedActiveCardState(),
+      ...readMarkerSurfaces(id),
       providerLink: String(link?.dataset.linkState ?? "unknown"),
     });
   }));
@@ -3062,6 +3165,20 @@ function mergeNewestHistory(previous, newest) {
   ]);
 }
 
+// Keep the loaded ranges in history order. Pagination walks back from the
+// newest range, so an older retained page cannot hide a gap in front of it.
+function refreshHistoryRanges(previous, history, messages) {
+  const ranges = previous.filter(range => range.start < history.start);
+  const older = ranges.at(-1);
+  if (older && older.end >= history.start) {
+    ranges[ranges.length - 1] = { ...older, end: history.end,
+      messages: mergeNewestHistory(older.messages, messages) };
+  } else {
+    ranges.push({ start: history.start, end: history.end, nextBefore: history.nextBefore, messages });
+  }
+  return ranges;
+}
+
 function focusedHistoryMessages(focusedTurn) {
   if (!focusedTurn) return [];
   return historyMessages({
@@ -3077,8 +3194,10 @@ function displayedHistory(id, base = historyWindowByTask.get(id) ?? []) {
   return focused ? mergeNewestHistory(base, focused.messages) : base;
 }
 
-function setHistoryWindow(id, messages) {
+function displayHistoryRanges(id, ranges) {
+  const messages = ranges.length === 1 ? ranges[0].messages : ranges.flatMap(range => range.messages);
   const base = projectCanonicalMessages(messages);
+  if (ranges.length === 1) ranges[0].messages = base;
   historyWindowByTask.set(id, base);
   historyByTask.set(id, displayedHistory(id, base));
 }
@@ -3256,31 +3375,25 @@ function applyOpened(result, {
   const newest = historyMessages(history, retainsPinnedFocus ? null : result.focusedTurn);
   const existingPage = historyPageByTask.get(id);
   const previousPage = existingPage && sameIdentity(existingPage.identity, history) ? existingPage : null;
-  const preserveOlder = !result.focusedTurn
-    && previousPage
-    && Number(previousPage.start) < Number(history.start);
   if (retainsPinnedFocus) setFocusedHistoryWindow(id, result, exactNavigation);
-  const previousWindow = previousPage ? historyWindowByTask.get(id) : null;
-  setHistoryWindow(id, retainsPinnedFocus && previousWindow
-    ? previousWindow
-    : preserveOlder
-      ? mergeNewestHistory(previousWindow ?? [], newest)
-      : newest);
-  const liveBefore = liveCardsByTask.get(id) ?? null;
-  const liveCleared = clearDurablyCompletedLiveCard(id);
-  if (!retainsPinnedFocus || !previousPage) {
+  if (retainsPinnedFocus && previousPage) {
+    historyByTask.set(id, displayedHistory(id));
+  } else {
+    const ranges = refreshHistoryRanges(result.focusedTurn ? [] : previousPage?.ranges ?? [], history, newest);
+    displayHistoryRanges(id, ranges);
     historyPageByTask.set(id, {
       identity: stableIdentity(history),
-      reusable: previousPage?.reusable === true && sameIdentity(previousPage.identity, history),
-      start: preserveOlder ? previousPage.start : history.start,
-      end: history.end,
+      reusable: previousPage?.reusable === true,
+      ranges,
       total: history.total,
       messageTotal: history.messageTotal,
-      nextBefore: preserveOlder ? previousPage.nextBefore : history.nextBefore,
+      nextBefore: ranges.at(-1).nextBefore,
       loading: !settleHistory && history.nextBefore != null,
       version: history.version ?? "",
     });
   }
+  const liveBefore = liveCardsByTask.get(id) ?? null;
+  const liveCleared = clearDurablyCompletedLiveCard(id);
   if (selectTask) rememberSelectedTaskId(id);
   if (!skipSnapshot && result?.snapshot?.notModified !== true) {
     try {
@@ -3360,9 +3473,18 @@ function applyOpened(result, {
 function readMarkerMetadata(id, final) {
   return { streamId: id, provider: final.provider, threadId: final.threadId,
     turnId: final.turnId, terminalRevision: Number(final.revision),
-    codeMarker: READ_MARKER_CODE, documentId: readMarkerDocumentId,
+    codeMarker: READ_MARKER_CODE, documentId: documentInstanceId, clientAssetRevision,
     instanceId: lastSnapshot?.server?.process?.instanceId,
     releaseId: lastSnapshot?.server?.process?.releaseId };
+}
+
+function readMarkerSurfaces(id) {
+  const key = CSS.escape(id ?? "");
+  const tabs = [...document.querySelectorAll(`[data-stream-task-id="${key}"]`)];
+  const cards = [...document.querySelectorAll(`[data-activity-task-id="${key}"]`)];
+  return { tabReady: tabs.some((node) => node.hasAttribute("data-answer-ready")),
+    cardReady: cards.some((node) => node.hasAttribute("data-answer-ready")),
+    tabPresent: tabs.length > 0, cardPresent: cards.length > 0 };
 }
 
 function displayedReadCard(id, final) {
@@ -3392,13 +3514,10 @@ function projectReadReceipt(id, entry) {
       if (readMarker.finalIdentity(snapshotTask(lastSnapshot, id)?.latestFinal) !== entry.identity) {
         return { outcome: "cancelled", metadata: { render: "superseded" } };
       }
-      const tabs = [...document.querySelectorAll("[data-stream-task-id]")].filter((node) => node.dataset.streamTaskId === id);
-      const cards = [...document.querySelectorAll("[data-activity-task-id]")].filter((node) => node.dataset.activityTaskId === id);
-      const tabReady = tabs.some((node) => node.hasAttribute("data-answer-ready"));
-      const cardReady = cards.some((node) => node.hasAttribute("data-answer-ready"));
-      return { outcome: !tabReady && !cardReady && tabs.length ? "succeeded" : "cancelled",
-        metadata: { render: !tabReady && !cardReady ? "cleared" : "pending",
-          tabReady, cardReady, tabPresent: tabs.length > 0, cardPresent: cards.length > 0 } };
+      const surfaces = readMarkerSurfaces(id);
+      const cleared = !surfaces.tabReady && !surfaces.cardReady;
+      return { outcome: cleared && surfaces.tabPresent ? "succeeded" : "cancelled",
+        metadata: { ...surfaces, render: cleared ? "cleared" : "pending" } };
     });
 }
 
@@ -3607,17 +3726,14 @@ agentHub.on("task:select", ({ id }) => {
       // A cold local page can paint and acknowledge its exact final while the
       // independently ordered selection is still waiting for persistence.
       const stillOpening = () => navigationIntents.current(generation) && sameIdentity(taskIdentity(id), identity);
+      const knownFinal = snapshotTask(lastSnapshot, id)?.latestFinal;
       const [selection, history] = await Promise.allSettled([
         control("select-task", taskOpenParams(identity, { clientTraceId: traceId, deferSnapshot: true })),
-        control("task-history", { ...identity, limit: 2, coldHistory: true, clientTraceId: traceId }).then(async (history) => {
+        control("task-history", { ...identity, limit: 30, coldHistory: true, clientTraceId: traceId,
+          ...(knownFinal && { knownFinal: { provider: knownFinal.provider, threadId: knownFinal.threadId,
+            turnId: knownFinal.turnId, revision: knownFinal.revision } }),
+        }).then((history) => {
           verifiedTaskHistory(history, identity);
-          const current = snapshotTask(lastSnapshot, id);
-          if (stillOpening() && history.nextBefore != null && (history.transportTruncated === true
-            || !historyContainsLatestAnswer(history, current, { expectedTurnId: current?.latestFinal?.turnId }))) {
-            history = verifiedTaskHistory(await control("task-history", {
-              ...identity, limit: 20, coldHistory: true, clientTraceId: traceId,
-            }), identity);
-          }
           if (stillOpening()) {
             const opened = bindSnapshotBaseline(commandTrace.associate({ history, snapshot: null }, traceId),
               responseSnapshotBaselines.get(history));
@@ -3633,7 +3749,7 @@ agentHub.on("task:select", ({ id }) => {
             const settle = () => {
               if (historyPageByTask.get(id) !== paintedPage || paintedPage?.version !== history.version) return;
               // Automatic older-page loading must not start during the first
-              // paint just because a two-turn viewport is underfilled.
+              // paint just because the initial viewport is underfilled.
               if (paintedPage.loading) {
                 paintedPage.loading = false;
                 syncHistoryPagination(id);
@@ -3686,6 +3802,7 @@ function mergeHistoryLoadRequest(previous, next) {
     queuedAt: previous.queuedAt,
     refreshSource: previous.refreshSource || next.refreshSource,
     preserveScroll: previous.preserveScroll || next.preserveScroll,
+    onlyWhenSelected: previous.onlyWhenSelected && next.onlyWhenSelected,
   };
 }
 
@@ -3727,20 +3844,27 @@ function enqueueTaskHistoryLoad(id, identity, {
         // cancellation of the page already being read. Fence only dispatched
         // reads; explicit pagination and a changed Thread still supersede it.
         const request = beginHistoryRequest(id, pending.identity);
+        // A late binding/layout read for another visible column still has an
+        // owner. Only a selected-chat follow-up expires with the navigation.
+        const controller = pending.onlyWhenSelected ? new AbortController() : null;
+        if (controller) state.selectionRead = { identity: pending.identity, controller };
         const settled = await settleOptionalRead(() => backgroundHttpScheduler.run(
           () => {
+            controller?.signal.throwIfAborted();
             commandTrace.record("ui-control", "history-queue", performance.now() - pending.queuedAt,
               pending.traceId, { ...pending.identity, clientAssetRevision: "hub333.history.1" });
             return control("task-history", {
               ...pending.identity,
               clientTraceId: pending.traceId,
-              limit: 20,
+              limit: 30,
               includeActive: true,
               refreshSource: pending.refreshSource,
               knownVersion: historyPageByTask.get(id)?.version ?? "",
-            });
+            }, { signal: controller?.signal });
           },
         ));
+        if (controller) state.selectionRead = null;
+        if (controller?.signal.aborted) continue;
         if (id === selectedTaskId && directChatRoute()) continue;
         const current = currentHistoryRequest(request);
         commandTrace.record("ui-control", "history-page-decision", 0, pending.traceId,
@@ -3903,7 +4027,7 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
     const history = verifiedTaskHistory(await control("task-history", {
       ...identity,
       before: requestedBefore,
-      limit: 20,
+      limit: 30,
     }), identity);
     if (!currentHistoryRequest(request) || !sameIdentity(historyRequestIdentity(id), history)) {
       page.loading = false;
@@ -3929,18 +4053,26 @@ agentHub.on("history:load-older", ({ taskId: id }) => runAction(async () => {
     // A task switch can finish while the remote command was in flight.  Its
     // old result must not alter the pagination and scroll of the new task.
     if (historyPageByTask.get(id) !== page) return;
-    setHistoryWindow(
-      id,
-      prependOlderHistory(historyWindowByTask.get(id) ?? [], historyMessages(history)),
-    );
-    const nextBefore = Number(history.nextBefore);
+    const nextBefore = history.nextBefore;
+    const ranges = refreshHistoryRanges(page.ranges.slice(0, -1), {
+      ...history,
+      nextBefore: Number.isSafeInteger(nextBefore) && nextBefore >= 0 && nextBefore < requestedBefore
+        ? nextBefore : (returnedStart > 0 ? returnedStart : null),
+    }, historyMessages(history));
+    const newest = page.ranges.at(-1);
+    const loaded = ranges.at(-1);
+    if (loaded.end >= newest.start) {
+      loaded.end = newest.end;
+      loaded.messages = prependOlderHistory(newest.messages, loaded.messages);
+    } else if (newest.start < history.total) {
+      throw new Error("Agent Hub вернул не ту страницу истории. Повторите загрузку.");
+    }
+    displayHistoryRanges(id, ranges);
     Object.assign(page, {
-      start: history.start,
+      ranges,
       total: history.total,
       messageTotal: history.messageTotal,
-      nextBefore: Number.isSafeInteger(nextBefore) && nextBefore >= 0 && nextBefore < requestedBefore
-        ? nextBefore
-        : (returnedStart > 0 ? returnedStart : null),
+      nextBefore: loaded.nextBefore,
       loading: false,
     });
     syncHistoryPagination(id);
@@ -4218,7 +4350,7 @@ function sendUserMessage(request, frozenParams = null) {
           provider: result?.provider ?? identity?.provider,
           threadId: result.threadId,
         };
-        const opened = await control("open-task", taskOpenParams(identity, { limit: 20 }));
+        const opened = await control("open-task", taskOpenParams(identity, { limit: 30 }));
         applyOpened(opened);
         const route = window.AgentHubNavigationTabs.resolvedChatRoute(
           { history: identity },
@@ -5455,11 +5587,19 @@ async function saveLinkResource(resource) {
   }
   if (String(resource?.localPath ?? "").trim()) {
     if (!await hasLocalWorkspaceFileAccess()) {
-      if (!remoteWorkspaceFileBridgeAvailable()) {
+      // The native port selects how to save the bytes. The ticket endpoint
+      // decides whether the WebView's HttpOnly session can access them.
+      const androidSaveAvailable = typeof window.AgentHubAndroid?.saveDataUrl === "function";
+      if (!androidSaveAvailable && !remoteWorkspaceFileBridgeAvailable()) {
         throw new Error("Чтобы скачать файл с компьютера Agent Hub, сначала сопряги это устройство");
       }
       const ticket = await requestWorkspaceFileTransfer(resource.localPath);
-      startBrowserDownload(ticket.downloadPath, ticket.name || resourceFileName(resource));
+      const name = ticket.name || resourceFileName(resource);
+      if (androidSaveAvailable) {
+        await saveAndroidWorkspaceFile(ticket, name);
+        return;
+      }
+      startBrowserDownload(ticket.downloadPath, name);
       agentHub.toast("Скачивание файла началось");
       return;
     }
@@ -5900,7 +6040,7 @@ document.addEventListener("click", (event) => {
       ?? openTask.closest("[data-work-log-thread-id]")?.dataset.workLogThreadId;
     void runNavigation(
       { provider, threadId },
-      () => control("open-task", taskOpenParams({ provider, threadId }, { limit: 20 })),
+      () => control("open-task", taskOpenParams({ provider, threadId }, { limit: 30 })),
       (opened) => {
         applyOpened(opened);
         document.querySelector("[data-view-button='chat']")?.click();
@@ -5973,7 +6113,7 @@ async function openRoute() {
       };
       const opened = await runNavigation(
         identity,
-        () => control("open-task", taskOpenParams(identity, { limit: 20 })),
+        () => control("open-task", taskOpenParams(identity, { limit: 30 })),
         applyOpened,
       );
       return Boolean(opened);
@@ -6015,7 +6155,7 @@ async function openRoute() {
     };
     const opened = await runNavigation(
       identity,
-      () => control("open-task", taskOpenParams(identity, { limit: 20 })),
+      () => control("open-task", taskOpenParams(identity, { limit: 30 })),
       applyOpened,
     );
     if (!opened) return false;
@@ -6204,7 +6344,7 @@ void runAction(async () => {
     if (identity) {
       await runNavigation(
         identity,
-        () => control("open-task", taskOpenParams(identity, { limit: 20 })),
+        () => control("open-task", taskOpenParams(identity, { limit: 30 })),
         applyOpened,
       );
     }
