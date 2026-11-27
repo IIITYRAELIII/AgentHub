@@ -13,8 +13,10 @@ operation journal still protect creation and recovery. The pool lease covers
 the copy and any delta pack. No permanent alternates or shared consumer
 hardlinks are introduced. A shallow source still requires a closure comparison.
 
-The result planner reads related Git refs together at each invocation. Await
-joins independent plan and base reads before promotion and before the Task CAS.
+The result planner reads related Git refs together at each invocation. During
+native promotion, the Git owner rechecks publication and history after the
+joined plan and base reads. At the final Task CAS, read the base after the
+plan has finished and preserve plan refusal priority.
 The changed-file projection can be reused during that invocation once the
 live result, base, branch and adoption evidence match. Checkout readback uses
 Git's porcelain status to check HEAD and worktree state in the same command.

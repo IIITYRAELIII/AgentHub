@@ -414,8 +414,8 @@ export class TaskIntegrationService {
         await validateBases();
         return;
       }
-      // These owners read distinct authorities. Join both reads before any
-      // Git promotion or Task CAS, keeping plan refusal priority.
+      // Native promotion checks the publication and history again after
+      // this callback. The final Task CAS performs its own ordered reads.
       const checks = await Promise.allSettled([validatePlan(), validateBases()]);
       for (const check of checks) if (check.status === "rejected") throw check.reason;
     };
@@ -429,7 +429,8 @@ export class TaskIntegrationService {
     // one Task status CAS succeed. All callers hold the Workspace Await lock.
     const prepare = async (index) => {
       if (index === selectedRepositories.length) {
-        await validateAcceptanceInputs();
+        await validatePlan();
+        await validateBases();
         if (commitPrepared) committedResult = await commitPrepared(result());
         return;
       }
