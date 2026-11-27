@@ -69,9 +69,10 @@ export async function nativeReuseCandidates({ root, identity, context, readLegac
   if (!context) return [];
   return measureTaskOperation("native:reuse-lookup", async () => {
     const parent = path.dirname(root), candidates = [], historical = [];
-    for (const item of await readdir(parent, { withFileTypes: true })) {
+    const entries = await measureTaskOperation("native:reuse-directory", () => readdir(parent, { withFileTypes: true }));
+    for (const item of entries) {
       if (!item.isDirectory() || !/^[a-f0-9]{24}$/u.test(item.name) || path.join(parent, item.name) === root) continue;
-      const candidate = await snapshot(path.join(parent, item.name));
+      const candidate = await measureTaskOperation("native:reuse-journal", () => snapshot(path.join(parent, item.name)), { detail: true });
       if (!candidate) continue;
       const s = candidate.state;
       if (s.version !== 1 || s.identity?.policy !== identity.policy || s.identity?.workspaceId !== identity.workspaceId
@@ -95,7 +96,7 @@ export async function nativeReuseCandidates({ root, identity, context, readLegac
     // Only its existing owning checkpoint reader can supply the missing scope;
     // never stamp/enrich an old journal or trust an arbitrary historical tree.
     if (!candidates.some(candidate => !candidate.conflictOnly) && historical.length && typeof readLegacyBinding === "function") {
-      const binding = await readLegacyBinding();
+      const binding = await measureTaskOperation("native:reuse-legacy-binding", readLegacyBinding);
       const candidate = binding && historical.find(c => c.root === binding.root && c.hash === binding.journalHash
         && taskGitIdentityHash(c.state.identity) === binding.identityHash && c.state.head === binding.head
         && taskGitIdentityHash(c.state.merges) === binding.mergesHash);

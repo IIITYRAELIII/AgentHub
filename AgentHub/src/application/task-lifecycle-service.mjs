@@ -1121,6 +1121,7 @@ export class TaskLifecycleService {
                   lease: repositoryLease,
                   operationId,
                   nativeAwaitRecovery,
+                  readAcceptedAwaitOutcome: originalId => this.taskBoard.lifecycleOutcome(originalId),
                   admitAwaitPromotion: nativeAwaitRecovery?.preparedPromotion ? async () => {
                     await this.#assertOwned(repositoryLease);
                     const { manifestHash, head, tree } = nativeAwaitRecovery.preparedPromotion;
@@ -1159,6 +1160,7 @@ export class TaskLifecycleService {
                           ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
                           resultCommit: acceptedReference.resultCommit,
                           releaseIntegration: prepared.task,
+                          ...(prepared.nativeAwaitProof ? { nativeAwaitProof: prepared.nativeAwaitProof } : {}),
                           response: { releaseCandidate: {
                             status: "prepared", reason: "LiveIntegration includes the accepted result",
                             planRevision: prepared.planRevision,

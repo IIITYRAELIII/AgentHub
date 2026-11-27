@@ -250,6 +250,7 @@ export class TaskIntegrationService {
 
   async prepareAwaitAcceptance({
     workspaceId, acceptingTask, projectRoot, lease = null, operationId, commitPrepared,
+    readAcceptedAwaitOutcome = null,
     nativeAwaitRecovery = null, validateAwaitOriginal = null, admitAwaitPromotion = null,
   } = {}) {
     if (typeof commitPrepared !== "function") throw new TypeError("commitPrepared is required");
@@ -261,7 +262,7 @@ export class TaskIntegrationService {
     try {
       return await this.#prepareAwaitSet({
         workspaceId, acceptingTask, lease, nativeAwaitRecovery, awaitOperationId: operation,
-        validateAwaitOriginal, admitAwaitPromotion,
+        validateAwaitOriginal, admitAwaitPromotion, readAcceptedAwaitOutcome,
         commitPrepared: async (prepared) => {
           const matches = prepared.releaseCandidates.flatMap((candidate) => (
             canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
@@ -277,6 +278,7 @@ export class TaskIntegrationService {
             throw new Error("Native Await candidate authority recheck is unavailable");
           }
           return commitPrepared({ ...prepared, task: matches[0],
+            ...(acceptedCandidate?.nativeAwaitProof ? { nativeAwaitProof: acceptedCandidate.nativeAwaitProof } : {}),
             ...(typeof acceptedCandidate?.verifyNativeAwaitAuthority === "function"
               ? { verifyNativeAwaitAuthority: acceptedCandidate.verifyNativeAwaitAuthority } : {}) });
         },
@@ -312,7 +314,7 @@ export class TaskIntegrationService {
     reviewedMainApprovals = null, selectedTaskIds = null,
     prospectiveOnly = false,
     previousSelectedResults = [], nativeAwaitRecovery = null, awaitOperationId = null,
-    validateAwaitOriginal = null, admitAwaitPromotion = null,
+    validateAwaitOriginal = null, admitAwaitPromotion = null, readAcceptedAwaitOutcome = null,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
@@ -321,8 +323,9 @@ export class TaskIntegrationService {
     }
     const planOptions = selectedTaskIds ? { selectedTaskIds } : {};
     if (acceptingTask) requiredMethod(this.releasePlanner, "planAcceptance");
+    const previousDiffs = acceptingTask && !nativeAwaitRecovery && !prospectiveOnly && !validateOnly ? new Map() : null;
     const readPlans = (checkBaseline = null) => this.measureOperation("release:planner", async () => {
-      if (acceptingTask) return this.releasePlanner.planAcceptance(workspaceId, { ...planOptions, acceptingTask, checkBaseline });
+      if (acceptingTask) return this.releasePlanner.planAcceptance(workspaceId, { ...planOptions, acceptingTask, checkBaseline, previousDiffs });
       const current = await this.releasePlanner.plan(workspaceId, planOptions);
       checkBaseline?.(current);
       return { baseline: current, prospective: current };
@@ -405,6 +408,18 @@ export class TaskIntegrationService {
         }
       }
       for (const request of localSourceChecks) await this.releaseGitWorkspaces.assertDerivedInstalledSourceCurrent(request);
+    };
+    const validateAcceptanceInputs = async () => {
+      if (!acceptingTask || nativeAwaitRecovery || prospectiveOnly || explicitApprovals
+          || localSourceChecks.length || selectedRepositories.length !== 1) {
+        await validatePlan();
+        await validateBases();
+        return;
+      }
+      // Native promotion checks the publication and history again after
+      // this callback. The final Task CAS performs its own ordered reads.
+      const checks = await Promise.allSettled([validatePlan(), validateBases()]);
+      for (const check of checks) if (check.status === "rejected") throw check.reason;
     };
     const result = () => ({
       workspaceId: String(workspaceId), planRevision: plan.revision,
@@ -495,7 +510,7 @@ export class TaskIntegrationService {
           planRevision: plan.revision, workspaceId, projectRoot: repository.projectRoot,
           frozenTasks: evidence.tasks, approvedBaseCommit,
           ...(baseProvenance ? { baseProvenance } : {}),
-          validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
+          validateBeforeCommit: validateAcceptanceInputs,
         }));
         await prepare(index + 1);
         return;
@@ -511,9 +526,11 @@ export class TaskIntegrationService {
         ...(awaitOperationId ? { awaitOperationId } : {}),
         ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
         ...(admitAwaitPromotion ? { admitAwaitPromotion } : {}),
+        ...(!nativeAwaitRecovery && !localSource && !reviewed && selectedRepositories.length === 1
+          && readAcceptedAwaitOutcome ? { readAcceptedAwaitOutcome } : {}),
 
         validateBeforeCommit: async () => {
-          await validatePlan(); await validateBases();
+          await validateAcceptanceInputs();
           await validateAwaitOriginal?.();
         },
         ...((acceptingTask && !prospectiveOnly) ? { commitPrepared: async (prepared) => {

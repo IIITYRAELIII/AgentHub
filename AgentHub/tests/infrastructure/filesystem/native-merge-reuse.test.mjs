@@ -113,10 +113,13 @@ test("identical whole conflict context reuses marker resolution while retaining 
   await f.run(original);
   const old = await readFile(path.join(original.root, "merge.json"));
   const nextB = await f.result("B", "new.txt", "new automatic contribution\n");
-  const next = await f.run(f.request([a, nextB], "two"));
+  const next = await f.run({ ...f.request([a, nextB], "two"), deferEmptyPrefixDiscovery: true });
   assert.equal(await git(next.root, "show", "HEAD:shared.txt"), "A\nB");
   assert.equal(await git(next.root, "show", "HEAD:new.txt"), "new automatic contribution");
   assert.equal(next.merges[1].resultCommit, nextB.resultCommit);
+  const { checkpoints, mergeCalls } = f.observations.at(-1);
+  assert.equal(mergeCalls, 2, "the empty selection composes from its base");
+  assert.ok(checkpoints.some(event => event.stage === "native:conflict-reused" && event.count === 1));
   assert.deepEqual((await git(next.root, "show", "-s", "--format=%P", next.head)).split(" "), [next.merges[0].commit, nextB.resultCommit]);
   assert.deepEqual(await readFile(path.join(original.root, "merge.json")), old);
   assert.equal(await git(f.source, "status", "--porcelain=v1"), "");

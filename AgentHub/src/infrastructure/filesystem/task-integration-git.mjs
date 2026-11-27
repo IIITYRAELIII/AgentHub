@@ -128,15 +128,14 @@ async function dirtyState(root) {
 }
 
 async function primarySnapshot(projectRoot) {
-  const root = await repositoryRoot(projectRoot);
-  const [revisions, commonDir, worktrees, dirty] = await Promise.all([
+  const { root, commonDir } = await measureTaskOperation("release:primary-root", () => repositoryDirectories(projectRoot), { detail: true });
+  const [revisions, worktrees, dirty] = await Promise.all([
     // --not marks main independently of HEAD, including when main is absent.
     // Only OIDs/ref names are batched: rev-parse does not quote path outputs.
-    runGit(["rev-parse", "--revs-only", "HEAD^{commit}", "--not",
-      "refs/heads/main^{commit}", "--not", "--symbolic-full-name", "HEAD"], { cwd: root }),
-    gitCommonDir(root),
-    runGit(["worktree", "list", "--porcelain"], { cwd: root }),
-    dirtyState(root),
+    measureTaskOperation("release:primary-revisions", () => runGit(["rev-parse", "--revs-only", "HEAD^{commit}", "--not",
+      "refs/heads/main^{commit}", "--not", "--symbolic-full-name", "HEAD"], { cwd: root }), { detail: true }),
+    measureTaskOperation("release:primary-worktrees", () => runGit(["worktree", "list", "--porcelain"], { cwd: root }), { detail: true }),
+    measureTaskOperation("release:primary-dirty", () => dirtyState(root), { detail: true }),
   ]);
   const fields = revisions.split("\n");
   const headCommit = fields.shift();
@@ -199,6 +198,18 @@ async function gitCommonDir(projectRoot) {
   return canonicalPath(path.resolve(await runGit([
     "rev-parse", "--path-format=absolute", "--git-common-dir",
   ], { cwd: path.resolve(projectRoot) })));
+}
+
+async function repositoryDirectories(projectRoot) {
+  const directories = String(await runGit(["rev-parse", "--path-format=absolute", "--show-toplevel",
+    "--git-common-dir"], { cwd: path.resolve(projectRoot) })).split(/\r?\n/u);
+  if (directories.length === 2 && directories.every(directory => path.isAbsolute(directory))) {
+    const [root, commonDir] = directories.map(canonicalPath);
+    return { root, commonDir };
+  }
+  // Git paths on some platforms can contain a newline.
+  const root = await repositoryRoot(projectRoot);
+  return { root, commonDir: await gitCommonDir(root) };
 }
 
 async function fileExists(file) {
@@ -680,14 +691,17 @@ export class TaskIntegrationGitService {
         const identityHash = taskGitIdentityHash({ kind: "release-input-clone-v1", repository: layout.releaseRoot,
           sourceRoot, inputs: required });
         const storage = await objects.provision({ sourceRoot, repository: layout.releaseRoot,
-          inputs: required, identityHash });
+          inputs: required, identityHash, reuseCompleteImport: true });
         await objects.assertConsumer({ repository: layout.releaseRoot, inputs: required, identityHash, storage });
         objectStorage = { inputs: required, identityHash, storage };
-        await runGit(["update-ref", "refs/heads/main", primary.mainCommit, "0".repeat(40)], { cwd: layout.releaseRoot });
+        await runGit(["update-ref", "--stdin"], {
+          cwd: layout.releaseRoot,
+          input: `create refs/heads/main ${primary.mainCommit}\ncreate refs/remotes/workspace/main ${primary.mainCommit}\n`,
+        });
         await runGit(["symbolic-ref", "HEAD", "refs/heads/main"], { cwd: layout.releaseRoot });
         await runGit(["remote", "add", "workspace", sourceRoot], { cwd: layout.releaseRoot });
       }
-      await runGit(["config", "core.longpaths", "true"], { cwd: layout.releaseRoot });
+      if (this.#validationBundle) await runGit(["config", "core.longpaths", "true"], { cwd: layout.releaseRoot });
       if (this.#isolationContext) {
         for (const [key, value] of [["core.hooksPath", path.join(this.dataDir, "empty-hooks")],
           ["core.fsmonitor", "false"], ["gc.auto", "0"], ["maintenance.auto", "false"]]) {
@@ -709,9 +723,9 @@ export class TaskIntegrationGitService {
       }
     }
 
-    const releaseRoot = await repositoryRoot(layout.releaseRoot);
+    const { root: releaseRoot, commonDir: releaseGitCommonDir } = await repositoryDirectories(layout.releaseRoot);
     if (!samePath(releaseRoot, layout.releaseRoot)) throw new Error("managed release clone root is not canonical");
-    const releaseCommonDir = await gitCommonDir(releaseRoot);
+    const releaseCommonDir = releaseGitCommonDir;
     if (samePath(releaseCommonDir, primary.commonDir)) {
       throw new Error("release repository is a linked worktree of the registered primary Workspace");
     }
@@ -739,7 +753,7 @@ export class TaskIntegrationGitService {
       releaseRoot,
       releaseGitCommonDir: releaseCommonDir,
     };
-    await writeJsonAtomic(markerFile, marker);
+    if (stableManifest(existingMarker) !== stableManifest(marker)) await writeJsonAtomic(markerFile, marker);
     return { ...layout, ...marker, markerFile };
   }
 
@@ -1283,6 +1297,7 @@ export class TaskIntegrationGitService {
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, preserveFrozen = false, commitPrepared = null, preparationGuard = null,
     nativeAwaitRecovery = null, forwardPreparation = null, awaitOperationId = null, admitAwaitPromotion = null,
+    readAcceptedAwaitOutcome = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     if (!preparationObjectStore()) {
@@ -1292,7 +1307,7 @@ export class TaskIntegrationGitService {
         withPreparationGitIsolation(this.dataDir, () => this.prepareCandidate({
           planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks, approvedBaseCommit, baseProvenance,
           validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
-          nativeAwaitRecovery, forwardPreparation, awaitOperationId, admitAwaitPromotion }), lease, objects));
+          nativeAwaitRecovery, forwardPreparation, awaitOperationId, admitAwaitPromotion, readAcceptedAwaitOutcome }), lease, objects));
     }
     const isolation = forwardPreparation?.readIsolation?.();
     if (isolation && !this.#isolationContext) return this.#prepareIsolatedCandidate({
@@ -1303,7 +1318,7 @@ export class TaskIntegrationGitService {
     if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
       () => this.prepareCandidate({ planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks,
         approvedBaseCommit, baseProvenance, validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
-        nativeAwaitRecovery, forwardPreparation, awaitOperationId, admitAwaitPromotion }));
+        nativeAwaitRecovery, forwardPreparation, awaitOperationId, admitAwaitPromotion, readAcceptedAwaitOutcome }));
     if (authority && authority.phase !== "completed" && preflightRequestId !== authority.requestId) {
       throw new Error("Isolated original preparation still owns this candidate");
     }
@@ -1525,15 +1540,26 @@ export class TaskIntegrationGitService {
       // owner completed, ordinary later selections read their exact objects
       // from the registered primary without changing either repository's config.
       const workspace = authority?.phase === "completed" && !forwardPreparation ? initial.root : "workspace";
-      if (!preparedPromotion) await git(["fetch", "--prune", workspace, "+refs/heads/main:refs/remotes/workspace/main"]);
       // Operational source objects are verification inputs, not merge bases.
-      for (const commit of [baseCommit, ...(localSource ? [localSource.sourceBaseCommit] : []),
-        ...tasks.map((task) => task.resultCommit)]) {
-        if (await gitMaybe(["cat-file", "-e", `${commit}^{commit}`], { cwd: clone.releaseRoot }) === null) {
-          if (preparedPromotion) throw interruptedAwaitRefusal("exact prepared input is missing");
-          await git(["fetch", workspace, commit]);
+      await measureTaskOperation("native:release-inputs", async () => {
+        const commits = [...new Set([baseCommit, ...(localSource ? [localSource.sourceBaseCommit] : []),
+          ...tasks.map(task => task.resultCommit)])];
+        const trackingMain = "refs/remotes/workspace/main";
+        const queries = [...commits, trackingMain];
+        const available = String(await git(["--no-replace-objects", "cat-file",
+          "--batch-check=%(objectname) %(objecttype)"], { input: queries.join("\n") + "\n" })).split(/\r?\n/u);
+        if (available.length !== queries.length) throw new Error("Native release input lookup is malformed");
+        const missing = commits.filter((commit, index) => available[index] !== commit + " commit");
+        if (preparedPromotion) {
+          if (missing.length) throw interruptedAwaitRefusal("exact prepared input is missing");
+          return;
         }
-      }
+        const trackingChanged = available.at(-1) !== initial.mainCommit + " commit";
+        if (!trackingChanged && !missing.length) return;
+        const refspecs = [...(trackingChanged ? ["+refs/heads/main:" + trackingMain] : []), ...missing];
+        await git(["-c", "fetch.unpackLimit=1", "fetch", "--prune", workspace, "--stdin"],
+          { input: refspecs.join("\n") + "\n" });
+      });
       const derivedRequest = { projectRoot: initial.root, provenance: baseProvenance, planRevision: revision, tasks };
       const derived = this.#derivedLocalSourceProof(derivedRequest);
       let assertLocalSourceCurrent;
@@ -1551,7 +1577,7 @@ export class TaskIntegrationGitService {
         })) : null);
       if (derived) await assertLocalSourceCurrent();
       const historyRequest = { projectRoot: initial.root, provenance, planRevision: revision, tasks };
-      const historyAuthority = await this.#nativeHistoryAuthority({ ...historyRequest, verifiedLocalSource });
+      const historyAuthority = await this.#nativeHistoryAuthority({ ...historyRequest, primary: initial, verifiedLocalSource });
       if (historyAuthority?.publishedMetadata) historyRequest.expectedPublishedMetadata = historyAuthority.publishedMetadata;
       const historyGit = (args, options) => git(["--no-replace-objects", ...args], options);
       let assertLegacyMetadataCurrent;
@@ -1561,6 +1587,57 @@ export class TaskIntegrationGitService {
       }));
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
+      const canWitness = typeof readAcceptedAwaitOutcome === "function" && awaitOperationId && commitPrepared
+        && !nativeAwaitRecovery && !forwardPreparation && !preparationGuard && !localSource;
+      const proofAuthority = canWitness ? taskGitIdentityHash({ repositoryRoot: initial.root,
+        primaryGitCommonDir: initial.commonDir, baseProvenance: provenance, historyAuthority }) : null;
+      const readAcceptedPrefix = canWitness && checkpoint?.phase === "prepared" ? () =>
+        measureTaskOperation("native:accepted-prefix", async () => {
+          const bytes = await awaitEvidenceBytes(path.join(layout.root, "native-preparation.json"), { optional: true });
+          const previous = bytes && JSON.parse(bytes);
+          if (previous?.phase !== "completed" || !previous.requestId
+              || previous.manifestHash !== checkpoint.manifestHash || previous.target !== checkpoint.preReleaseHead) return null;
+          const outcome = readAcceptedAwaitOutcome(previous.requestId);
+          const proof = outcome?.result?.evidence?.nativeAwaitProof;
+          const expected = { version: 1, operationId: previous.requestId, workspaceId, repositoryRoot: initial.root,
+            planRevision: checkpoint.planRevision, manifestHash: checkpoint.manifestHash,
+            head: previous.target, tree: previous.targetTree, authorityHash: proofAuthority };
+          if (outcome?.result?.task?.workflowStatus !== "awaiting_implementation"
+              || !proof || stableManifest(proof) !== stableManifest(expected)) return null;
+          if (!/^[a-f0-9]{64}$/u.test(expected.manifestHash) || !/^[a-f0-9]{40}$/u.test(expected.tree)) return null;
+          const manifestFile = path.join(clone.evidenceRoot, expected.manifestHash + ".json");
+          if (!samePath(checkpoint.manifestFile, manifestFile)) throw new Error("Accepted Await manifest path changed");
+          await assertPlainIsolationPath(clone.evidenceRoot);
+          const manifestBytes = await awaitEvidenceBytes(manifestFile);
+          if (sha256(manifestBytes) !== expected.manifestHash) throw new Error("Accepted Await manifest changed");
+          const old = JSON.parse(manifestBytes);
+          const oldTasks = normalizedFrozenTasks(old.tasks);
+          // Keep Windows Git argv bounded. Larger prefixes use the existing
+          // bundle producer, which sends prerequisite OIDs over stdin.
+          if (!oldTasks.length || oldTasks.length >= tasks.length || old.baseCommit !== baseCommit
+              || process.platform === "win32" && oldTasks.length > 256
+              || old.workspaceId !== workspaceId || old.planRevision !== expected.planRevision
+              || old.compositionPolicy !== NATIVE_RELEASE_POLICY
+              || stableManifest(oldTasks) !== stableManifest(tasks.slice(0, oldTasks.length))
+              || !oldTasks.some(task => task.taskId === outcome.taskId
+                && task.resultCommit === outcome.result.evidence.resultCommit)
+              || old.merges?.length !== oldTasks.length || old.merges.at(-1)?.commit !== expected.head
+              || !old.merges.every((step, index) => !step.resolved && !step.reviewedResolution
+                && (!step.resolution || (step.resolution.conflictPaths?.length === 0
+                  && !step.resolution.review && !step.resolution.compatibilityReview
+                  && step.resolution.binding?.tree === step.resolution.binding?.automaticTree))
+                && step.taskId === oldTasks[index].taskId && step.resultCommit === oldTasks[index].resultCommit
+                && /^[a-f0-9]{40}$/u.test(step.commit))) return null;
+          const current = await git(["--no-replace-objects", "rev-parse", "refs/heads/PreRelease^{commit}", "refs/heads/PreRelease^{tree}"]);
+          if (current.split(/\r?\n/u).join(" ") !== expected.head + " " + expected.tree) {
+            throw new Error("Accepted Await PreRelease ref changed");
+          }
+          recordTaskOperationTiming("native:accepted-prefix-size", { count: oldTasks.length });
+          return { head: expected.head, tree: expected.tree, merges: old.merges,
+            sourceIdentityHash: taskGitIdentityHash({ policy: NATIVE_RELEASE_POLICY, workspaceId,
+              planRevision: expected.planRevision, baseCommit, tasks: oldTasks }),
+            sourceJournalHash: sha256(bytes) };
+        }) : null;
       const readLegacyReuseBinding = async () => measureTaskOperation("native:legacy-prepared-verify", async () => {
         if (checkpoint?.phase !== "prepared" || checkpoint.baseCommit !== baseCommit
             || stableManifest(checkpoint.baseProvenance ?? null) !== stableManifest(provenance ?? null)) return null;
@@ -1616,10 +1693,13 @@ export class TaskIntegrationGitService {
         reuseContext: { repositoryRoot: initial.root, primaryGitCommonDir: initial.commonDir,
           baseProvenance: provenance ?? null, historyAuthority: historyAuthority ?? null },
         readLegacyReuseBinding,
+        readAcceptedPrefix,
         deliveredHead: checkpoint?.preReleaseHead ?? null,
+        deferEmptyPrefixDiscovery: Boolean(awaitOperationId && !checkpoint && !forwardPreparation
+          && !preparationGuard && !nativeAwaitRecovery),
         gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
         readJson, writeJson: writeJsonAtomic,
-        provisionNativeObjects: input => preparationObjectStore().provision({ ...input,
+        provisionNativeObjects: input => preparationObjectStore().provision({ ...input, reusableSource: clone.objectStorage ?? null,
           identityHash: taskGitIdentityHash({ repository: input.repository, identityHash: input.identityHash }) }),
         verifyNativeObjects: input => preparationObjectStore().assertConsumer({ ...input,
           identityHash: taskGitIdentityHash({ repository: input.repository, identityHash: input.identityHash }) }),
@@ -1749,12 +1829,17 @@ export class TaskIntegrationGitService {
           }
         }
       });
+      const checkoutTrees = new Map([[composition.head, composition.tree]]);
       const requireCheckout = async (head) => {
-        const [actualHead, actualTree, ...extra] = String(await git(
-          ["rev-parse", "HEAD^{commit}", "HEAD^{tree}"])).split(/\r?\n/u);
-        if (actualHead !== head || !actualTree || extra.length
-            || await git(["write-tree"]) !== actualTree
-            || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
+        if (!checkoutTrees.has(head)) {
+          checkoutTrees.set(head, await git(["--no-replace-objects", "rev-parse", `${head}^{tree}`]));
+        }
+        const indexTree = await git(["write-tree"]);
+        const status = String(await git(["--no-optional-locks", "status", "--porcelain=v2", "--branch",
+          "--no-ahead-behind", "-z", "--untracked-files=all", "--ignore-submodules=none"],
+        { rawOutput: true })).split("\0").filter(Boolean);
+        if (!status.includes("# branch.oid " + head) || status.some(row => !row.startsWith("# branch."))
+            || indexTree !== checkoutTrees.get(head)) {
           throw Object.assign(new Error("Native release checkout changed; foreign bytes retained"), { code: "AWAIT_PREPARATION_UNKNOWN" });
         }
       };
@@ -1765,7 +1850,7 @@ export class TaskIntegrationGitService {
         if (await git(["rev-parse", `${branchRef}^{commit}`]) !== composition.head) throw new Error("Native candidate ref changed");
         await requireCheckout(composition.head);
       } else {
-        if (!preparedPromotion) await git(["fetch", "--no-tags", composition.root, composition.head]);
+        if (!preparedPromotion) await git(["-c", "fetch.unpackLimit=1", "fetch", "--no-tags", composition.root, composition.head]);
         if (!journal || ["completed", "rolled_back"].includes(journal.phase)) {
           const before = {
             head: await git(["rev-parse", "HEAD^{commit}"]),
@@ -1858,6 +1943,10 @@ export class TaskIntegrationGitService {
         manifestHash, manifestFile, planRevision: revision, manifest, frozenTasks: tasks,
         mergedTaskIds: tasks.map((task) => task.taskId), reused,
         independentGitCommonDir: !samePath(clone.releaseGitCommonDir, initial.commonDir),
+        ...(canWitness ? { nativeAwaitProof: {
+          version: 1, operationId: awaitOperationId, workspaceId, repositoryRoot: initial.root, planRevision: revision,
+          manifestHash, head: composition.head, tree: composition.tree, authorityHash: proofAuthority,
+        } } : {}),
         releaseGitCommonDir: clone.releaseGitCommonDir, primaryGitCommonDir: initial.commonDir,
         primaryPreserved: true, legacyLinkedHolders: initial.legacyLinkedHolders,
         ...((nativeAwaitRecovery || localSource) ? { verifyNativeAwaitAuthority: async () => {

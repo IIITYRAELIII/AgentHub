@@ -1,7 +1,8 @@
 import path from "node:path";
 import { measureTaskOperation, measureTaskOperationAwait, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, link, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readdir, link, unlink } from "node:fs/promises";
 import { MaintenanceOperationStore } from "../persistence/maintenance-operation-store.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { unlinkOwnedNativeObjectAlias, retireSealedNativeCapture } from "./sealed-native-capture.mjs";
@@ -16,6 +17,11 @@ const oid = value => /^[a-f0-9]{40}$/u.test(value);
 const fail = message => Object.assign(new Error(message), { code: "NATIVE_OBJECT_STORAGE_UNPROVEN" });
 const absent = async file => lstat(file).then(() => false, e => { if (e.code === "ENOENT") return true; throw e; });
 const physical = s => ({ dev: String(s.dev), ino: String(s.ino), birthtimeNs: String(s.birthtimeNs) });
+const packFileIdentity = async file => {
+  const info = await plain(file);
+  return { ...physical(info), size: String(info.size), mtimeNs: String(info.mtimeNs), ctimeNs: String(info.ctimeNs) };
+};
+const packNames = hash => [`pack-${hash}.pack`, `pack-${hash}.idx`];
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 export function ownedPackIndexContains(bytes, packChecksum, required) {
@@ -225,17 +231,16 @@ export class OwnedNativeObjectStore {
     for (const file of ["shallow", "objects/info/alternates", "info/grafts"]) {
       if (!await absent(path.join(this.repository, file))) throw fail("Object store contains borrowed or rewritten history");
     }
-    if (String(await this.#git(this.repository, ["rev-parse", "--is-bare-repository"])) !== "true"
-        || String(await this.#git(this.repository, ["rev-parse", "--show-object-format"])) !== "sha1"
+    if (String(await this.#git(this.repository, ["rev-parse", "--is-bare-repository", "--show-object-format"]))
+        .split(/\r?\n/u).join(" ") !== "true sha1"
         || String(await this.#git(this.repository, ["for-each-ref", "--format=%(refname)", "refs/replace"])) !== "") {
       throw fail("Owned object-store configuration changed");
     }
     return row;
   }
 
-  async #transfer(sourceRoot, objects, id, row) {
-    const available = new Set(String(await this.#git(this.repository, ["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"])).split(/\r?\n/u).filter(Boolean));
-    const missing = objects.filter(x => !available.has(x));
+  async #transfer(sourceRoot, objects, id, row, captureCompletePack = null) {
+    const missing = await this.#missingImportObjects(objects);
     if (row.status === "succeeded" && missing.length) throw fail("Completed object import lost owned objects");
     if (row.status !== "succeeded") {
       const pack = path.join(this.root, "import-" + digest(id) + ".pack"), idx = pack.slice(0, -5) + ".idx";
@@ -263,18 +268,37 @@ export class OwnedNativeObjectStore {
         const packDir = path.join(this.repository, "objects", "pack");
         await immutableLink(pack, path.join(packDir, stem + ".pack"));
         await immutableLink(idx, path.join(packDir, stem + ".idx"));
+        if (captureCompletePack && row.metadata.missingCount === objects.length
+            && row.metadata.missingSha256 === digest(objects.join("\n") + "\n")) {
+          const hash = trailer.toString("hex");
+          captureCompletePack({ hash, files: await readGroup(packNames(hash), name => packFileIdentity(path.join(packDir, name))) });
+        }
       }
-      const now = new Set(String(await this.#git(this.repository, ["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"])).split(/\r?\n/u).filter(Boolean));
-      if (objects.some(x => !now.has(x))) throw fail("Transferred object set is incomplete");
+      if (missing.length && (await this.#missingImportObjects(objects)).length) {
+        throw fail("Transferred object set is incomplete");
+      }
     }
     return row;
+  }
+
+  async #missingImportObjects(objects) {
+    const output = String(await this.#git(this.repository,
+      ["cat-file", "--batch-check=%(objectname)", "--buffer"], { input: objects.join("\n") + "\n" }));
+    const rows = output.trimEnd().split(/\r?\n/u);
+    if (rows.length !== objects.length) throw fail("Object-store lookup is malformed");
+    return objects.filter((object, index) => {
+      if (rows[index] === object) return false;
+      if (rows[index] === object + " missing") return true;
+      throw fail("Object-store lookup identity differs");
+    });
   }
 
   async #import(sourceRoot, inputs) {
     if (!inputs.length || inputs.length > 1024 || inputs.some(x => !oid(x)) || new Set(inputs).size !== inputs.length) {
       throw fail("Object-store inputs must be distinct exact commits");
     }
-    const grafts = String(await this.#git(sourceRoot, ["rev-parse", "--path-format=absolute", "--git-path", "info/grafts"]));
+    const [grafts, shallow] = String(await this.#git(sourceRoot,
+      ["rev-parse", "--path-format=absolute", "--git-path", "info/grafts", "--git-path", "shallow"])).split(/\r?\n/u);
     if (!await absent(path.resolve(sourceRoot, grafts))) throw fail("Source contains rewritten graft history");
     if (!await hasExactGitCommitObjects((args, options) => this.#git(sourceRoot, args, options), inputs)) {
       throw fail("Source is missing an exact object-store input commit");
@@ -285,25 +309,29 @@ export class OwnedNativeObjectStore {
     const binding = { ...this.descriptor(), inputs, closureSha256, objectCount: objects.length };
     const id = "native-object-import:" + digest(JSON.stringify(binding));
     let row = await this.#create(id, binding);
-    row = await this.#transfer(sourceRoot, objects, id, row);
+    let completePack;
+    row = await this.#transfer(sourceRoot, objects, id, row, value => { completePack = value; });
     if (row.status !== "succeeded") {
       if (!await hasExactGitCommitObjects((args, options) => this.#git(this.repository, args, options), inputs)) {
         throw fail("Object store is missing an exact input commit");
       }
       await this.#git(this.repository, ["fsck", "--connectivity-only", "--no-dangling", ...inputs]);
       const refRoot = "refs/agent-hub/objects/" + digest(id);
+      const refs = new Map(String(await this.#git(this.repository,
+        ["for-each-ref", "--format=%(refname)%00%(objectname)", refRoot]))
+        .split(/\r?\n/u).filter(Boolean).map(line => line.split("\0")));
+      const commands = [];
       for (const [i, c] of inputs.entries()) {
         const ref = refRoot + "/" + i;
-        let before;
-        try { before = String(await this.#git(this.repository, ["rev-parse", "--verify", ref])); }
-        catch { before = "0".repeat(40); }
-        if (before !== c && before !== "0".repeat(40)) throw fail("Original import ref contains foreign data");
-        if (before !== c) await this.#git(this.repository, ["update-ref", ref, c, before]);
+        const before = refs.get(ref);
+        if (before && before !== c) throw fail("Original import ref contains foreign data");
+        commands.push(before ? `verify ${ref} ${c}` : `create ${ref} ${c}`);
       }
-      row = await this.#patch(row, "imported", { refRoot }, true);
+      await this.#git(this.repository, ["update-ref", "--stdin"], { input: commands.join("\n") + "\n" });
+      row = await this.#patch(row, "imported", { refRoot, ...(completePack ? { completePack } : {}) }, true);
     }
     await this.#retireTransferAliases(row);
-    return row;
+    return { row, objects, shallow: !await absent(path.resolve(sourceRoot, shallow)) };
   }
 
   // Deterministic intake aliases are owned by this SAME durable operation.
@@ -424,52 +452,123 @@ export class OwnedNativeObjectStore {
     });
   }
 
-  async #packConsumer(repository, objects) {
+  async #packConsumer(repository, objects, reusable) {
     const git = path.join(repository, ".git");
     const pack = path.join(git, "objects", "pack");
     const directories = [repository, git, path.dirname(pack), pack];
     const before = await readGroup(directories, directory => plain(directory, true).then(physical));
-    await measureTaskOperation("native:object-consumer-pack", async () => {
+    return measureTaskOperation(reusable ? "native:object-consumer-copy" : "native:object-consumer-pack", async () => {
       // Let Git assemble the exact admitted closure using its indexed pool.
       // The consumer owns one pack, and never depends on a pool path or its refs.
-      await this.#git(this.repository, ["pack-objects", "--quiet", "--window=0",
-        "--delta-base-offset", path.join(pack, "pack")], { input: objects.join("\n") + "\n" });
+      const hash = reusable?.pack.hash ?? String(await this.#git(this.repository, ["pack-objects", "--quiet", "--window=0",
+        "--delta-base-offset", path.join(pack, "pack")], { input: objects.join("\n") + "\n" }));
+      if (!oid(hash)) throw fail("Native consumer pack output identity is malformed");
+      const names = packNames(hash);
+      if (reusable) {
+        await this.#guard();
+        const donorDirectory = reusable.directory;
+        await plain(path.dirname(donorDirectory), true);
+        const donor = physical(await plain(donorDirectory, true));
+        const from = names.map(name => path.join(donorDirectory, name));
+        if (!equal(await readGroup(from, packFileIdentity), reusable.pack.files)) {
+          throw fail("Original native consumer pack changed before copy");
+        }
+        for (const name of names) {
+          await copyFile(path.join(donorDirectory, name), path.join(pack, name), constants.COPYFILE_EXCL);
+        }
+        if (!equal(await readGroup(from, packFileIdentity), reusable.pack.files)
+            || !equal(donor, physical(await plain(donorDirectory, true)))) {
+          throw fail("Original native consumer pack changed during copy");
+        }
+        if (reusable.delta.length) {
+          const deltaHash = await this.#git(this.repository, ["pack-objects", "--quiet", "--window=0",
+            "--delta-base-offset", path.join(pack, "pack")], { input: reusable.delta.join("\n") + "\n" });
+          if (!oid(deltaHash) || deltaHash === hash) throw fail("Native consumer delta pack identity is malformed");
+        }
+      }
       const after = await readGroup(directories, directory => plain(directory, true).then(physical));
       if (!equal(before, after)) throw fail("Native object consumer changed while Git was packing");
+      return reusable?.delta.length ? null
+        : { hash, files: await readGroup(names, name => packFileIdentity(path.join(pack, name))) };
     }, { objects: objects.length });
   }
 
-  async provision({ sourceRoot, repository, inputs, identityHash }) {
+  async #reusableConsumerPack({ sourceRoot, reusableSource, inputs, objectCount, shallow }) {
+    const donorInputs = reusableSource?.inputs;
+    if (shallow || !donorInputs?.length || !donorInputs.every(input => inputs.includes(input))) return null;
+    const donorStorage = reusableSource.storage;
+    const record = this.store.getReadonly(donorStorage.operationId);
+    if (!record?.metadata.consumerPack) return null;
+    await this.assertConsumer({ repository: sourceRoot, ...reusableSource });
+    // Only the live pack owner can donate. Restored legacy copies have
+    // independent custody and can take the ordinary pack path.
+    if (!equal(record.metadata.physicalGit, physical(await plain(path.join(sourceRoot, ".git"), true)))) return null;
+    const donorImport = this.store.getReadonly(donorStorage.importOperationId);
+    const donorCount = donorImport?.metadata.objectStorage.objectCount;
+    if (donorImport?.status !== "succeeded" || !Number.isSafeInteger(donorCount) || donorCount > objectCount
+        || !equal(donorImport.metadata.objectStorage.inputs, donorInputs)) return null;
+    const delta = donorInputs.length === inputs.length ? [] : String(await this.#git(sourceRoot,
+      ["rev-list", "--objects", "--no-object-names", ...inputs, "--not", ...donorInputs])).split(/\r?\n/u).filter(Boolean);
+    if (donorCount + delta.length !== objectCount || delta.some(object => !oid(object))
+        || new Set(delta).size !== delta.length) return null;
+    const directory = path.join(sourceRoot, ".git", "objects", "pack");
+    return this.#availableConsumerPack({ directory, pack: record.metadata.consumerPack, delta });
+  }
+
+  async #availableConsumerPack(candidate, { retiredIntake = false } = {}) {
+    if (!oid(candidate.pack?.hash)) return null;
+    await plain(path.dirname(candidate.directory), true);
+    await plain(candidate.directory, true);
+    const files = await readGroup(packNames(candidate.pack.hash),
+      name => packFileIdentity(path.join(candidate.directory, name))).catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!files) return null;
+    // Retiring the original intake hardlinks can update ctime. All other
+    // persisted facts must match, and copy verifies the fresh ctime fence.
+    const original = retiredIntake ? candidate.pack.files.map((file, index) => ({
+      ...file, ctimeNs: files[index].ctimeNs,
+    })) : candidate.pack.files;
+    return equal(files, original) ? { ...candidate, pack: { ...candidate.pack, files } } : null;
+  }
+
+  async provision({ sourceRoot, repository, inputs, identityHash, reusableSource = null, reuseCompleteImport = false }) {
     if (!/^[a-f0-9]{64}$/u.test(identityHash)) throw fail("Exact native consumer identity required");
     return this.withLease(async () => {
       await measureTaskOperation("native:object-pool", () => this.#pool());
-      const imported = await measureTaskOperation("native:object-import", () => this.#import(sourceRoot, inputs));
+      const { row: imported, objects, shallow } = await measureTaskOperation("native:object-import",
+        () => this.#import(sourceRoot, inputs));
       const binding = { ...this.descriptor(), repository: path.resolve(repository), inputs, identityHash,
         importOperationId: imported.operationId };
       let row = await this.#create("native-object-consumer:" + identityHash, binding);
       if (row.status !== "succeeded") {
         if (!await absent(repository)) throw fail("Unfinished native consumer requires its original recovery");
-        const closure = await measureTaskOperation("native:object-closure", () => this.#git(this.repository,
-          ["rev-list", "--objects", "--no-object-names", ...inputs]));
-        const objects = String(closure).split(/\r?\n/u).filter(Boolean).sort();
-        if (objects.some(x => !oid(x)) || new Set(objects).size !== objects.length
-            || objects.length !== imported.metadata.objectStorage.objectCount
-            || digest(objects.join("\n") + "\n") !== imported.metadata.objectStorage.closureSha256) {
-          throw fail("Consumer input closure differs from its owned import");
+        if (shallow) {
+          // A shallow source can omit parents that exist in the full pool.
+          const closure = await measureTaskOperation("native:object-closure", () => this.#git(this.repository,
+            ["rev-list", "--objects", "--no-object-names", ...inputs]));
+          if (!equal(String(closure).split(/\r?\n/u).filter(Boolean).sort(), objects)) {
+            throw fail("Consumer input closure differs from its owned import");
+          }
         }
         await this.#git(path.dirname(repository), ["init", "--object-format=sha1", "--template=" + path.join(this.root, "empty-hooks"), repository]);
         // upload-pack drops the client's -c settings: persist the same Windows
         // path policy before this independent consumer can serve its objects.
         if (process.platform === "win32") await this.#git(repository, ["config", "core.longpaths", "true"]);
         await this.#git(repository, ["config", "gc.auto", "0"]);
-        await this.#packConsumer(repository, objects);
+        const reusable = await this.#reusableConsumerPack({ sourceRoot, reusableSource, inputs, objectCount: objects.length, shallow })
+          ?? (reuseCompleteImport && !shallow ? await this.#availableConsumerPack({
+            directory: path.join(this.repository, "objects", "pack"), pack: imported.metadata.completePack, delta: [],
+          }, { retiredIntake: true }) : null);
+        const consumerPack = await this.#packConsumer(repository, objects, reusable);
         await measureTaskOperation("native:object-connectivity", async () => {
           if (!await hasExactGitCommitObjects((args, options) => this.#git(repository, args, options), inputs)) {
             throw fail("Object consumer is missing an exact input commit");
           }
           await this.#git(repository, ["fsck", "--connectivity-only", "--no-dangling", ...inputs]);
         });
-        row = await this.#patch(row, "linked", { physicalRepository: physical(await plain(repository, true)),
+        row = await this.#patch(row, "linked", { consumerPack, physicalRepository: physical(await plain(repository, true)),
           physicalGit: physical(await plain(path.join(repository, ".git"), true)) }, true);
       }
       if (!equal(row.metadata.physicalRepository, physical(await plain(repository, true)))
@@ -791,8 +890,7 @@ export class OwnedNativeObjectStore {
       const allInputs = [];
       for (const source of sources) {
         const selected = [...new Set(source.inputs)];
-        const imported = await this.#import(source.sourceRoot, selected);
-        await this.#retireTransferAliases(imported);
+        await this.#import(source.sourceRoot, selected);
         allInputs.push(...selected);
       }
       return this.#withMath({ inputs: inputs ?? [...new Set(allInputs)] }, verify);

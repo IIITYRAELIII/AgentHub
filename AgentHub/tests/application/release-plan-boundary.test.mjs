@@ -9,6 +9,7 @@ import { measureTaskOperation, withTaskOperationTiming } from "../../src/infrast
 const projectRoot = path.resolve("planner-boundary-fixture");
 const base = "a".repeat(40);
 function fixture() {
+  let published = base;
   const rows = Array.from({ length: 20 }, (_, index) => ({
     id: `selected-${index}`, title: `Selected ${index}`, workspaceId: "workspace",
     status: "started", workflowStatus: index === 19 ? "testing" : "awaiting_implementation",
@@ -27,7 +28,7 @@ function fixture() {
       return { changedFiles: [{ projectRoot, path: `${taskId}.txt`, operation: "added" }] };
     },
     assertExplicitUpstreamAdoption: async () => assert.fail("No adoption"),
-    releaseBaseEvidence: async () => ({ baseCommit: base, publishedBaseCommit: base }),
+    releaseBaseEvidence: async ({ publishedBaseCommit }) => ({ baseCommit: base, publishedBaseCommit }),
     releaseIntegrationEvidence: async ({ tasks }) => ({ tasks: tasks.map(task => ({ ...task, baseCommit: base })) }),
   };
   const spans = [];
@@ -53,13 +54,13 @@ function fixture() {
         return candidate;
       },
     },
-    readPublicationState: async () => ({ repositories: [{ root: projectRoot, revision: base }] }),
+    readPublicationState: async () => ({ repositories: [{ root: projectRoot, revision: published }] }),
   });
   const run = () => service.prepareAwaitAcceptance({ workspaceId: "workspace", projectRoot,
     acceptingTask: { id: rows[19].id, revision: 5 }, operationId: "same-original",
     commitPrepared: async value => { counts.commits++; return value; } });
   return { rows, counts, planner, board, taskGit, service, run, spans,
-    setMutation: value => { mutate = value; } };
+    setMutation: value => { mutate = value; }, setPublished: revision => { published = revision; } };
 }
 
 test("paired plans preserve every field of the existing separate public plans", async () => {
@@ -184,6 +185,22 @@ test("Await rechecks all four promotions and final CAS with one live union evide
   assert.equal(f.counts.commits, 1);
   assert.equal(f.counts.evidence.length, 120, "20 results at initial + four promotions + final CAS, never baseline/prospective duplication");
   for (const task of f.rows) assert.equal(f.counts.evidence.filter(id => id === task.id).length, 6);
+});
+
+test("Await rereads publication after the last plan finishes and before Task CAS", async () => {
+  const f = fixture(), original = f.taskGit.releaseEvidence;
+  let final = false, switched = false;
+  f.setMutation(async phase => { final = phase === 4; });
+  f.taskGit.releaseEvidence = async input => {
+    if (final && !switched) {
+      switched = true;
+      await new Promise(resolve => setImmediate(resolve));
+      f.setPublished("b".repeat(40));
+    }
+    return original(input);
+  };
+  await assert.rejects(f.run(), /accepted release base changed/u);
+  assert.equal(f.counts.commits, 0);
 });
 
 for (const phase of [0, 1, 2, 3, 4]) {
