@@ -5316,7 +5316,7 @@ export class TaskGitWorkspaceService {
     });
   }
 
-  async releaseEvidence({ taskId, taskNumber = null, projectRoot, branch, resultCommit } = {}) {
+  async releaseEvidence({ taskId, taskNumber = null, projectRoot, branch, resultCommit, previousDiff = null } = {}) {
     this.#assertAvailable("releaseEvidence");
     const id = normalizedTaskId(taskId);
     const repoRoot = await repositoryRoot(projectRoot);
@@ -5377,19 +5377,24 @@ export class TaskGitWorkspaceService {
       await runGit(["merge-base", "--is-ancestor", acceptedCommit, branchCommit], { cwd: repoRoot });
     }
     const adoptedCommit = await existingCommits(adoptionRefs);
+    const diffAuthority = JSON.stringify([repoRoot, storedBranch, baseCommit, acceptedCommit, adoptedCommit]);
+    if (previousDiff && previousDiff.diffAuthority !== diffAuthority) {
+      throw new Error("Task release diff authority changed");
+    }
     const pathspecs = adoptedCommit === acceptedCommit
       ? ["--", ".", ":(exclude,glob)**/CHANGELOG.md"]
       : ["--"];
-    const diff = await runGit([
-      "-c", "core.quotePath=false",
+    const changedFiles = previousDiff?.changedFiles ?? changedFilesFromNameStatus(await runGit([
+      "--no-replace-objects", "-c", "core.quotePath=false",
       "diff", "--name-status", "--find-renames", baseCommit, acceptedCommit, ...pathspecs,
-    ], { cwd: repoRoot });
+    ], { cwd: repoRoot }), repoRoot);
     return {
       projectRoot: repoRoot,
       branch: storedBranch,
       baseCommit,
       resultCommit: acceptedCommit,
-      changedFiles: changedFilesFromNameStatus(diff, repoRoot),
+      changedFiles,
+      diffAuthority,
     };
   }
 

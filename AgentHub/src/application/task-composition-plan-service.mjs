@@ -68,7 +68,7 @@ export class TaskCompositionPlanService {
     return tasks;
   }
 
-  async #resolve(tasks) {
+  async #resolve(tasks, previousDiffs = null) {
     const evidence = new Map(), authorities = new Map();
     for (const task of tasks) {
       const changedFiles = [];
@@ -84,11 +84,18 @@ export class TaskCompositionPlanService {
         for (const reference of task.gitReferences ?? []) {
           const selected = await this.#selected(task, reference);
           if (selected) selectedCompositions.push({ projectRoot: reference.projectRoot, ...selected });
+          const key = JSON.stringify([task.id, reference.projectRoot, reference.branch, reference.resultCommit]);
+          const previousDiff = previousDiffs?.get(key);
           const result = await this.measureOperation("release:planner:git-evidence", () => this.taskGitWorkspaces.releaseEvidence({
             taskId: task.id,
             ...(task.taskNumber ? { taskNumber: task.taskNumber } : {}),
             ...reference,
+            ...(previousDiff ? { previousDiff } : {}),
           }), { detail: true });
+          if (result.diffAuthority && !previousDiff) previousDiffs?.set(key, {
+            diffAuthority: result.diffAuthority,
+            changedFiles: result.changedFiles,
+          });
           changedFiles.push(...result.changedFiles);
         }
       } catch (error) {
@@ -132,7 +139,7 @@ export class TaskCompositionPlanService {
 
   // This pair is invocation-local to EACH existing preflight boundary.
   // It never grants authority to a later boundary, retry or process.
-  async planAcceptance(workspaceId, { acceptingTask, selectedTaskIds = null, checkBaseline = null } = {}) {
+  async planAcceptance(workspaceId, { acceptingTask, selectedTaskIds = null, checkBaseline = null, previousDiffs = null } = {}) {
     const rows = await this.#readTasks(workspaceId);
     const baselineTasks = this.#projectTasks(rows, null, selectedTaskIds);
     let tasks, prospectiveError;
@@ -141,7 +148,7 @@ export class TaskCompositionPlanService {
     } catch (error) {
       prospectiveError = error;
     }
-    const { evidence, authorities } = await this.#resolve(tasks ?? baselineTasks);
+    const { evidence, authorities } = await this.#resolve(tasks ?? baselineTasks, previousDiffs);
     const baseline = await this.#projection(workspaceId, baselineTasks, evidence);
     // A stale current Await revision takes precedence over prospective errors.
     checkBaseline?.(baseline);

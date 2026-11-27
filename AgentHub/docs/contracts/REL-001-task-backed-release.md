@@ -298,8 +298,9 @@ The planner computes the baseline and prospective plans from one fresh live Git
 pass per acceptance boundary. After Git evidence it rereads canonical Task rows
 and durable selected composition authority on that invocation. Each boundary
 still checks its original revisions, current Git evidence and existing native
-base, history and content proofs before promotion or final CAS. Evidence is
-never reused across boundaries or operations. The broader multiple-base and
+base, history and content proofs before promotion or final CAS. Ordinary Await
+may reuse the immutable changed-file projection within the same invocation
+after reading the same live Git authorities again. The broader multiple-base and
 publication policy from canceled work remains outside this mechanism. See
 [ADR-HUB-461](../decisions/ADR-HUB-461-fresh-acceptance-plan-pair.md).
 

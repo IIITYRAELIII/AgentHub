@@ -231,8 +231,8 @@ export class OwnedNativeObjectStore {
     for (const file of ["shallow", "objects/info/alternates", "info/grafts"]) {
       if (!await absent(path.join(this.repository, file))) throw fail("Object store contains borrowed or rewritten history");
     }
-    if (String(await this.#git(this.repository, ["rev-parse", "--is-bare-repository"])) !== "true"
-        || String(await this.#git(this.repository, ["rev-parse", "--show-object-format"])) !== "sha1"
+    if (String(await this.#git(this.repository, ["rev-parse", "--is-bare-repository", "--show-object-format"]))
+        .split(/\r?\n/u).join(" ") !== "true sha1"
         || String(await this.#git(this.repository, ["for-each-ref", "--format=%(refname)", "refs/replace"])) !== "") {
       throw fail("Owned object-store configuration changed");
     }

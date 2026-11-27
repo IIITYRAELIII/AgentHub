@@ -321,8 +321,9 @@ export class TaskIntegrationService {
     }
     const planOptions = selectedTaskIds ? { selectedTaskIds } : {};
     if (acceptingTask) requiredMethod(this.releasePlanner, "planAcceptance");
+    const previousDiffs = acceptingTask && !nativeAwaitRecovery && !prospectiveOnly && !validateOnly ? new Map() : null;
     const readPlans = (checkBaseline = null) => this.measureOperation("release:planner", async () => {
-      if (acceptingTask) return this.releasePlanner.planAcceptance(workspaceId, { ...planOptions, acceptingTask, checkBaseline });
+      if (acceptingTask) return this.releasePlanner.planAcceptance(workspaceId, { ...planOptions, acceptingTask, checkBaseline, previousDiffs });
       const current = await this.releasePlanner.plan(workspaceId, planOptions);
       checkBaseline?.(current);
       return { baseline: current, prospective: current };

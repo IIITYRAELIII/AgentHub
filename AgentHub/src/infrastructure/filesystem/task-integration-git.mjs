@@ -1763,12 +1763,17 @@ export class TaskIntegrationGitService {
           }
         }
       });
+      const checkoutTrees = new Map([[composition.head, composition.tree]]);
       const requireCheckout = async (head) => {
-        const [actualHead, actualTree, ...extra] = String(await git(
-          ["rev-parse", "HEAD^{commit}", "HEAD^{tree}"])).split(/\r?\n/u);
-        if (actualHead !== head || !actualTree || extra.length
-            || await git(["write-tree"]) !== actualTree
-            || await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
+        if (!checkoutTrees.has(head)) {
+          checkoutTrees.set(head, await git(["--no-replace-objects", "rev-parse", `${head}^{tree}`]));
+        }
+        const indexTree = await git(["write-tree"]);
+        const status = String(await git(["--no-optional-locks", "status", "--porcelain=v2", "--branch",
+          "--no-ahead-behind", "-z", "--untracked-files=all", "--ignore-submodules=none"],
+        { rawOutput: true })).split("\0").filter(Boolean);
+        if (!status.includes("# branch.oid " + head) || status.some(row => !row.startsWith("# branch."))
+            || indexTree !== checkoutTrees.get(head)) {
           throw Object.assign(new Error("Native release checkout changed; foreign bytes retained"), { code: "AWAIT_PREPARATION_UNKNOWN" });
         }
       };
