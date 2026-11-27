@@ -79,6 +79,21 @@ function sameIdentity(left, right) {
     && left.size === right.size && left.mtimeNs === right.mtimeNs;
 }
 
+function sourceIdentity(info) {
+  return {
+    dev: String(info.dev),
+    ino: String(info.ino),
+    size: Number(info.size),
+    mtimeNs: String(info.mtimeNs),
+    ctimeNs: String(info.ctimeNs),
+  };
+}
+
+function sameSourceIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size
+    && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
+}
+
 async function boundedDrain(waitForDrain, requestId) {
   let timer;
   try {
@@ -174,6 +189,18 @@ export class FileTransferService {
     return [...this.#keyring.keys].map(([kid, key]) => `${kid}.${transferMac(key, "source", target)}`);
   }
 
+  async #assertSourceUnchanged({ candidate, configuredRoot, target, source, expectedIdentity }) {
+    const handleIdentity = sourceIdentity(await source.stat({ bigint: true }));
+    if (!sameSourceIdentity(expectedIdentity, handleIdentity)) {
+      throw transferError("transfer-source-changed", 409);
+    }
+    await assertNoReparse(configuredRoot, candidate);
+    if (await realpath(candidate) !== target
+      || !sameSourceIdentity(expectedIdentity, sourceIdentity(await stat(candidate, { bigint: true })))) {
+      throw transferError("transfer-source-changed", 409);
+    }
+  }
+
   async #recoverPublishing(artifact) {
     const partial = path.join(this.#artifactsDirectory, `${artifact.id}.partial`);
     const completed = this.artifactPath(artifact.id);
@@ -241,7 +268,8 @@ export class FileTransferService {
         throw transferError("transfer-invalid-source", 400);
       }
       await assertNoReparse(configuredRoot, candidate);
-      if (await realpath(candidate) !== target || !sameIdentity(identity(sourceInfo), identity(await stat(candidate, { bigint: true })))) {
+      if (await realpath(candidate) !== target
+        || !sameSourceIdentity(sourceIdentity(sourceInfo), sourceIdentity(await stat(candidate, { bigint: true })))) {
         throw transferError("transfer-source-changed", 409);
       }
       const capacity = await statfs(this.#artifactsDirectory, { bigint: true });
@@ -252,10 +280,12 @@ export class FileTransferService {
       await source.close();
       throw error;
     }
+    const originalSourceIdentity = sourceIdentity(sourceInfo);
     const sourceAliases = this.#sourceAliases(target);
     const sourceKey = sourceAliases.find((alias) => alias.startsWith(`${this.#keyring.currentKid}.`));
     const reservation = {
       owner: String(owner), sourceKey, sourceAliases, sourceKids: [...this.#keyring.keys.keys()],
+      sourceIdentity: originalSourceIdentity,
       requestId: String(requestId), name: transferFilename(path.basename(target)),
       size: Number(sourceInfo.size), availableBytes,
     };
@@ -280,7 +310,8 @@ export class FileTransferService {
       await source.close();
       return artifact;
     }
-    const preparation = this.#copy({ artifact, owner: String(owner), source, sourceIdentity: identity(sourceInfo) })
+    const preparation = this.#copy({ artifact, owner: String(owner), source,
+      sourceIdentity: originalSourceIdentity, candidate, configuredRoot, target })
       .finally(() => this.#preparations.delete(artifact.id));
     this.#preparations.set(artifact.id, preparation);
     // prepare() returns an intake receipt while #copy owns durable failure and
@@ -295,7 +326,8 @@ export class FileTransferService {
     await this.#preparations.get(String(artifactId));
   }
 
-  async #copy({ artifact, owner, source, sourceIdentity }) {
+  async #copy({ artifact, owner, source, sourceIdentity: expectedSourceIdentity,
+    candidate, configuredRoot, target }) {
     const partial = path.join(this.#artifactsDirectory, `${artifact.id}.partial`);
     const completed = path.join(this.#artifactsDirectory, `${artifact.id}.bin`);
     let output;
@@ -363,14 +395,16 @@ export class FileTransferService {
         }
       }
       await output.sync();
-      const finalSource = identity(await source.stat({ bigint: true }));
-      if (!sameIdentity(sourceIdentity, finalSource)) throw transferError("transfer-source-changed", 409);
+      await this.#assertSourceUnchanged({ candidate, configuredRoot, target, source,
+        expectedIdentity: expectedSourceIdentity });
       const sha256 = aggregate.digest("hex");
       await output.close();
       output = null;
       await this.#store.publishing(artifact.id, sha256);
       await rename(partial, completed);
       const snapshot = await this.#verifyPublishedArtifact({ ...artifact, sha256 });
+      await this.#assertSourceUnchanged({ candidate, configuredRoot, target, source,
+        expectedIdentity: expectedSourceIdentity });
       await this.#store.ready(artifact.id, sha256, snapshot);
     } catch (error) {
       await output?.close().catch(() => {});
@@ -393,14 +427,28 @@ export class FileTransferService {
     return this.#store.artifact(String(owner), String(artifactId));
   }
 
-  async createShare({ owner, artifactId, requestId, ttlMs }) {
+  cancelPreparation(owner, artifactId) {
+    return this.#store.cancelPreparation(String(owner), String(artifactId));
+  }
+
+  async createShare({ owner, artifactId, requestId, ttlMs, sourcePath = null, replayOnly = false }) {
     const ownerId = String(owner), artifactKey = String(artifactId), requestKey = String(requestId);
     const issuanceKid = this.#keyring.currentKid;
     const issuanceKey = this.#keyring.keys.get(issuanceKid);
     const issuanceSecret = derivedSecret(issuanceKey, "share", ownerId, artifactKey, requestKey, ttlMs);
     const secretHash = transferMac(issuanceKey, "share", issuanceSecret);
+    let sourceBinding = {};
+    if (sourcePath !== null) {
+      const { target } = await this.#resolveSourcePath(sourcePath);
+      const info = await stat(target, { bigint: true });
+      if (!info.isFile() || info.size < 1n || info.size > BigInt(this.#policy.maxBytes)) {
+        throw transferError("transfer-invalid-source", 400);
+      }
+      sourceBinding = { sourceAliases: this.#sourceAliases(target), sourceIdentity: sourceIdentity(info) };
+    }
     const share = await this.#store.create({ owner: ownerId, artifactId: artifactKey,
-      requestId: requestKey, kid: issuanceKid, secretHash, ttlMs });
+      requestId: requestKey, kid: issuanceKid, secretHash, ttlMs, replayOnly: replayOnly === true,
+      ...sourceBinding });
     const persistedKey = this.#keyring.keys.get(share.kid);
     if (!persistedKey) throw transferError("transfer-unavailable", 410);
     const secret = derivedSecret(persistedKey, "share", ownerId, artifactKey, requestKey, ttlMs);
@@ -410,7 +458,7 @@ export class FileTransferService {
     delete result.kid;
     delete result.requestId;
     delete result.secretHash;
-    if (result.state === "ready") {
+    if (["preparing", "ready"].includes(result.state)) {
       result.url = `${this.#policy.publicBaseUrl}/transfer/#v1.${share.kid}.${share.id}.${secret}`;
     }
     return result;
@@ -580,9 +628,9 @@ export class FileTransferService {
     if (!info.isFile() || info.size < 1n || info.size > BigInt(this.#policy.maxBytes)) {
       throw transferError("transfer-invalid-source", 400);
     }
-    const result = await this.#store.ownerFile(String(owner), this.#sourceAliases(target));
+    const result = await this.#store.ownerFile(String(owner), this.#sourceAliases(target), sourceIdentity(info));
     let share = result?.share ?? null;
-    if (share?.state === "ready") {
+    if (["preparing", "ready"].includes(share?.state)) {
       const key = this.#keyring.keys.get(share.kid);
       if (key) {
         const ttlMs = share.expiresAt - share.createdAt;

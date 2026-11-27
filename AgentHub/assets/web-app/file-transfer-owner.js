@@ -47,12 +47,14 @@
         </div>
         <button type="submit" class="file-transfer-owner-close" value="cancel" aria-label="Закрыть">×</button>
       </header>
-      <div id="file-transfer-owner-body" class="file-transfer-owner-body" aria-live="polite"></div>
+      <p class="file-transfer-semantic-status" data-transfer-semantic-status role="status" aria-live="polite" aria-atomic="true"></p>
+      <div id="file-transfer-owner-body" class="file-transfer-owner-body"></div>
       <footer class="file-transfer-owner-actions"></footer>
     </form>`;
   document.body.append(dialog);
   const body = dialog.querySelector(".file-transfer-owner-body");
   const actions = dialog.querySelector(".file-transfer-owner-actions");
+  const semanticStatus = dialog.querySelector("[data-transfer-semantic-status]");
 
   const revokeDialog = document.createElement("dialog");
   revokeDialog.className = "file-transfer-revoke-dialog";
@@ -60,7 +62,7 @@
   revokeDialog.innerHTML = `
     <form method="dialog">
       <h2 id="file-transfer-revoke-title">Отозвать ссылку?</h2>
-      <p>Новые байты больше не будут передаваться. Возобновить эту ссылку будет нельзя.</p>
+      <p>Ссылка будет отозвана сразу; загрузка или скачивание по ней станут недоступны.</p>
       <div class="file-transfer-owner-actions">
         <button type="submit" value="cancel">Отмена</button>
         <button type="button" class="danger" data-transfer-confirm-revoke>Отозвать</button>
@@ -104,6 +106,9 @@
     invalidate();
     dialog.close();
   }
+  function announceSemantic(value) {
+    if (semanticStatus.textContent !== value) semanticStatus.textContent = value;
+  }
   function showRevoke() {
     if (!isCurrent(context) || !snapshot?.share) return;
     revokeContext = { owner: context, shareId: snapshot.share.id };
@@ -116,7 +121,7 @@
     const revision = owner?.revision;
     if (isCurrent(owner, revision)) pollTimer = setTimeout(() => {
       if (isCurrent(owner, revision)) void refresh({ quiet: true, owner });
-    }, 900);
+    }, 1200);
   }
   function renderCreate() {
     const options = snapshot.ttlOptions || [];
@@ -140,43 +145,82 @@
       <section class="file-transfer-owner-state" aria-labelledby="file-transfer-owner-state-title">
         <h3 id="file-transfer-owner-state-title">Подготовка файла</h3>
         <p>Создаём неизменяемую копию и вычисляем SHA-256.</p>
-        <div class="file-transfer-owner-progress" role="progressbar"${determinate ? ` aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${Math.min(processed, total)}"` : ""}>
-          <span style="--progress:${determinate ? Math.min(100, processed / total * 100) : 35}%"></span>
+        <div class="file-transfer-owner-progress${determinate ? "" : " is-indeterminate"}" role="progressbar"${determinate ? ` aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${Math.min(processed, total)}"` : ""}>
+          <span${determinate ? ` style="--progress:${Math.min(100, processed / total * 100)}%"` : ""}></span>
         </div>
         <p class="file-transfer-owner-helper">${determinate ? `${formatBytes(processed)} из ${formatBytes(total)}. ` : ""}Можно закрыть окно: подготовка сохранится на сервере.</p>
       </section>`;
     setActions(button("Закрыть", closeOwner));
     schedulePoll();
   }
+  function renderLink(share) {
+    const preparing = share.state === "preparing";
+    const processed = Number(share.preparedBytes) || 0;
+    const total = Number(share.size) || Number(snapshot.file?.size) || 0;
+    const determinate = preparing && total > 0 && Number.isFinite(Number(share.preparedBytes));
+    const existing = body.querySelector("[data-transfer-link-state]");
+    const sameLink = existing && body.querySelector("[data-transfer-url]")?.value === share.url;
+    if (!sameLink) {
+      body.innerHTML = `${fileSummary()}
+        <section class="file-transfer-owner-state" data-transfer-link-state aria-labelledby="file-transfer-owner-state-title">
+          <h3 id="file-transfer-owner-state-title" data-transfer-state-heading></h3>
+          <p data-transfer-state-copy></p>
+          <label class="file-transfer-owner-field"><span>Внешняя ссылка</span>
+            <input type="text" readonly value="${escapeHtml(share.url)}" data-transfer-url>
+          </label>
+          <p class="file-transfer-copy-status" data-transfer-copy-status aria-live="polite"></p>
+          <div class="file-transfer-owner-progress" data-transfer-link-progress role="progressbar"><span></span></div>
+          <p class="file-transfer-owner-helper" data-transfer-progress-copy></p>
+          <dl class="file-transfer-owner-details">
+            <div><dt>Доступна до</dt><dd data-transfer-expiry></dd></div>
+            <div><dt>Размер</dt><dd data-transfer-size></dd></div>
+            <div><dt>SHA-256</dt><dd><code data-transfer-sha></code></dd></div>
+          </dl>
+        </section>`;
+      const owner = context;
+      const copy = button("Копировать ссылку", async () => {
+        const status = body.querySelector("[data-transfer-copy-status]");
+        try {
+          await navigator.clipboard.writeText(share.url);
+          if (!isCurrent(owner)) return;
+          status.textContent = "Ссылка скопирована";
+        } catch {
+          if (!isCurrent(owner)) return;
+          body.querySelector("[data-transfer-url]")?.select();
+          status.textContent = "Не удалось скопировать ссылку. Поле оставлено выделенным.";
+        }
+      }, "primary");
+      setActions(copy, button("Отозвать ссылку", showRevoke, "danger"));
+    }
+    body.querySelector("[data-transfer-state-heading]").textContent = preparing ? "Ссылка создана" : "Ссылка готова";
+    announceSemantic(preparing ? "Ссылка создана" : "Файл готов к скачиванию");
+    body.querySelector("[data-transfer-state-copy]").textContent = preparing
+      ? "Файл загружается. Ссылку уже можно отправить — скачивание станет доступно после завершения загрузки."
+      : "Файл загружен. Получатель может скачать его по этой же ссылке.";
+    body.querySelector("[data-transfer-expiry]").textContent = formatDate(share.expiresAt);
+    body.querySelector("[data-transfer-size]").textContent = formatBytes(total);
+    body.querySelector("[data-transfer-sha]").textContent = preparing ? "Вычисляется…" : (share.sha256 || "Вычисляется…");
+    const progress = body.querySelector("[data-transfer-link-progress]");
+    progress.hidden = !preparing;
+    progress.classList.toggle("is-indeterminate", preparing && !determinate);
+    progress.removeAttribute("aria-valuemin");
+    progress.removeAttribute("aria-valuemax");
+    progress.removeAttribute("aria-valuenow");
+    if (determinate) {
+      progress.setAttribute("aria-valuemin", "0");
+      progress.setAttribute("aria-valuemax", String(total));
+      progress.setAttribute("aria-valuenow", String(Math.min(processed, total)));
+    }
+    const progressBar = progress.querySelector("span");
+    if (determinate) progressBar.style.setProperty("--progress", `${Math.min(100, processed / total * 100)}%`);
+    else progressBar.style.removeProperty("--progress");
+    body.querySelector("[data-transfer-progress-copy]").textContent = preparing
+      ? `${determinate ? `${formatBytes(processed)} из ${formatBytes(total)}. ` : ""}Можно закрыть окно: загрузка продолжится на сервере.`
+      : "";
+    if (preparing) schedulePoll();
+  }
   function renderReady(share) {
-    body.innerHTML = `${fileSummary()}
-      <section class="file-transfer-owner-state" aria-labelledby="file-transfer-owner-state-title">
-        <h3 id="file-transfer-owner-state-title">Ссылка готова</h3>
-        <label class="file-transfer-owner-field"><span>Внешняя ссылка</span>
-          <input type="text" readonly value="${escapeHtml(share.url)}" data-transfer-url>
-        </label>
-        <p class="file-transfer-copy-status" data-transfer-copy-status aria-live="polite"></p>
-        <dl class="file-transfer-owner-details">
-          <div><dt>Доступна до</dt><dd>${formatDate(share.expiresAt)}</dd></div>
-          <div><dt>Размер</dt><dd>${formatBytes(share.size)}</dd></div>
-          <div><dt>SHA-256</dt><dd><code>${escapeHtml(share.sha256 || "—")}</code></dd></div>
-        </dl>
-      </section>`;
-    const owner = context;
-    const revision = owner?.revision;
-    const copy = button("Копировать ссылку", async () => {
-      const status = body.querySelector("[data-transfer-copy-status]");
-      try {
-        await navigator.clipboard.writeText(share.url);
-        if (!isCurrent(owner, revision)) return;
-        status.textContent = "Ссылка скопирована";
-      } catch {
-        if (!isCurrent(owner, revision)) return;
-        body.querySelector("[data-transfer-url]")?.select();
-        status.textContent = "Не удалось скопировать ссылку. Поле оставлено выделенным.";
-      }
-    }, "primary");
-    setActions(copy, button("Отозвать ссылку", showRevoke, "danger"));
+    renderLink(share);
   }
   function renderShare(share) {
     const states = {
@@ -185,7 +229,8 @@
       completed: ["Передача завершена", "Сервер передал файл целиком. Это не подтверждает, что файл сохранён получателем."],
       expired: ["Срок ссылки истёк", "Ссылка больше недоступна."],
       revoked: ["Ссылка отозвана", "Передача по этой ссылке прекращена."],
-      failed: ["Ошибка передачи", "Не удалось безопасно продолжить передачу."],
+      failed: ["Не удалось подготовить файл", "Файл не был опубликован. Скачивание по этой ссылке недоступно."],
+      cancelled: ["Загрузка отменена", "Файл не был опубликован. Скачивание по этой ссылке недоступно."],
       ambiguous_terminal: ["Ошибка передачи", "Результат передачи неоднозначен. Ссылка закрыта без возможности возобновления."],
       revoking: ["Отзываем ссылку", "Новые блоки больше не будут разрешены."],
       expiring: ["Срок истёк", "Ссылка закрывается."],
@@ -201,7 +246,7 @@
         <h3 id="file-transfer-owner-state-title">${escapeHtml(heading)}</h3>
         <p>${escapeHtml(copy)}</p>${progress}${claimed}
       </section>`;
-    const terminal = ["completed", "expired", "revoked", "failed", "ambiguous_terminal"].includes(share.state);
+    const terminal = ["completed", "expired", "revoked", "failed", "cancelled", "ambiguous_terminal"].includes(share.state);
     setActions(
       terminal ? button("Создать новую ссылку", renderCreate, "primary") : null,
       ["claimed", "downloading"].includes(share.state) ? button("Отозвать ссылку", showRevoke, "danger") : null,
@@ -219,7 +264,7 @@
   function render() {
     stopPolling();
     const { artifact, share } = snapshot;
-    if (share?.state === "ready" && share.url) renderReady(share);
+    if (["preparing", "ready"].includes(share?.state) && share.url) renderReady(share);
     else if (share) renderShare(share);
     else if (["preparing", "publishing"].includes(artifact?.state)) renderPreparing(artifact);
     else renderCreate();
@@ -232,14 +277,15 @@
       if (!isCurrent(owner, revision)) return;
       knownShares.set(owner.path, Boolean(latest.share));
       const intent = owner.pendingCreate;
-      if (intent && latest.artifact?.state === "ready" && !latest.share) {
+      if (intent && !latest.artifact && !latest.share) owner.pendingCreate = null;
+      if (intent && latest.artifact && !latest.share) {
         if (intent.artifactId && intent.artifactId !== latest.artifact.id) {
           renderUnknown();
           return;
         }
         intent.artifactId = latest.artifact.id;
         const created = await owner.request("create", {
-          artifactId: intent.artifactId, requestId: intent.requestId, ttlMs: intent.ttlMs,
+          path: owner.path, artifactId: intent.artifactId, requestId: intent.requestId, ttlMs: intent.ttlMs,
         });
         if (!isCurrent(owner, revision) || owner.pendingCreate !== intent) return;
         owner.pendingCreate = null;
@@ -259,26 +305,17 @@
     const revision = ++owner.revision;
     stopPolling();
     setActions();
-    const priorArtifact = snapshot.artifact?.state === "ready" ? snapshot.artifact : null;
     const intent = owner.pendingCreate ?? {
-      requestId: requestId(), ttlMs: selectedTtl, artifactId: priorArtifact?.id ?? null,
+      requestId: requestId(), prepareRequestId: requestId(), ttlMs: selectedTtl, artifactId: null,
     };
     owner.pendingCreate = intent;
     try {
-      if (!priorArtifact) {
-        const prepared = await owner.request("prepare", { path: owner.path, requestId: requestId() });
-        if (!isCurrent(owner, revision) || owner.pendingCreate !== intent) return;
-        intent.artifactId = prepared.artifact.id;
-        snapshot.artifact = prepared.artifact;
-        renderPreparing(snapshot.artifact);
-        return;
-      }
-      if (intent.artifactId !== priorArtifact.id) {
-        renderUnknown();
-        return;
-      }
+      const prepared = await owner.request("prepare", { path: owner.path, requestId: intent.prepareRequestId });
+      if (!isCurrent(owner, revision) || owner.pendingCreate !== intent) return;
+      intent.artifactId = prepared.artifact.id;
+      snapshot.artifact = prepared.artifact;
       const created = await owner.request("create", {
-        artifactId: intent.artifactId, requestId: intent.requestId, ttlMs: intent.ttlMs,
+        path: owner.path, artifactId: intent.artifactId, requestId: intent.requestId, ttlMs: intent.ttlMs,
       });
       if (!isCurrent(owner, revision) || owner.pendingCreate !== intent) return;
       owner.pendingCreate = null;
@@ -343,6 +380,7 @@
       invalidate();
       const owner = { path: currentPath, request, revision: 0, pendingCreate: null };
       context = owner;
+      semanticStatus.textContent = "";
       opener = trigger instanceof HTMLElement ? trigger : document.activeElement;
       snapshot = { file: { name: currentPath.split(/[\\/]/u).at(-1) || "Файл", size: 0 }, artifact: null, share: null, ttlOptions: [] };
       body.innerHTML = `${fileSummary(snapshot.file)}<p role="status">Получаем актуальный статус…</p>`;

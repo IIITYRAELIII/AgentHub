@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS transfer_instances (
 );
 CREATE TABLE IF NOT EXISTS transfer_artifacts (
   id TEXT PRIMARY KEY, owner TEXT NOT NULL, source_key TEXT NOT NULL, request_id TEXT NOT NULL,
-  name TEXT NOT NULL, size INTEGER NOT NULL CHECK(size>0), sha256 TEXT, identity_json TEXT,
+  source_identity_json TEXT, name TEXT NOT NULL, size INTEGER NOT NULL CHECK(size>0), sha256 TEXT,
+  identity_json TEXT, failure_code TEXT,
   state TEXT NOT NULL CHECK(state IN ('preparing','publishing','ready','failed','deleting','deleted')),
   prepared_bytes INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
   pid INTEGER NOT NULL, instance_id TEXT NOT NULL, UNIQUE(owner,request_id)
@@ -89,11 +90,6 @@ CREATE TRIGGER IF NOT EXISTS transfer_audit_no_delete BEFORE DELETE ON transfer_
 CREATE TABLE IF NOT EXISTS transfer_rate (
   key TEXT PRIMARY KEY, window INTEGER NOT NULL, count INTEGER NOT NULL
 );
-CREATE TRIGGER IF NOT EXISTS transfer_artifact_immutable BEFORE UPDATE ON transfer_artifacts
-  WHEN OLD.state='ready' AND (NEW.id IS NOT OLD.id OR NEW.owner IS NOT OLD.owner OR NEW.name IS NOT OLD.name
-    OR NEW.size IS NOT OLD.size OR NEW.sha256 IS NOT OLD.sha256 OR NEW.identity_json IS NOT OLD.identity_json
-    OR NEW.source_key IS NOT OLD.source_key OR NEW.request_id IS NOT OLD.request_id)
-  BEGIN SELECT RAISE(ABORT,'transfer artifact immutable'); END;
 CREATE TRIGGER IF NOT EXISTS transfer_no_share_reopen BEFORE UPDATE ON transfer_shares
   WHEN (OLD.state!='ready' AND NEW.state='ready')
     OR (OLD.state IN ('completed','ambiguous_terminal','revoked','expired','failed') AND NEW.state!=OLD.state)
@@ -103,16 +99,31 @@ CREATE TRIGGER IF NOT EXISTS transfer_no_share_reopen BEFORE UPDATE ON transfer_
   BEGIN SELECT RAISE(ABORT,'transfer share cannot reopen or change identity'); END;
 `;
 
+const ARTIFACT_IMMUTABLE_TRIGGER = `
+CREATE TRIGGER transfer_artifact_immutable BEFORE UPDATE ON transfer_artifacts
+  WHEN OLD.state='ready' AND (NEW.id IS NOT OLD.id OR NEW.owner IS NOT OLD.owner OR NEW.name IS NOT OLD.name
+    OR NEW.size IS NOT OLD.size OR NEW.sha256 IS NOT OLD.sha256 OR NEW.identity_json IS NOT OLD.identity_json
+    OR (NEW.failure_code IS NOT OLD.failure_code AND NEW.state='ready')
+    OR NEW.source_key IS NOT OLD.source_key OR NEW.source_identity_json IS NOT OLD.source_identity_json
+    OR NEW.request_id IS NOT OLD.request_id)
+  BEGIN SELECT RAISE(ABORT,'transfer artifact immutable'); END;
+`;
+
 function artifactView(row) {
   return row && { id: row.id, name: row.name, size: row.size, sha256: row.sha256,
     state: row.state, preparedBytes: row.prepared_bytes, expiresAt: row.expires_at,
     reserved: row.reserved === 1 };
 }
 function shareView(row) {
-  return { id: row.id, artifactId: row.artifact_id, state: row.state, name: row.name, size: row.size,
+  let state = row.state;
+  if (state === "ready" && ["preparing", "publishing"].includes(row.artifact_state)) state = "preparing";
+  if (state === "ready" && ["failed", "deleting", "deleted"].includes(row.artifact_state)) state = "failed";
+  if (state === "failed" && row.failure_code === "cancelled") state = "cancelled";
+  return { id: row.id, artifactId: row.artifact_id, state, name: row.name, size: row.size,
     sha256: row.sha256, createdAt: row.created_at, expiresAt: row.expires_at,
     claimedAt: row.claimed_at, completedAt: row.completed_at,
-    bytesServed: row.bytes_served ?? 0, firstByteAt: row.first_byte_at ?? null };
+    bytesServed: row.bytes_served ?? 0, firstByteAt: row.first_byte_at ?? null,
+    preparedBytes: row.prepared_bytes ?? row.size };
 }
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -121,6 +132,25 @@ function exactText(left, right) {
   const a = Buffer.from(String(left));
   const b = Buffer.from(String(right));
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function sourceIdentityJson(value, { optional = false } = {}) {
+  if (value == null && optional) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw transferError("transfer-invalid-source", 400);
+  }
+  const normalized = {
+    dev: String(value.dev ?? ""),
+    ino: String(value.ino ?? ""),
+    size: Number(value.size),
+    mtimeNs: String(value.mtimeNs ?? ""),
+    ctimeNs: String(value.ctimeNs ?? ""),
+  };
+  if (!normalized.dev || !normalized.ino || !Number.isSafeInteger(normalized.size) || normalized.size < 1
+    || !/^-?\d+$/u.test(normalized.mtimeNs) || !/^-?\d+$/u.test(normalized.ctimeNs)) {
+    throw transferError("transfer-invalid-source", 400);
+  }
+  return JSON.stringify(normalized);
 }
 
 /** Only synchronous SQLite work enters these short transactions. */
@@ -143,6 +173,15 @@ export class FileTransferStore {
           db.exec("BEGIN IMMEDIATE");
           try {
             db.exec(SCHEMA);
+            const artifactColumns = new Set(db.prepare("PRAGMA table_info(transfer_artifacts)").all().map((column) => column.name));
+            if (!artifactColumns.has("source_identity_json")) {
+              db.exec("ALTER TABLE transfer_artifacts ADD COLUMN source_identity_json TEXT");
+            }
+            if (!artifactColumns.has("failure_code")) {
+              db.exec("ALTER TABLE transfer_artifacts ADD COLUMN failure_code TEXT");
+            }
+            db.exec("DROP TRIGGER IF EXISTS transfer_artifact_immutable");
+            db.exec(ARTIFACT_IMMUTABLE_TRIGGER);
             db.prepare("INSERT OR IGNORE INTO transfer_meta VALUES ('health_id',?)").run(randomBytes(32).toString("hex"));
             const now = Math.trunc(this.#now());
             db.prepare("INSERT INTO transfer_instances(id,pid,started_at,heartbeat_at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET pid=excluded.pid,heartbeat_at=excluded.heartbeat_at")
@@ -182,18 +221,32 @@ export class FileTransferStore {
     for (const row of db.prepare("SELECT * FROM transfer_artifacts WHERE state='preparing'").all()) {
       const instance = db.prepare("SELECT heartbeat_at FROM transfer_instances WHERE id=?").get(row.instance_id);
       if (instance && instance.heartbeat_at >= now - 30_000) continue;
-      db.prepare("UPDATE transfer_artifacts SET state='failed' WHERE id=? AND state='preparing'").run(row.id);
-      this.#audit(db, now, "preparation-failed", { artifactId: row.id });
+      this.#failPreparation(db, now, row.id);
     }
+  }
+  #failPreparation(db, now, id, owner = null, failureCode = "failed") {
+    const result = owner === null
+      ? db.prepare("UPDATE transfer_artifacts SET state='failed',failure_code=? WHERE id=? AND state IN ('preparing','publishing')").run(failureCode, id)
+      : db.prepare("UPDATE transfer_artifacts SET state='failed',failure_code=? WHERE id=? AND owner=? AND state IN ('preparing','publishing')").run(failureCode, id, owner);
+    if (!result.changes) return false;
+    const event = failureCode === "cancelled" ? "preparation-cancelled" : "preparation-failed";
+    this.#audit(db, now, event, { artifactId: id });
+    for (const share of db.prepare("SELECT id FROM transfer_shares WHERE artifact_id=? AND state='ready'").all(id)) {
+      db.prepare("UPDATE transfer_shares SET state='failed',generation=generation+1 WHERE id=? AND state='ready'").run(share.id);
+      this.#audit(db, now, event, { shareId: share.id, artifactId: id });
+    }
+    return true;
   }
   async healthId() {
     await this.initialize();
     return this.#database.prepare("SELECT value FROM transfer_meta WHERE key='health_id'").get().value;
   }
-  reserve({ owner, sourceKey, sourceAliases = [sourceKey], sourceKids = [], requestId, name, size, availableBytes }) {
+  reserve({ owner, sourceKey, sourceAliases = [sourceKey], sourceKids = [], sourceIdentity = null,
+    requestId, name, size, availableBytes }) {
     return this.#tx((db, now) => {
       const aliases = Array.isArray(sourceAliases) ? sourceAliases.map(String) : [];
       const kids = Array.isArray(sourceKids) ? sourceKids.map(String) : [];
+      const sourceIdentityValue = sourceIdentityJson(sourceIdentity, { optional: true });
       if (!aliases.length || aliases.length > 32 || kids.length > 32
         || !aliases.some((alias) => exactText(alias, sourceKey))) {
         throw transferError("transfer-invalid-source", 400);
@@ -209,10 +262,21 @@ export class FileTransferStore {
           }
           throw transferError("transfer-request-conflict", 409);
         }
-        if (existing.name !== name || existing.size !== size) throw transferError("transfer-request-conflict", 409);
+        if (existing.name !== name || existing.size !== size
+          || existing.source_identity_json !== sourceIdentityValue) {
+          throw transferError("transfer-request-conflict", 409);
+        }
         return artifactView(existing);
       }
       this.#recoverPreparations(db, now);
+      if (sourceIdentityValue !== null) {
+        const placeholders = aliases.map(() => "?").join(",");
+        const reusable = db.prepare(`SELECT * FROM transfer_artifacts
+          WHERE owner=? AND source_key IN (${placeholders}) AND source_identity_json=? AND name=? AND size=?
+            AND state IN ('preparing','publishing','ready') AND expires_at>? ORDER BY created_at DESC LIMIT 1`)
+          .get(owner, ...aliases, sourceIdentityValue, name, size, now);
+        if (reusable) return artifactView(reusable);
+      }
       const total = db.prepare("SELECT coalesce(sum(size),0) bytes,count(*) count FROM transfer_artifacts WHERE state!='deleted'").get();
       const mine = db.prepare("SELECT coalesce(sum(size),0) bytes,count(*) count FROM transfer_artifacts WHERE owner=? AND state!='deleted'").get(owner);
       const preparing = db.prepare("SELECT count(*) n FROM transfer_artifacts WHERE state IN ('preparing','publishing')").get().n;
@@ -226,8 +290,9 @@ export class FileTransferStore {
         throw transferError("transfer-storage-quota", 429);
       }
       const id = randomUUID();
-      db.prepare("INSERT INTO transfer_artifacts(id,owner,source_key,request_id,name,size,state,created_at,expires_at,pid,instance_id) VALUES(?,?,?,?,?,?,'preparing',?,?,?,?)")
-        .run(id, owner, sourceKey, requestId, name, size, now, now + this.#policy.preparationTtlMs, process.pid, this.#instanceId);
+      db.prepare("INSERT INTO transfer_artifacts(id,owner,source_key,source_identity_json,request_id,name,size,state,created_at,expires_at,pid,instance_id) VALUES(?,?,?,?,?,?,?,'preparing',?,?,?,?)")
+        .run(id, owner, sourceKey, sourceIdentityValue, requestId, name, size, now,
+          now + this.#policy.preparationTtlMs, process.pid, this.#instanceId);
       this.#audit(db, now, "preparing", { artifactId: id });
       return artifactView({ ...db.prepare("SELECT * FROM transfer_artifacts WHERE id=?").get(id), reserved: 1 });
     });
@@ -268,8 +333,19 @@ export class FileTransferStore {
   }
   failPreparation(owner, id) {
     return this.#tx((db, now) => {
-      const result = db.prepare("UPDATE transfer_artifacts SET state='failed' WHERE id=? AND owner=? AND state IN ('preparing','publishing')").run(id, owner);
-      if (result.changes) this.#audit(db, now, "preparation-failed", { artifactId: id });
+      this.#failPreparation(db, now, id, owner);
+    });
+  }
+  cancelPreparation(owner, id) {
+    return this.#tx((db, now) => {
+      if (!this.#failPreparation(db, now, id, owner, "cancelled")) {
+        const row = db.prepare("SELECT state,failure_code FROM transfer_artifacts WHERE id=? AND owner=?").get(id, owner);
+        if (!row) throw transferError("transfer-artifact-not-found", 404);
+        if (row.state !== "failed" || row.failure_code !== "cancelled") {
+          throw transferError("transfer-preparation-unavailable", 409);
+        }
+      }
+      return artifactView(db.prepare("SELECT * FROM transfer_artifacts WHERE id=?").get(id));
     });
   }
   publishingArtifacts() {
@@ -281,20 +357,23 @@ export class FileTransferStore {
       const row = db.prepare("SELECT * FROM transfer_artifacts WHERE id=? AND owner=?").get(id, owner);
       if (!row) throw transferError("transfer-artifact-not-found", 404);
       if (row.state === "preparing" && row.expires_at <= now) {
-        db.prepare("UPDATE transfer_artifacts SET state='failed' WHERE id=?").run(id);
-        this.#audit(db, now, "preparation-failed", { artifactId: id }); row.state = "failed";
+        this.#failPreparation(db, now, id, owner);
+        row.state = "failed";
+        row.failure_code = "failed";
       }
       return artifactView(row);
     });
   }
-  ownerFile(owner, sourceKeys) {
+  ownerFile(owner, sourceKeys, sourceIdentity) {
     return this.#tx((db, now) => {
       const keys = Array.isArray(sourceKeys) ? sourceKeys.map(String) : [];
       if (!keys.length || keys.length > 32) throw transferError("transfer-invalid-source", 400);
+      const sourceIdentityValue = sourceIdentityJson(sourceIdentity);
       this.#recoverPreparations(db, now);
       const placeholders = keys.map(() => "?").join(",");
-      const artifact = db.prepare(`SELECT * FROM transfer_artifacts WHERE owner=? AND source_key IN (${placeholders}) AND state!='deleted' ORDER BY created_at DESC LIMIT 1`)
-        .get(owner, ...keys);
+      const artifact = db.prepare(`SELECT * FROM transfer_artifacts WHERE owner=? AND source_key IN (${placeholders})
+        AND source_identity_json=? AND state!='deleted' ORDER BY created_at DESC LIMIT 1`)
+        .get(owner, ...keys, sourceIdentityValue);
       if (!artifact) return null;
       let share = db.prepare("SELECT t.*,s.bytes_served,s.first_byte_at FROM transfer_shares t LEFT JOIN transfer_sessions s ON s.share_id=t.id WHERE t.artifact_id=? ORDER BY t.created_at DESC LIMIT 1")
         .get(artifact.id);
@@ -306,7 +385,9 @@ export class FileTransferStore {
       return {
         artifact: artifactView(db.prepare("SELECT * FROM transfer_artifacts WHERE id=?").get(artifact.id)),
         share: share ? {
-          ...shareView({ ...share, name: artifact.name, size: artifact.size, sha256: artifact.sha256 }),
+          ...shareView({ ...share, name: artifact.name, size: artifact.size, sha256: artifact.sha256,
+            failure_code: artifact.failure_code,
+            artifact_state: artifact.state, prepared_bytes: artifact.prepared_bytes }),
           kid: share.kid,
           requestId: share.request_id,
           secretHash: share.secret_hash,
@@ -314,13 +395,21 @@ export class FileTransferStore {
       };
     });
   }
-  create({ owner, artifactId, requestId, kid, secretHash, ttlMs }) {
+  create({ owner, artifactId, requestId, kid, secretHash, ttlMs,
+    sourceAliases = null, sourceIdentity = null, replayOnly = false }) {
     return this.#tx((db, now) => {
       if (!TRANSFER_TTLS.includes(ttlMs)) throw transferError("transfer-invalid-expiry", 400);
+      const aliases = sourceAliases === null ? null : sourceAliases.map(String);
+      const sourceIdentityValue = sourceIdentity === null ? null : sourceIdentityJson(sourceIdentity);
+      if ((aliases === null) !== (sourceIdentityValue === null)
+        || (aliases !== null && (!aliases.length || aliases.length > 32))) {
+        throw transferError("transfer-invalid-source", 400);
+      }
       const requestHash = transferHash(JSON.stringify(["agenthub-transfer-create-v1", owner, artifactId,
         requestId, ttlMs]));
       const persistedView = (shareId) => {
-        const row = db.prepare(`SELECT t.*,a.name,a.size,a.sha256,s.bytes_served,s.first_byte_at
+        const row = db.prepare(`SELECT t.*,a.name,a.size,a.sha256,a.state artifact_state,a.failure_code,
+          a.prepared_bytes,s.bytes_served,s.first_byte_at
           FROM transfer_shares t JOIN transfer_artifacts a ON a.id=t.artifact_id
           LEFT JOIN transfer_sessions s ON s.share_id=t.id WHERE t.id=?`).get(shareId);
         return {
@@ -336,8 +425,13 @@ export class FileTransferStore {
         this.#expire(db, now, old);
         return persistedView(old.id);
       }
-      const artifact = db.prepare("SELECT * FROM transfer_artifacts WHERE id=? AND owner=? AND state='ready' AND expires_at>?").get(artifactId, owner, now);
+      if (replayOnly) throw transferError("transfer-client-refresh-required", 409);
+      const artifact = db.prepare("SELECT * FROM transfer_artifacts WHERE id=? AND owner=? AND state IN ('preparing','publishing','ready') AND expires_at>?").get(artifactId, owner, now);
       if (!artifact) throw transferError("transfer-artifact-unavailable", 409);
+      if (aliases && (!aliases.some((alias) => exactText(alias, artifact.source_key))
+        || artifact.source_identity_json !== sourceIdentityValue)) {
+        throw transferError("transfer-source-changed", 409);
+      }
       const shares = db.prepare("SELECT count(*) n FROM transfer_shares WHERE owner=? AND created_at>?").get(owner, now - 86_400_000).n;
       if (shares >= 64) throw transferError("transfer-share-quota", 429);
       const id = randomUUID();
@@ -388,18 +482,21 @@ export class FileTransferStore {
   inspect(secretHash, kid, shareId = null) {
     return this.#tx((db, now) => {
       const row = shareId
-        ? db.prepare("SELECT t.*,a.name,a.size,a.sha256 FROM transfer_shares t JOIN transfer_artifacts a ON a.id=t.artifact_id WHERE t.id=? AND t.secret_hash=? AND t.kid=?").get(shareId, secretHash, kid)
-        : db.prepare("SELECT t.*,a.name,a.size,a.sha256 FROM transfer_shares t JOIN transfer_artifacts a ON a.id=t.artifact_id WHERE t.secret_hash=? AND t.kid=?").get(secretHash, kid);
+        ? db.prepare("SELECT t.*,a.name,a.size,a.sha256,a.state artifact_state,a.failure_code,a.prepared_bytes FROM transfer_shares t JOIN transfer_artifacts a ON a.id=t.artifact_id WHERE t.id=? AND t.secret_hash=? AND t.kid=?").get(shareId, secretHash, kid)
+        : db.prepare("SELECT t.*,a.name,a.size,a.sha256,a.state artifact_state,a.failure_code,a.prepared_bytes FROM transfer_shares t JOIN transfer_artifacts a ON a.id=t.artifact_id WHERE t.secret_hash=? AND t.kid=?").get(secretHash, kid);
       this.#expire(db, now, row);
-      if (!row || row.state !== "ready") return { failure: "transfer-unavailable" };
-      return { name: row.name, size: row.size, sha256: row.sha256, expiresAt: row.expires_at };
+      if (!row) return { failure: "transfer-unavailable" };
+      const view = shareView(row);
+      return { state: view.state, name: row.name, size: row.size, sha256: row.sha256,
+        preparedBytes: row.prepared_bytes, expiresAt: row.expires_at };
     });
   }
   issueClaimChallenge({ secretHash, kid, shareId, claimId, jkt, publicJwk, nonce }) {
     return this.#tx((db, now) => {
-      const row = db.prepare("SELECT * FROM transfer_shares WHERE id=? AND secret_hash=? AND kid=?").get(shareId, secretHash, kid);
+      const row = db.prepare("SELECT t.*,a.state artifact_state FROM transfer_shares t JOIN transfer_artifacts a ON a.id=t.artifact_id WHERE t.id=? AND t.secret_hash=? AND t.kid=?").get(shareId, secretHash, kid);
       this.#expire(db, now, row);
-      if (!row || !equalTransferDigest(row.secret_hash, secretHash) || row.state !== "ready") return { failure: "transfer-unavailable" };
+      if (!row || !equalTransferDigest(row.secret_hash, secretHash) || row.state !== "ready"
+        || row.artifact_state !== "ready") return { failure: "transfer-unavailable" };
       const old = db.prepare("SELECT * FROM transfer_claim_challenges WHERE share_id=? AND claim_id=?").get(row.id, claimId);
       if (old) {
         if (old.jkt !== jkt || old.public_jwk_json !== publicJwk || old.nonce_hash !== transferHash(nonce)
@@ -433,9 +530,10 @@ export class FileTransferStore {
       if (!pending || pending.consumed_at || pending.expires_at !== challenge.expiresAt || pending.expires_at <= now) {
         return { failure: "transfer-unavailable" };
       }
-      const row = db.prepare("SELECT * FROM transfer_shares WHERE id=? AND secret_hash=? AND kid=?").get(challenge.shareId, secretHash, kid);
+      const row = db.prepare("SELECT t.*,a.state artifact_state FROM transfer_shares t JOIN transfer_artifacts a ON a.id=t.artifact_id WHERE t.id=? AND t.secret_hash=? AND t.kid=?").get(challenge.shareId, secretHash, kid);
       this.#expire(db, now, row);
-      if (!row || !equalTransferDigest(row.secret_hash, secretHash) || row.state !== "ready") return { failure: "transfer-unavailable" };
+      if (!row || !equalTransferDigest(row.secret_hash, secretHash) || row.state !== "ready"
+        || row.artifact_state !== "ready") return { failure: "transfer-unavailable" };
       const change = db.prepare("UPDATE transfer_shares SET state='claimed',claimed_at=? WHERE id=? AND state='ready' AND expires_at>?").run(now, row.id, now);
       if (change.changes !== 1) return { failure: "transfer-unavailable" };
       const expiresAt = Math.min(row.expires_at, now + this.#policy.sessionTtlMs);
@@ -722,7 +820,10 @@ export class FileTransferStore {
       const keys = Array.isArray(sourceKeys) ? sourceKeys.map(String) : [String(sourceKeys)];
       if (!keys.length || keys.length > 32) throw transferError("transfer-invalid-source", 400);
       const placeholders = keys.map(() => "?").join(",");
-      const rows = db.prepare(`SELECT t.*,a.name,a.size,a.sha256,s.bytes_served,s.first_byte_at FROM transfer_shares t JOIN transfer_artifacts a ON a.id=t.artifact_id LEFT JOIN transfer_sessions s ON s.share_id=t.id WHERE t.owner=? AND a.source_key IN (${placeholders}) ORDER BY t.created_at DESC LIMIT 64`).all(owner, ...keys);
+      const rows = db.prepare(`SELECT t.*,a.name,a.size,a.sha256,a.state artifact_state,a.failure_code,a.prepared_bytes,
+        s.bytes_served,s.first_byte_at FROM transfer_shares t JOIN transfer_artifacts a ON a.id=t.artifact_id
+        LEFT JOIN transfer_sessions s ON s.share_id=t.id WHERE t.owner=? AND a.source_key IN (${placeholders})
+        ORDER BY t.created_at DESC LIMIT 64`).all(owner, ...keys);
       for (const row of rows) this.#expire(db, now, row);
       return rows.map(shareView);
     });
@@ -752,7 +853,7 @@ export class FileTransferStore {
   }
   failArtifact(id) {
     return this.#tx((db, now) => {
-      db.prepare("UPDATE transfer_artifacts SET state='failed' WHERE id=? AND state IN ('preparing','publishing','ready')").run(id);
+      db.prepare("UPDATE transfer_artifacts SET state='failed',failure_code='failed' WHERE id=? AND state IN ('preparing','publishing','ready')").run(id);
       for (const share of db.prepare("SELECT * FROM transfer_shares WHERE artifact_id=?").all(id)) {
         if (!TERMINAL.has(share.state)) {
           db.prepare("UPDATE transfer_shares SET state='failed',generation=generation+1 WHERE id=?").run(share.id);

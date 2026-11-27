@@ -12,7 +12,7 @@ import test from "node:test";
 import { calculateJwkThumbprint, CompactSign, exportJWK, generateKeyPair } from "jose";
 
 import { FileTransferRoutes } from "../../../src/interfaces/web/file-transfer-routes.mjs";
-import { fileTransferPolicy, transferSessionSelector } from "../../../src/domain/file-transfer.mjs";
+import { fileTransferPolicy, transferError, transferSessionSelector } from "../../../src/domain/file-transfer.mjs";
 import { FileTransferService } from "../../../src/infrastructure/filesystem/file-transfer-service.mjs";
 import { FileTransferStore } from "../../../src/infrastructure/persistence/file-transfer-store.mjs";
 
@@ -79,14 +79,16 @@ test("public APIs rate gate before service work and keep unavailable responses n
   const calls = [];
   const service = {
     publicGate: async (address, action) => { calls.push(["gate", address, action]); return "ip-hash"; },
-    inspect: async (value) => { calls.push(["inspect", value]); return { name: "700 МБ — отчёт.bin", size: 734003200, expiresAt: 1_800_000_000_000 }; },
+    inspect: async (value) => { calls.push(["inspect", value]); return { state: "preparing",
+      name: "700 МБ — отчёт.bin", size: 734003200, preparedBytes: 64 * 1024, expiresAt: 1_800_000_000_000 }; },
   };
   await withRoutes(service, async (base) => {
     const ok = await fetch(`${base}/transfer/api/inspect`, {
       method: "POST", headers: publicHeaders, body: JSON.stringify(capability),
     });
     assert.equal(ok.status, 200);
-    assert.deepEqual(await ok.json(), { name: "700 МБ — отчёт.bin", size: 734003200, expiresAt: 1_800_000_000_000 });
+    assert.deepEqual(await ok.json(), { state: "preparing", name: "700 МБ — отчёт.bin", size: 734003200,
+      preparedBytes: 64 * 1024, expiresAt: 1_800_000_000_000 });
     assert.deepEqual(calls.map((entry) => entry[0]), ["gate", "inspect"]);
 
     calls.length = 0;
@@ -96,6 +98,20 @@ test("public APIs rate gate before service work and keep unavailable responses n
     assert.equal(badOrigin.status, 410);
     assert.deepEqual(await badOrigin.json(), { error: "unavailable" });
     assert.deepEqual(calls, []);
+  });
+});
+
+test("public inspect keeps internal status failures neutral but retryable", async () => {
+  const service = {
+    publicGate: async () => "ip-hash",
+    inspect: async () => { throw new Error("private database detail"); },
+  };
+  await withRoutes(service, async (base) => {
+    const response = await fetch(`${base}/transfer/api/inspect`, {
+      method: "POST", headers: publicHeaders, body: JSON.stringify(capability),
+    });
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { error: "unavailable" });
   });
 });
 
@@ -382,6 +398,7 @@ test("real HTTP disconnect during activation aborts before output and releases t
 
 test("owner mutations require authenticated server identity and CSRF", async () => {
   const calls = [];
+  const createdRequests = new Set();
   const artifactId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   const canonicalShare = {
     id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
@@ -405,7 +422,15 @@ test("owner mutations require authenticated server identity and CSRF", async () 
     },
     createShare: async (input) => {
       calls.push(["create", input]);
+      if (input.replayOnly && !createdRequests.has(input.requestId)) {
+        throw transferError("transfer-client-refresh-required", 409);
+      }
+      createdRequests.add(input.requestId);
       return canonicalShare;
+    },
+    cancelPreparation: async (owner, id) => {
+      calls.push(["cancel", owner, id]);
+      return { id, state: "failed", preparedBytes: 0 };
     },
   };
   await withRoutes(service, async (base) => {
@@ -440,10 +465,71 @@ test("owner mutations require authenticated server identity and CSRF", async () 
         "Sec-Fetch-Site": "same-origin",
         "X-Agent-Hub-Transfer-CSRF": "1",
       },
-      body: JSON.stringify({ artifactId, requestId, ttlMs: 3_600_000 }),
+      body: JSON.stringify({ path: "D:/work/report.bin", artifactId, requestId, ttlMs: 3_600_000 }),
     });
     assert.equal(created.status, 201);
     assert.deepEqual(await created.json(), { ok: true, share: canonicalShare });
-    assert.deepEqual(calls.at(-1), ["create", { owner: "local", artifactId, requestId, ttlMs: 3_600_000 }]);
+    assert.deepEqual(calls.at(-1), ["create", { owner: "local", sourcePath: "D:/work/report.bin",
+      replayOnly: false, artifactId, requestId, ttlMs: 3_600_000 }]);
+
+    for (const invalidPath of [null, "", "   ", 17]) {
+      const before = calls.length;
+      const invalid = await fetch(`${base}/api/file-transfer/owner/create`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: base,
+          "Sec-Fetch-Site": "same-origin",
+          "X-Agent-Hub-Transfer-CSRF": "1",
+        },
+        body: JSON.stringify({ path: invalidPath, artifactId, requestId: randomBytes(32).toString("base64url"),
+          ttlMs: 3_600_000 }),
+      });
+      assert.equal(invalid.status, 400);
+      assert.deepEqual(await invalid.json(), { ok: false, code: "transfer-invalid-request",
+        error: "transfer-invalid-request" });
+      assert.equal(calls.length, before, "an invalid present path must fail before share issuance");
+    }
+
+    const replay = await fetch(`${base}/api/file-transfer/owner/create`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: base,
+        "Sec-Fetch-Site": "same-origin",
+        "X-Agent-Hub-Transfer-CSRF": "1",
+      },
+      body: JSON.stringify({ artifactId, requestId, ttlMs: 3_600_000 }),
+    });
+    assert.equal(replay.status, 201);
+    assert.deepEqual(await replay.json(), { ok: true, share: canonicalShare });
+    assert.deepEqual(calls.at(-1), ["create", { owner: "local", sourcePath: null,
+      replayOnly: true, artifactId, requestId, ttlMs: 3_600_000 }]);
+
+    const staleRequestId = randomBytes(32).toString("base64url");
+    const stale = await fetch(`${base}/api/file-transfer/owner/create`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: base,
+        "Sec-Fetch-Site": "same-origin",
+        "X-Agent-Hub-Transfer-CSRF": "1",
+      },
+      body: JSON.stringify({ artifactId, requestId: staleRequestId, ttlMs: 3_600_000 }),
+    });
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await stale.json(), { ok: false, code: "transfer-client-refresh-required",
+      error: "transfer-client-refresh-required" });
+
+    const cancelled = await fetch(`${base}/api/file-transfer/owner/cancel`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json", Origin: base, "Sec-Fetch-Site": "same-origin",
+        "X-Agent-Hub-Transfer-CSRF": "1",
+      },
+      body: JSON.stringify({ artifactId }),
+    });
+    assert.equal(cancelled.status, 200);
+    assert.deepEqual(calls.at(-1), ["cancel", "local", artifactId]);
   });
 });

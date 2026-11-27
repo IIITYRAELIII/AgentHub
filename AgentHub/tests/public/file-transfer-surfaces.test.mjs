@@ -11,10 +11,10 @@ const recipientSource = await readFile(new URL("../../assets/web-app/file-transf
 const recipientCss = await readFile(new URL("../../assets/web-app/file-transfer-recipient.css", import.meta.url), "utf8");
 const capability = "#v1.transfer-v1.aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee." + "s".repeat(43);
 const captureDirectory = String(process.env.AGENT_HUB_TRANSFER_CAPTURE_DIR ?? "").trim();
-async function capture(page, name) {
+async function capture(page, name, { fullPage = true } = {}) {
   if (!captureDirectory) return;
   await mkdir(captureDirectory, { recursive: true });
-  await page.screenshot({ path: `${captureDirectory}/${name}.png`, fullPage: true });
+  await page.screenshot({ path: `${captureDirectory}/${name}.png`, fullPage });
 }
 
 async function withBrowser(run) {
@@ -125,22 +125,37 @@ test("owner dialog performs no publication before explicit create and renders a 
     await page.addScriptTag({ content: ownerSource });
     await page.evaluate(() => {
       const state = {
-        artifact: null,
+        artifact: { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", state: "ready",
+          preparedBytes: 700 * 1024 * 1024, size: 700 * 1024 * 1024 },
         share: null,
         file: { name: "Очень-длинное-имя-данных-🧪-2026.bin", size: 700 * 1024 * 1024 },
         ttlOptions: [3_600_000, 86_400_000],
       };
+      window.__pendingPolls = 0;
       window.__calls = [];
       window.AgentHubFileTransferOwner.configure(async (action, body) => {
         window.__calls.push([action, body]);
-        if (action === "status") return structuredClone(state);
+        if (action === "status") {
+          if (state.share?.state === "preparing") {
+            window.__pendingPolls += 1;
+            const preparedBytes = window.__pendingPolls * 128 * 1024 * 1024;
+            if (window.__pendingPolls < 3) {
+              state.artifact = { ...state.artifact, preparedBytes };
+              state.share = { ...state.share, preparedBytes };
+            } else {
+              state.artifact = { ...state.artifact, state: "ready", preparedBytes: state.file.size };
+              state.share = { ...state.share, state: "ready", preparedBytes: state.file.size, sha256: "a".repeat(64) };
+            }
+          }
+          return structuredClone(state);
+        }
         if (action === "prepare") {
-          state.artifact = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", state: "ready", preparedBytes: state.file.size, size: state.file.size };
-          return { artifact: { ...state.artifact, state: "preparing", preparedBytes: 0 } };
+          state.artifact = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", state: "preparing", preparedBytes: 0, size: state.file.size };
+          return { artifact: state.artifact };
         }
         if (action === "create") {
           state.share = { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", artifactId: state.artifact.id,
-            state: "ready", name: state.file.name, size: state.file.size, sha256: "a".repeat(64),
+            state: "preparing", name: state.file.name, size: state.file.size, sha256: null, preparedBytes: 0,
             createdAt: Date.now(), expiresAt: Date.now() + 3_600_000, claimedAt: null, completedAt: null,
             bytesServed: 0, firstByteAt: null, url: "https://downloads.example.test/transfer/#secret" };
           return { share: state.share };
@@ -165,15 +180,31 @@ test("owner dialog performs no publication before explicit create and renders a 
     await page.setViewportSize({ width: 390, height: 720 });
     assert.equal(await page.getByText(/Первый получатель/u).count(), 1);
     assert.deepEqual((await page.evaluate(() => window.__calls)).map(([action]) => action), ["status"]);
+    await page.evaluate(() => {
+      window.__semanticAnnouncements = [];
+      const target = document.querySelector("[data-transfer-semantic-status]");
+      new MutationObserver(() => window.__semanticAnnouncements.push(target.textContent)).observe(target, { childList: true });
+    });
     await page.getByRole("button", { name: "Создать ссылку" }).click();
     try { await page.getByRole("button", { name: "Копировать ссылку" }).waitFor({ timeout: 5_000 }); }
     catch (error) {
       t.diagnostic(JSON.stringify(await page.evaluate(() => ({ calls: window.__calls, body: document.body.innerText }))));
       throw error;
     }
-    assert.deepEqual((await page.evaluate(() => window.__calls)).map(([action]) => action), ["status", "prepare", "status", "create"]);
-    assert.equal(await page.getByRole("heading", { name: "Ссылка готова" }).count(), 1);
+    assert.deepEqual((await page.evaluate(() => window.__calls)).map(([action]) => action), ["status", "prepare", "create"]);
+    assert.equal(await page.getByRole("heading", { name: "Ссылка создана" }).count(), 1);
     assert.equal(await page.locator("input[data-transfer-url]").inputValue(), "https://downloads.example.test/transfer/#secret");
+    assert.equal(await page.getByText(/Ссылку уже можно отправить/u).count(), 1);
+    assert.equal(await page.locator(".file-transfer-owner-body").getAttribute("aria-live"), null);
+    await page.locator("input[data-transfer-url]").focus();
+    await assertOwnerState(page, "Ссылка создана");
+    await page.getByRole("heading", { name: "Ссылка готова" }).waitFor({ timeout: 5_000 });
+    assert.equal(await page.locator("input[data-transfer-url]").inputValue(), "https://downloads.example.test/transfer/#secret");
+    assert.equal(await page.evaluate(() => document.activeElement?.matches("input[data-transfer-url]")), true,
+      "ready projection must update the same link DOM without stealing focus");
+    assert.deepEqual(await page.evaluate(() => window.__semanticAnnouncements), ["Ссылка создана", "Файл готов к скачиванию"],
+      "progress repaints must not generate live-region announcements");
+    assert.equal((await page.evaluate(() => window.__calls)).filter(([action]) => action === "status").length, 4);
     await assertOwnerState(page, "Ссылка готова");
     await capture(page, "owner-mobile-ready-390-dark");
     await page.setViewportSize({ width: 320, height: 640 });
@@ -241,6 +272,7 @@ test("resource entry captures use the production menu and keep the mobile overfl
 
 async function recipientPage(browser, {
   webview = false, picker = true, claimFails = 0, inspectFails = false,
+  inspectSequence = null, inspectTransportFailures = 0,
   claimTransportFailures = 0, claimCookieStored = false, claimHttpFailures = 0,
   claimHttpFailureStatus = 502,
   downloadFails = false, planDelayMs = 0, colorScheme = "light", width = 390,
@@ -262,6 +294,9 @@ async function recipientPage(browser, {
   const claimSessions = new Set();
   let remainingClaimTransportFailures = claimTransportFailures;
   let remainingClaimHttpFailures = claimHttpFailures;
+  let remainingInspectTransportFailures = inspectTransportFailures;
+  let inspectIndex = 0;
+  let forcedInspectState = null;
   const testSelector = "q".repeat(43);
   await context.route("https://downloads.example.test/**", async (route) => {
     const request = route.request();
@@ -278,8 +313,20 @@ async function recipientPage(browser, {
     const action = url.pathname.split("/").at(-1);
     calls.push(action);
     if (action === "inspect") {
-      await route.fulfill({ status: inspectFails ? 410 : 200, contentType: "application/json",
-        body: inspectFails ? "{}" : JSON.stringify({ name: "700MB-🧪.bin", size: 4, expiresAt: Date.now() + 60_000 }) });
+      if (remainingInspectTransportFailures > 0) {
+        remainingInspectTransportFailures -= 1;
+        await route.abort("connectionreset");
+      } else {
+        const states = inspectSequence?.length ? inspectSequence : ["ready"];
+        const state = forcedInspectState ?? states[Math.min(inspectIndex++, states.length - 1)];
+        if (state === "transport-error") {
+          await route.abort("connectionreset");
+          return;
+        }
+        await route.fulfill({ status: inspectFails ? 410 : 200, contentType: "application/json",
+          body: inspectFails ? "{}" : JSON.stringify({ state, name: "700MB-🧪.bin", size: 4,
+            preparedBytes: state === "ready" ? 4 : 2, expiresAt: Date.now() + 60_000 }) });
+      }
     } else if (action === "challenge") {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ payload: JSON.stringify({ challengeId: "one" }) }) });
     } else if (action === "claim") {
@@ -307,7 +354,8 @@ async function recipientPage(browser, {
   });
   const page = await context.newPage();
   await page.goto(`https://downloads.example.test/transfer/${capability}`);
-  return { context, page, calls, claimBodies, claimSessions };
+  return { context, page, calls, claimBodies, claimSessions,
+    setInspectState(state) { forcedInspectState = state; } };
 }
 
 test("recipient claims only after picker, local key setup and explicit Download", { timeout: 30_000 }, async () => {
@@ -323,6 +371,68 @@ test("recipient claims only after picker, local key setup and explicit Download"
     assert.equal(await page.evaluate(() => location.hash), "");
     await capture(page, "recipient-mobile-completed-390-light");
     await context.close();
+  });
+});
+
+test("recipient waits and retries on the same capability until ready without claiming", { timeout: 30_000 }, async () => {
+  await withBrowser(async (browser) => {
+    const value = await recipientPage(browser, {
+      inspectSequence: ["preparing", "transport-error", "ready"],
+    });
+    await value.page.getByRole("heading", { name: "Файл загружается" }).waitFor();
+    await value.page.getByRole("heading", { name: "Не удалось проверить статус" }).waitFor();
+    assert.equal(await value.page.getByRole("button", { name: "Проверить снова" }).count(), 1);
+    assert.equal(await value.page.getByRole("button", { name: "Скачать" }).count(), 0);
+    assert.equal(await value.page.getByText("700MB-🧪.bin").count(), 1,
+      "transient polling failure must retain known file metadata");
+    await value.page.getByRole("button", { name: "Проверить снова" }).click();
+    await value.page.getByRole("button", { name: "Скачать" }).waitFor({ timeout: 8_000 });
+    assert.equal(await value.page.getByText("Файл готов к защищённой загрузке.").count(), 1);
+    assert.equal(value.calls.some((action) => ["challenge", "claim", "plan", "download"].includes(action)), false,
+      "inspect polling and reconnect must not consume the capability");
+    assert.equal(await value.page.evaluate(() => location.hash), capability);
+    await value.context.close();
+  });
+});
+
+test("concurrent early opens and reload keep waiting on the same link without claim", { timeout: 30_000 }, async () => {
+  await withBrowser(async (browser) => {
+    const value = await recipientPage(browser, { inspectSequence: ["preparing"] });
+    await value.page.getByRole("heading", { name: "Файл загружается" }).waitFor();
+    const second = await value.context.newPage();
+    await second.goto(`https://downloads.example.test/transfer/${capability}`);
+    await second.getByRole("heading", { name: "Файл загружается" }).waitFor();
+    value.setInspectState("ready");
+    await Promise.all([
+      value.page.getByRole("button", { name: "Скачать" }).waitFor({ timeout: 8_000 }),
+      second.getByRole("button", { name: "Скачать" }).waitFor({ timeout: 8_000 }),
+    ]);
+    assert.equal(value.calls.every((action) => action === "inspect"), true);
+    await second.reload();
+    await second.getByRole("button", { name: "Скачать" }).waitFor();
+    assert.equal(await second.evaluate(() => location.hash), capability);
+    assert.equal(value.calls.every((action) => action === "inspect"), true,
+      "opening, polling and reload must not create a challenge or claim");
+    await value.context.close();
+  });
+});
+
+test("recipient renders reason-specific terminal states without Download", { timeout: 30_000 }, async () => {
+  await withBrowser(async (browser) => {
+    const expected = new Map([
+      ["revoked", "Ссылка отозвана"],
+      ["expired", "Срок ссылки истёк"],
+      ["failed", "Не удалось подготовить файл"],
+      ["cancelled", "Загрузка отменена"],
+      ["claimed", "Ссылка уже использована"],
+    ]);
+    for (const [state, heading] of expected) {
+      const value = await recipientPage(browser, { inspectSequence: [state] });
+      await value.page.getByRole("heading", { name: heading }).waitFor();
+      assert.equal(await value.page.getByRole("button", { name: "Скачать" }).count(), 0);
+      assert.deepEqual(value.calls, ["inspect"]);
+      await value.context.close();
+    }
   });
 });
 
@@ -392,7 +502,8 @@ test("two recipient tabs keep distinct scoped sessions through interleaved resum
       const body = request.postDataJSON();
       if (action === "inspect") {
         await route.fulfill({ status: 200, contentType: "application/json",
-          body: JSON.stringify({ name: `${body.shareId}.bin`, size: 4, expiresAt: Date.now() + 60_000 }) });
+          body: JSON.stringify({ state: "ready", name: `${body.shareId}.bin`, size: 4,
+            preparedBytes: 4, expiresAt: Date.now() + 60_000 }) });
       } else if (action === "challenge") {
         await route.fulfill({ status: 200, contentType: "application/json",
           body: JSON.stringify({ payload: JSON.stringify({ challengeId: body.shareId }) }) });
@@ -471,54 +582,91 @@ test("recipient surfaces fail closed for WebView, unsupported browser and ambigu
 test("owner production assets capture the complete authoritative state matrix", {
   timeout: 60_000,
   skip: !captureDirectory,
-}, async () => {
+}, async (t) => {
   await withBrowser(async (browser) => {
-    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
-    await page.setContent(`<!doctype html><html data-theme="orbit"><head><style>${ownerCss}</style></head><body><button id="open">Open</button></body></html>`);
-    await page.addScriptTag({ content: ownerSource });
-    await page.evaluate(() => {
-      window.__snapshot = null;
-      window.__statusFails = false;
-      window.AgentHubFileTransferOwner.configure(async (action) => {
-        if (window.__statusFails) throw new Error("offline");
-        if (action === "status") return structuredClone(window.__snapshot);
-        if (action === "revoke") return { share: { ...window.__snapshot.share, state: "revoked" } };
-        throw new Error("unexpected action");
-      });
-    });
     const file = { name: "Очень-длинное-имя-данных-🧪-для-проверки-переноса-2026.bin", size: 700 * 1024 * 1024 };
     const artifact = { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", name: file.name, size: file.size,
       sha256: "a".repeat(64), state: "ready", preparedBytes: file.size, expiresAt: Date.now() + 86_400_000 };
     const baseShare = { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", artifactId: artifact.id,
       name: file.name, size: file.size, sha256: artifact.sha256, createdAt: Date.now(), expiresAt: Date.now() + 86_400_000,
-      claimedAt: Date.now() - 30_000, bytesServed: 240 * 1024 * 1024 };
+      claimedAt: Date.now() - 30_000, bytesServed: 240 * 1024 * 1024, preparedBytes: file.size };
     const cases = [
       ["owner-web-preparing-1280-dark", "Подготовка файла", { file, artifact: { ...artifact, state: "preparing", preparedBytes: 311 * 1024 * 1024 }, share: null }],
+      ["owner-web-link-created-1280-dark", "Ссылка создана", { file,
+        artifact: { ...artifact, state: "preparing", preparedBytes: 311 * 1024 * 1024 },
+        share: { ...baseShare, state: "preparing", sha256: null, preparedBytes: 311 * 1024 * 1024,
+          url: "https://downloads.example.test/transfer/#v1.hidden-capability" } }],
       ["owner-web-ready-1280-dark", "Ссылка готова", { file, artifact, share: { ...baseShare, state: "ready", url: "https://downloads.example.test/transfer/#v1.hidden-capability" } }],
       ["owner-web-claimed-1280-dark", "Ссылка использована", { file, artifact, share: { ...baseShare, state: "claimed" } }],
       ["owner-web-downloading-1280-dark", "Файл передаётся", { file, artifact, share: { ...baseShare, state: "downloading" } }],
       ["owner-web-completed-1280-dark", "Передача завершена", { file, artifact, share: { ...baseShare, state: "completed", completedAt: Date.now() } }],
       ["owner-web-expired-1280-dark", "Срок ссылки истёк", { file, artifact, share: { ...baseShare, state: "expired" } }],
       ["owner-web-revoked-1280-dark", "Ссылка отозвана", { file, artifact, share: { ...baseShare, state: "revoked" } }],
-      ["owner-web-failed-1280-dark", "Ошибка передачи", { file, artifact, share: { ...baseShare, state: "failed" } }],
+      ["owner-web-failed-1280-dark", "Не удалось подготовить файл", { file, artifact, share: { ...baseShare, state: "failed" } }],
+      ["owner-web-cancelled-1280-dark", "Загрузка отменена", { file, artifact, share: { ...baseShare, state: "cancelled" } }],
     ];
-    for (const [name, heading, value] of cases) {
-      await page.evaluate(async (snapshot) => {
-        window.__snapshot = { ...snapshot, ttlOptions: [3_600_000, 86_400_000] };
-        window.__statusFails = false;
-        await window.AgentHubFileTransferOwner.open({ path: "D:/work/file.bin", trigger: document.querySelector("#open") });
-      }, value);
-      await assertOwnerState(page, heading);
-      await capture(page, name);
-      await page.evaluate(() => document.querySelector(".file-transfer-owner-dialog").close());
-    }
-    await page.evaluate(async (snapshot) => {
-      window.__snapshot = { ...snapshot, ttlOptions: [3_600_000] };
-      window.__statusFails = true;
-      await window.AgentHubFileTransferOwner.open({ path: "D:/work/file.bin", trigger: document.querySelector("#open") });
-    }, { file, artifact, share: null });
-    await assertOwnerState(page, "Не удалось получить актуальный статус");
-    await capture(page, "owner-web-unknown-1280-dark");
+    const captureOwnerState = async (name, heading, value, { statusFails = false } = {}) => {
+      const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+      try {
+        await page.setContent(`<!doctype html><html data-theme="orbit"><head><style>${ownerCss}</style></head><body><button id="open">Open</button></body></html>`);
+        await page.addScriptTag({ content: ownerSource });
+        await page.evaluate(async ({ snapshot, statusFails }) => {
+          window.__snapshot = snapshot;
+          window.AgentHubFileTransferOwner.configure(async (action) => {
+            if (statusFails) throw new Error("offline");
+            if (action === "status") return structuredClone(window.__snapshot);
+            if (action === "revoke") return { share: { ...window.__snapshot.share, state: "revoked" } };
+            throw new Error("unexpected action");
+          });
+          await window.AgentHubFileTransferOwner.open({ path: "D:/work/file.bin", trigger: document.querySelector("#open") });
+        }, { snapshot: { ...value, ttlOptions: [3_600_000, 86_400_000] }, statusFails });
+        await assertOwnerState(page, heading);
+        await page.waitForFunction(() => document.querySelector(".file-transfer-owner-dialog")?.matches(":modal"));
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const modalEvidence = async () => page.evaluate(() => {
+          const dialog = document.querySelector(".file-transfer-owner-dialog");
+          const visible = (element) => Boolean(element && element.getClientRects().length && getComputedStyle(element).visibility !== "hidden");
+          const rect = dialog.getBoundingClientRect();
+          return {
+            modal: dialog.matches(":modal"),
+            header: visible(dialog.querySelector("header")),
+            file: visible(dialog.querySelector(".file-transfer-owner-file")),
+            heading: dialog.querySelector("#file-transfer-owner-state-title")?.textContent,
+            actions: [...dialog.querySelectorAll("footer button")].filter(visible).map((button) => button.textContent),
+            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            viewport: { width: innerWidth, height: innerHeight },
+          };
+        });
+        const assertModalEvidence = (value) => {
+          assert.equal(value.modal, true);
+          assert.equal(value.header, true);
+          assert.equal(value.file, true);
+          assert.ok(value.rect.width > 0 && value.rect.height > 0, JSON.stringify(value));
+          assert.ok(value.rect.x >= 0 && value.rect.y >= 0, JSON.stringify(value));
+          assert.ok(value.rect.x + value.rect.width <= value.viewport.width + 1, JSON.stringify(value));
+          assert.ok(value.rect.y + value.rect.height <= value.viewport.height + 1, JSON.stringify(value));
+        };
+        const before = await modalEvidence();
+        assertModalEvidence(before);
+        if (name === "owner-web-revoked-1280-dark") {
+          assert.equal(before.heading, "Ссылка отозвана");
+          assert.deepEqual(before.actions, ["Создать новую ссылку", "Закрыть"]);
+        }
+        await capture(page, name, { fullPage: false });
+        const after = await modalEvidence();
+        assertModalEvidence(after);
+        if (name === "owner-web-revoked-1280-dark") {
+          assert.equal(after.heading, "Ссылка отозвана");
+          assert.deepEqual(after.actions, ["Создать новую ссылку", "Закрыть"]);
+          t.diagnostic(`revoked-modal-evidence ${JSON.stringify({ before, after })}`);
+        }
+      } finally {
+        await page.close();
+      }
+    };
+    for (const [name, heading, value] of cases) await captureOwnerState(name, heading, value);
+    await captureOwnerState("owner-web-unknown-1280-dark", "Не удалось получить актуальный статус",
+      { file, artifact, share: null }, { statusFails: true });
   });
 });
 
@@ -527,6 +675,22 @@ test("recipient production assets capture responsive dark and recovery states", 
   skip: !captureDirectory,
 }, async () => {
   await withBrowser(async (browser) => {
+    const pending = await recipientPage(browser, { inspectSequence: ["preparing"], width: 430 });
+    await pending.page.getByRole("heading", { name: "Файл загружается" }).waitFor();
+    await capture(pending.page, "recipient-mobile-pending-430-light");
+    await pending.context.close();
+
+    const retry = await recipientPage(browser, { inspectSequence: ["preparing", "transport-error", "ready"], width: 320 });
+    await retry.page.getByRole("heading", { name: "Файл загружается" }).waitFor();
+    await retry.page.getByRole("heading", { name: "Не удалось проверить статус" }).waitFor();
+    assert.equal(await retry.page.getByText("700MB-🧪.bin").count(), 1);
+    assert.equal(await retry.page.getByRole("button", { name: "Скачать" }).count(), 0);
+    await capture(retry.page, "recipient-mobile-status-retry-320-light");
+    await retry.page.getByRole("button", { name: "Проверить снова" }).click();
+    await retry.page.getByRole("button", { name: "Скачать" }).waitFor();
+    assert.equal(retry.calls.some((action) => ["challenge", "claim", "plan", "download"].includes(action)), false);
+    await retry.context.close();
+
     const dark = await recipientPage(browser, { colorScheme: "dark" });
     await dark.page.getByRole("button", { name: "Скачать" }).waitFor();
     await capture(dark.page, "recipient-mobile-ready-390-dark");
@@ -536,6 +700,20 @@ test("recipient production assets capture responsive dark and recovery states", 
     await webview.page.getByRole("button", { name: "Копировать ссылку" }).waitFor();
     await capture(webview.page, "recipient-webview-handoff-520-light");
     await webview.context.close();
+
+    const narrowWebview = await recipientPage(browser, { webview: true, width: 390 });
+    await narrowWebview.page.getByRole("button", { name: "Копировать ссылку" }).waitFor();
+    await capture(narrowWebview.page, "recipient-webview-handoff-390-light");
+    await narrowWebview.context.close();
+
+    for (const [state, heading] of [["expired", "Срок ссылки истёк"], ["revoked", "Ссылка отозвана"],
+      ["failed", "Не удалось подготовить файл"], ["cancelled", "Загрузка отменена"],
+      ["claimed", "Ссылка уже использована"]]) {
+      const terminal = await recipientPage(browser, { inspectSequence: [state] });
+      await terminal.page.getByRole("heading", { name: heading }).waitFor();
+      await capture(terminal.page, `recipient-mobile-${state}-390-light`);
+      await terminal.context.close();
+    }
 
     const downloading = await recipientPage(browser, { planDelayMs: 2_000 });
     await downloading.page.getByRole("button", { name: "Скачать" }).click();

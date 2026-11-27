@@ -253,7 +253,8 @@ export class FileTransferRoutes {
       if (action === "inspect") {
         exactShape(body, ["kid", "shareId", "secret"]);
         const value = await this.#service.inspect(body);
-        json(response, 200, { name: value.name, size: value.size, expiresAt: value.expiresAt });
+        json(response, 200, { state: value.state, name: value.name, size: value.size,
+          preparedBytes: value.preparedBytes, expiresAt: value.expiresAt });
         return true;
       }
       if (action === "challenge") {
@@ -299,7 +300,9 @@ export class FileTransferRoutes {
       }
       unavailable(response, method);
     } catch (error) {
-      unavailable(response, method, error?.code === "transfer-rate-limit" ? 429 : 410);
+      const status = error?.code === "transfer-rate-limit" ? 429
+        : (!error?.diagnosticExpected || Number(error?.statusCode) >= 500) ? 503 : 410;
+      unavailable(response, method, status);
     }
     return true;
   }
@@ -392,10 +395,23 @@ export class FileTransferRoutes {
         return true;
       }
       if (action === "create") {
-        exactShape(body, ["artifactId", "requestId", "ttlMs"]);
-        if (!TRANSFER_ID.test(String(body.artifactId)) || !REQUEST_ID.test(String(body.requestId))
+        const replayOnly = !Object.hasOwn(body, "path");
+        exactShape(body, replayOnly
+          ? ["artifactId", "requestId", "ttlMs"]
+          : ["path", "artifactId", "requestId", "ttlMs"]);
+        if ((!replayOnly && (typeof body.path !== "string" || body.path.trim().length === 0))
+          || !TRANSFER_ID.test(String(body.artifactId)) || !REQUEST_ID.test(String(body.requestId))
           || !TRANSFER_TTLS.includes(body.ttlMs)) throw transferError("transfer-invalid-request", 400);
-        json(response, 201, { ok: true, share: await this.#service.createShare({ owner, ...body }) });
+        json(response, 201, { ok: true, share: await this.#service.createShare({ owner,
+          sourcePath: replayOnly ? null : body.path, replayOnly,
+          artifactId: body.artifactId, requestId: body.requestId, ttlMs: body.ttlMs }) });
+        return true;
+      }
+      if (action === "cancel") {
+        exactShape(body, ["artifactId"]);
+        if (!TRANSFER_ID.test(String(body.artifactId))) throw transferError("transfer-invalid-request", 400);
+        json(response, 200, { ok: true,
+          artifact: await this.#service.cancelPreparation(owner, body.artifactId) });
         return true;
       }
       if (action === "revoke") {
