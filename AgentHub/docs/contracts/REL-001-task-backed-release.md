@@ -304,6 +304,14 @@ source HEAD, the same Git owner verifies the selected source on that HEAD's
 first-parent history at Test and combined closure. Late commits remain in
 the source branch and worktree. See ADR-HUB-448 on the published parent of a
 returned Test.
+
+Successive native Tests may absorb different sources into the same survivor.
+Each adds one authenticated handoff and retains the previous exact Test
+outcome. Await and release preparation verify every recorded merge and its
+ordered parents. Combined closure verifies the handoff for the requested
+source against the survivor's latest exact Test. A foreign merge side or a
+competing handoff for the same source fails verification. See
+[ADR-HUB-571](../decisions/ADR-HUB-571-multiple-native-absorptions.md).
 Every actual ordered merge parent, automatic tree, resolution binding and
 selected result is checked. Normal issued resolution continuation stays within
 the original native owner namespace and finite lock ownership; unresolved

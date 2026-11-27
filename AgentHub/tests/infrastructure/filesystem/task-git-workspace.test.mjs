@@ -25,12 +25,13 @@ import { unprovenProcessTaskGit } from "../../helpers/task-git-unproven-process.
 
 const execFileAsync = promisify(execFile);
 
-test("native Test and combined closure use the same saved source and preserve its later HEAD", { timeout: 120_000 }, async t => {
+test("native Test retains each absorbed source for combined closure and preserves later source HEAD", { timeout: 180_000 }, async t => {
   const root = await repository(t);
   const dataDir = path.join(root, "..", `${path.basename(root)}-saved-absorption`);
   t.after(() => rm(dataDir, { recursive: true, force: true }));
   const owner = new TaskGitWorkspaceService({ dataDir });
   const sourceId = "14141414-1414-4414-8414-141414141414";
+  const secondSourceId = "16161616-1616-4616-8616-161616161616";
   const targetId = "15151515-1515-4515-8515-151515151515";
   const source = await owner.prepare({ taskId: sourceId, taskNumber: "HUB-14", projectRoot: root });
   const target = await owner.prepare({ taskId: targetId, taskNumber: "HUB-15", projectRoot: root });
@@ -54,37 +55,66 @@ test("native Test and combined closure use the same saved source and preserve it
     sourceTaskId: sourceId, sourceTaskRevision: 5, survivorTaskId: targetId, baseCommit: base,
     sourceCommit: saved, sourceTree: await git(root, "rev-parse", `${saved}^{tree}`),
     survivorParentCommit: survivor, absorptionCommit: result, saved: true, stopped: true };
-  const binding = d => {
+  const binding = (d, { prior = testedSource, taskNumber = "HUB-14", handoff = origin } = {}) => {
     const text = JSON.stringify(d);
-    return { requestId, text, origin, contentHash: interstreamAuditContentHash(text, { origin }),
-      createdAtMs: 1, sourceTaskNumber: "HUB-14", sourceDescriptionSha256: "a".repeat(64),
-      priorResults: [{ taskId: sourceId, projectRoot: root, resultCommit: testedSource,
+    return { requestId: handoff.requestId, text, origin: handoff, contentHash: interstreamAuditContentHash(text, { origin: handoff }),
+      createdAtMs: 1, sourceTaskNumber: taskNumber, sourceDescriptionSha256: "a".repeat(64),
+      priorResults: [{ taskId: d.sourceTaskId, projectRoot: root, resultCommit: prior,
         testOperationId: "previous-test", returnOperationId: "previous-return", testRevision: 3, returnRevision: 4,
         testOutcomeHash: "b".repeat(64), returnOutcomeHash: "c".repeat(64) }] };
   };
-  const operation = (operationId, input) => owner.withTaskLocks([sourceId, targetId], async lease => {
-    const options = { operationId, lease, nativeAbsorptionInput: input, validateAbsorption: () => {} };
-    const { snapshot, integration } = await owner.snapshotAndMergeOwned({ ...options, taskId: targetId,
-      taskNumber: "HUB-15", projectRoot: target.projectRoot, expectedTaskRevision: 5 });
-    assert.equal(integration.integrated, true);
-    return owner.withNativeIntegrationTerminalOwned(snapshot, options, descriptor => descriptor);
-  }, { guardTaskId: targetId });
+  const operation = (operationId, input, absorbedTaskId = sourceId, history = null, revision = 5) => (
+    owner.withTaskLocks([absorbedTaskId, targetId], async lease => {
+      const options = { operationId, lease, nativeAbsorptionInput: input, nativeAbsorptionHistory: history,
+        validateAbsorption: () => {} };
+      const { snapshot, integration } = await owner.snapshotAndMergeOwned({ ...options, taskId: targetId,
+        taskNumber: "HUB-15", projectRoot: target.projectRoot, expectedTaskRevision: revision });
+      assert.equal(integration.integrated, true);
+      return owner.withNativeIntegrationTerminalOwned(snapshot, options, descriptor => descriptor);
+    }, { guardTaskId: targetId })
+  );
   await assert.rejects(operation("head-not-bound", binding(declaration)), /source HEAD\/base\/branch or saved cleanliness changed/u);
   const descriptor = await operation("bound-saved-source", binding({ ...declaration, preservedSourceHead: preserved }));
-  const closure = () => owner.withTaskLocks([sourceId, targetId], lease => owner.withAbsorptionEvidenceOwned({
-    source: { id: sourceId, taskNumber: "HUB-14", revision: 5, gitReferences: [{ projectRoot: root, resultCommit: testedSource }] },
-    target: { id: targetId, gitReferences: [{ projectRoot: root, branch: target.branch, resultCommit: result }] },
-    lease, nativeAbsorption: descriptor,
+  const sourceTask = { id: sourceId, taskNumber: "HUB-14", revision: 5,
+    gitReferences: [{ projectRoot: root, resultCommit: testedSource }] };
+  const closure = (source, proof) => owner.withTaskLocks([source.id, targetId], lease => owner.withAbsorptionEvidenceOwned({
+    source,
+    target: { id: targetId, gitReferences: [{ projectRoot: root, branch: target.branch, resultCommit: proof.taskCommit }] },
+    lease, nativeAbsorption: proof,
   }, evidence => evidence), { guardTaskId: targetId });
-  const evidence = await closure();
+  const evidence = await closure(sourceTask, descriptor);
   assert.equal(evidence.repositories[0].sourceHead, preserved);
   assert.equal(evidence.repositories[0].selectedSourceCommit, saved);
   assert.deepEqual(evidence.repositories[0].results, [saved, testedSource]);
   assert.equal(await git(root, "rev-parse", source.branch), preserved);
   assert.equal(await readFile(path.join(source.projectRoot, "later.txt"), "utf8"), "later.txt\n");
   await assert.rejects(git(root, "cat-file", "-e", `${result}:later.txt`), { code: 128 });
+
+  const secondSource = await owner.prepare({ taskId: secondSourceId, taskNumber: "HUB-16", projectRoot: root });
+  const secondSaved = await commit(secondSource.projectRoot, "second.txt");
+  await git(target.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+    "merge", "--no-ff", secondSaved, "-m", "Absorb second saved source");
+  const combined = await git(target.projectRoot, "rev-parse", "HEAD");
+  const secondTree = await git(root, "rev-parse", secondSaved + "^{tree}");
+  const secondInput = binding({ ...declaration, sourceTaskId: secondSourceId, sourceCommit: secondSaved,
+    sourceTree: secondTree, survivorParentCommit: result, absorptionCommit: combined }, {
+    prior: secondSaved, taskNumber: "HUB-16", handoff: { ...origin, requestId: "second-source", streamId: "second" },
+  });
+  const combinedProof = await operation("second-with-history", secondInput, secondSourceId, descriptor, 7);
+  assert.equal(combinedProof.taskCommit, combined);
+  assert.deepEqual(combinedProof.absorptionHistory, descriptor);
+  assert.deepEqual((await closure(sourceTask, combinedProof)).repositories[0].results, [saved, testedSource]);
+  const secondTask = { id: secondSourceId, taskNumber: "HUB-16", revision: 5,
+    gitReferences: [{ projectRoot: root, resultCommit: secondSaved }] };
+  assert.deepEqual((await closure(secondTask, combinedProof)).repositories[0].results, [secondSaved]);
+  await assert.rejects(closure({ ...secondTask, revision: 6 }, combinedProof),
+    { code: "TASK_SELECTED_PROJECTION_REQUIRED" });
+  assert.equal(await git(root, "show", combined + ":saved.txt"), "saved.txt");
+  assert.equal(await git(root, "show", combined + ":second.txt"), "second.txt");
+
   await commit(source.projectRoot, "drift.txt");
-  await assert.rejects(closure(), /source HEAD\/base\/branch or saved cleanliness changed/u);
+  await assert.rejects(closure(sourceTask, combinedProof), /source HEAD\/base\/branch or saved cleanliness changed/u);
+  assert.deepEqual((await closure(secondTask, combinedProof)).repositories[0].results, [secondSaved]);
 });
 
 test("release Git can omit a wall clock cutoff while retaining explicit abort", async () => {
