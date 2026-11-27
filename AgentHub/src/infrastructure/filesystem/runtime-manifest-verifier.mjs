@@ -103,7 +103,7 @@ export async function verifyRuntimeImportClosure(releaseRoot, files, {
   }
 }
 
-function releasePath(releaseRoot, relative) {
+export function releasePath(releaseRoot, relative) {
   if (path.isAbsolute(relative)) throw new Error(`Agent Hub runtime manifest contains an absolute path: ${relative}`);
   const root = path.resolve(releaseRoot);
   const target = path.resolve(root, relative);

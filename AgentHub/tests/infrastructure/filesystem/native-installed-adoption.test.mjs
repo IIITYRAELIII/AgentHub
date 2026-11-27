@@ -413,3 +413,34 @@ test("an exact adoption ignores root notes and still refuses version changes and
   await assert.rejects((await verify("foreign"))(), /unselected merge side/);
   assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
 });
+
+test("ordinary Await has a single full installed-source proof", async t => {
+  const f = await fixture(t);
+  const events = [];
+  const plan = { revision: "exact", ready: f.tasks.map(task => ({
+    ...task, taskRevision: 4, projectRoot: f.primary,
+  })), blocked: [], conflicts: [] };
+  const integration = new TaskIntegrationService({
+    releasePlanner: { plan: async () => plan, planAcceptance: async (_workspace, { checkBaseline }) => {
+      checkBaseline?.(plan);
+      return { baseline: plan, prospective: plan };
+    } },
+    taskGitWorkspaces: {
+      assertExplicitUpstreamAdoption: async () => assert.fail("unexpected explicit adoption"),
+      releaseBaseEvidence: async () => ({ baseCommit: f.main, publishedBaseCommit: f.published, adoptions: f.adoptions.map(({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }) => ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit })) }),
+      releaseIntegrationEvidence: async () => ({ tasks: f.tasks }),
+    },
+    releaseGitWorkspaces: f.candidate,
+    readPublicationState: async () => ({ generation: "fixture", repositories: [{ root: f.primary, revision: f.published }] }),
+  });
+  let upperProofs = 0;
+  const full = f.candidate.validateLocalSourceBaseline.bind(f.candidate);
+  f.candidate.validateLocalSourceBaseline = async args => { upperProofs++; return full(args); };
+  let committed = false;
+  await withTaskOperationTiming({ operationId: "review-count", record: e => events.push(e) }, () =>
+    integration.prepareAwaitAcceptance({ workspaceId: "fixture", acceptingTask: { id: f.tasks[0].taskId },
+      projectRoot: f.primary, operationId: "review-count", commitPrepared: async () => { committed = true; } }));
+  assert.equal(committed, true);
+  const innerProofs = events.filter(e => e?.stage === "native:installed-source-proof" && e?.phase === "end").length;
+  assert.equal(upperProofs + innerProofs, 1, "exactly one installed-source proof");
+});

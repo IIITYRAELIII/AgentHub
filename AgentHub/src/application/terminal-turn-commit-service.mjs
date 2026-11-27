@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { normalizeProviderRunTerminalStatus } from "../domain/provider-run-terminal.mjs";
 import { providerTurnAcceptance } from "../domain/task-runs.mjs";
+import { providerTerminalCompletionTime, terminalCompletionTime } from "../domain/turn-completion-time.mjs";
 
 import {
   consistentInterstreamRecordIdentity,
@@ -146,7 +147,7 @@ function historySnapshot(run, completion) {
 }
 
 export class TerminalTurnCommitService {
-  constructor({ store, messageCommands = null, commandTrace = null, logger = console }) {
+  constructor({ store, messageCommands = null, commandTrace = null, readTerminalTelemetry = null, logger = console }) {
     if (!store?.commit || !store?.get) throw new TypeError("terminal turn store is required");
     if (messageCommands && typeof messageCommands.transitionMessageCommand !== "function") {
       throw new TypeError("message command transition port is invalid");
@@ -154,6 +155,7 @@ export class TerminalTurnCommitService {
     this.store = store;
     this.messageCommands = messageCommands;
     this.commandTrace = commandTrace;
+    this.readTerminalTelemetry = readTerminalTelemetry;
     this.logger = logger;
     this.terminals = new Map();
   }
@@ -247,7 +249,10 @@ export class TerminalTurnCommitService {
       metadata: { terminalRevision: result?.terminal?.terminalRevision ?? null, runId: run?.id ?? null },
     });
     this.terminals.set(terminalKey(completion), result.terminal);
-    result.commandReconciled = await this.#reconcileTerminal(result.terminal);
+    const persistedCommand = result.outbox?.channels?.command;
+    result.commandReconciled = persistedCommand?.state === "acked" && !persistedCommand.lastError
+      ? true
+      : await this.#reconcileTerminal(result.terminal);
     return result;
   }
 
@@ -260,15 +265,17 @@ export class TerminalTurnCommitService {
       throw new Error("exact Codex terminal identity is required for correction");
     }
     if (!["completed", "failed", "aborted", "cancelled"].includes(status)
-      || !Number.isFinite(Date.parse(String(completedAt ?? "")))) {
+      || !terminalCompletionTime(completedAt)) {
       throw new Error("exact provider terminal status and time are required for correction");
     }
     const current = await this.get(identity);
     if (!current || current.status === status) {
       return { corrected: false, terminal: current, outbox: null };
     }
-    const previousAt = Date.parse(String(current.payload?.completion?.completedAt ?? ""));
-    if (!Number.isFinite(previousAt) || Date.parse(completedAt) <= previousAt) {
+    const evidence = await this.completionTimeEvidence(current);
+    const previousAt = Date.parse(evidence?.completedAt || current.payload?.completion?.completedAt || "");
+    if (!terminalCompletionTime(completedAt, current.payload?.completion?.startedAt)
+      || !Number.isFinite(previousAt) || Date.parse(completedAt) <= previousAt) {
       return { corrected: false, stale: true, terminal: current, outbox: null };
     }
     const answer = String(finalAnswer ?? "").trim();
@@ -400,8 +407,29 @@ export class TerminalTurnCommitService {
     return this.get(identity).then(Boolean);
   }
 
+  committedProjectionKeys(items) {
+    return this.store.committedProjectionKeys(items);
+  }
+
+  async reconcileStartupCommands() {
+    let reconciled = 0;
+    for (;;) {
+      const page = await this.store.startupPendingCommands();
+      if (!page.length) return { reconciled };
+      for (const item of page) {
+        const current = await this.store.get(item);
+        if (current?.terminalRevision !== item.terminalRevision) continue;
+        if (!await this.#reconcileTerminal(current)) {
+          throw new Error(`Cannot reconcile startup command for ${item.provider}/${item.threadId}/${item.turnId}`);
+        }
+        reconciled++;
+      }
+    }
+  }
+
   async pending(options) {
     const items = await this.store.pending(options);
+    if (options?.channel === "telegram") return items;
     for (const item of items) {
       await this.#reconcileTerminal({
         ...item,
@@ -410,6 +438,23 @@ export class TerminalTurnCommitService {
       });
     }
     return items;
+  }
+
+  async completionTimeEvidence(identity, { verifyTelemetry = false } = {}) {
+    const stored = await this.store.completionTime?.(identity);
+    if (!stored) return null;
+    if (stored.completedAt && !verifyTelemetry) return stored;
+    const telemetry = await this.readTerminalTelemetry?.(stored);
+    const providerCompletedAt = providerTerminalCompletionTime(stored, telemetry);
+    return {
+      ...stored,
+      completedAt: stored.completedAt || providerCompletedAt,
+      providerCompletedAt,
+    };
+  }
+
+  withCurrentCompletionRevision(evidence, operation) {
+    return this.store.withCurrentCompletionRevision(evidence, operation);
   }
 
   pendingProjections(options) {
@@ -422,6 +467,10 @@ export class TerminalTurnCommitService {
 
   claim(identity) {
     return this.store.claim(identity);
+  }
+
+  precedingProjectionCompletedAt(identity) {
+    return this.store.precedingProjectionCompletedAt?.(identity) ?? Promise.resolve(null);
   }
 
   acknowledge(identity) {

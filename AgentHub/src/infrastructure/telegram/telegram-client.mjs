@@ -42,7 +42,7 @@ export class TelegramClient {
     this.typingInterval = null;
   }
 
-  request(method, body, { timeoutMs = 40_000 } = {}) {
+  request(method, body, { timeoutMs = 40_000, signal } = {}) {
     return callTelegramJson({
       token: this.token,
       method,
@@ -50,6 +50,7 @@ export class TelegramClient {
       apiBaseUrl: this.apiBaseUrl,
       fetchImpl: this.fetchImpl,
       timeoutMs,
+      signal,
     });
   }
 

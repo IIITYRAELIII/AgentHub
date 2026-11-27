@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { planTurnDurationRecovery } from "../domain/turn-duration-recovery.mjs";
+import { planTurnCompletionRecovery } from "../domain/turn-completion-time.mjs";
 
 import {
   IMAGE_GENERATION_ESTIMATE_CREDITS,
@@ -240,6 +241,19 @@ export class WorkLogUsageStore {
     }, { load: false, pointRead: true });
   }
 
+  recoverTurnCompletion(evidence, { expectedCompletedAt, apply = false } = {}) {
+    return this.#repository.enqueue(async () => {
+      const expectedRevision = apply ? await this.#repository.currentRevision() : null;
+      const record = await this.#repository.getRecord(evidence);
+      const result = planTurnCompletionRecovery(record, evidence, expectedCompletedAt);
+      if (!apply || !result.eligible || result.unchanged) return result;
+      await this.#repository.upsertRecords([{
+        ...record, completedAt: evidence.completedAt, completionRecovery: result.recovery,
+      }], { expectedRevision });
+      return { ...result, applied: true, projectionPending: true };
+    }, { load: false, pointRead: true });
+  }
+
   async #projectionSource() {
     const current = await this.#repository.payload();
     const rateLimits = String(current?.html ?? "").match(
@@ -420,7 +434,8 @@ export class WorkLogUsageStore {
       defaultRuntimeHomeIds: this.#usageSyncRuntimeHomeIds,
     }) : null;
     const recordCompletedAtMs = Date.parse(status?.record?.completedAt ?? "");
-    const exactIndex = status?.indexed === true
+    const undated = status?.record?.provider === "codex" && status.record.completedAt === "";
+    const exactIndex = undated ? status?.indexed === false : status?.indexed === true
       && Number.isFinite(recordCompletedAtMs)
       && status?.index?.completedAtMs === recordCompletedAtMs;
     return {

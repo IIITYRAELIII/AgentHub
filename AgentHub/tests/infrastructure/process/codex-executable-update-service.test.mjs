@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { CodexExecutableUpdateService } from "../../../src/infrastructure/process/codex-executable-update-service.mjs";
+import { acquireCodexExecutableCustody } from "../../../src/infrastructure/process/codex-executable-custody.mjs";
 import { codexBundleDigest } from "../../../src/infrastructure/process/codex-executable-bundle.mjs";
 import { discoverOfficialCodexExecutables, verifyOpenAiAuthenticode, verifyRecordedCodexExecutable }
   from "../../../src/infrastructure/process/codex-executable.mjs";
@@ -238,6 +239,81 @@ test("unsigned rg remains eligible in discovery, preflight and cold startup with
   await writeFile(helper, "changed helper bytes");
   await assert.rejects(verifyRecordedCodexExecutable(legacy, inspection), /Recorded Codex bundle identity changed/u);
   assert.equal(featureChecks, beforeCold.featureChecks + 3);
+});
+
+test("recorded selection hashes once under native custody and refuses a replacement before probing", {
+  skip: process.platform !== "win32",
+}, async context => {
+  const stateFile = await fixture(context);
+  const environment = { LOCALAPPDATA: path.dirname(stateFile) };
+  const installRoot = path.join(environment.LOCALAPPDATA, "OpenAI", "Codex", "bin");
+  const install = path.join(installRoot, "fixture");
+  await mkdir(install, { recursive: true });
+  const root = await realpath(install);
+  const main = path.join(root, "codex.exe");
+  const helper = path.join(root, "rg.exe");
+  const original = "inert main bytes";
+  const adjacent = "inert helper bytes";
+  await writeFile(main, original);
+  await writeFile(helper, adjacent);
+  const digest = value => createHash("sha256").update(value).digest("hex").toUpperCase();
+  const publisher = 'CN="OpenAI OpCo, LLC"';
+  const files = [
+    { name: "codex.exe", sha256: digest(original), publisher },
+    { name: "rg.exe", sha256: digest(adjacent) },
+  ];
+  const recorded = { path: main, sha256: digest(original), publisher, source: "desktop", version: "0.152.0",
+    bundle: { schemaVersion: 1, installRoot: await realpath(installRoot), root, files, codeModeHost: false,
+      digest: codexBundleDigest(files, false) } };
+  let beforeCustody;
+  let featureProbes = 0;
+  const reads = [];
+  const options = { environment,
+    async hashFile(file) {
+      reads.push(file);
+      return digest(await readFile(file));
+    },
+    async acquireInspectionCustody(bundle) {
+      await beforeCustody?.();
+      return acquireCodexExecutableCustody(bundle);
+    },
+    async readFeatures() { featureProbes++; return { codeModeHost: false }; },
+  };
+  assert.equal((await verifyRecordedCodexExecutable(recorded, options)).bundle.digest, recorded.bundle.digest);
+  assert.deepEqual(reads, []);
+  assert.equal(featureProbes, 1);
+
+  await writeFile(stateFile, JSON.stringify({ schemaVersion: 1, active: recorded, lastKnownGood: recorded }));
+  let discoveryCalls = 0;
+  let recoveryChecks = 0;
+  const ownerOptions = {
+    stateFile,
+    verifyRecorded: (entry, inspection) => verifyRecordedCodexExecutable(entry, { ...inspection, ...options }),
+    discover: async () => { discoveryCalls++; return { candidates: [], rejected: [] }; },
+    canRecoverUnavailableSelection: () => { recoveryChecks++; return false; },
+    runCanary: async () => assert.fail("no verified replacement"),
+  };
+  beforeCustody = () => writeFile(main, "inert replacement");
+  const changed = new CodexExecutableUpdateService(ownerOptions);
+  await assert.rejects(changed.selectForStart(), /Codex executable changed during bundle verification/u);
+  assert.deepEqual(reads, []);
+  assert.equal(featureProbes, 1);
+  assert.equal(changed.diagnostics().status, "selection-rejected");
+  assert.equal(changed.diagnostics().reason, "recorded-identity-unverified");
+  assert.equal(discoveryCalls, 0);
+  assert.equal(recoveryChecks, 0);
+  assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).lastKnownGood, recorded);
+
+  // Failed native custody released the files. A recorded executable that
+  // disappears before custody still uses recovery/discovery.
+  await writeFile(main, original);
+  beforeCustody = () => unlink(main);
+  const missing = new CodexExecutableUpdateService(ownerOptions);
+  await assert.rejects(missing.selectForStart(), /No trusted installed official Codex/u);
+  assert.equal(missing.diagnostics().status, "no-trusted-candidate");
+  assert.equal(discoveryCalls, 1);
+  assert.equal(recoveryChecks, 1);
+  assert.equal(featureProbes, 1);
 });
 
 for (const policy of [

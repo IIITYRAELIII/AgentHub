@@ -178,3 +178,23 @@ test("managed run history preserves an ordinary Claude turn containing automatic
   assert.equal(setup.history[0].id, "claude-user-turn");
   assert.equal(setup.snapshots.length, 1);
 });
+
+test("terminal history keeps the observed date separate from recovery wall time", async () => {
+  const setup = fixture();
+  const occurredAt = "2026-08-02T12:34:56.789Z";
+  const independentlyObservedMs = Date.parse(occurredAt) + 17;
+  await setup.service.persist({
+    id: "run-1",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    providerStart: { turnId: "turn-1", phase: "completed", completedAtMs: independentlyObservedMs },
+  }, { active: false, status: "completed", answer: "final", terminalRevision: 3, completedAt: occurredAt });
+
+  const [turn] = setup.history;
+  assert.equal(turn.completedAt, occurredAt);
+  assert.equal(turn.terminalRevision, 3);
+  assert.equal(turn.messages[0].time, occurredAt);
+  assert.equal(setup.snapshots[0].snapshot.activityAtMs, 123);
+  assert.equal(setup.telemetry[0].completedAtMs, independentlyObservedMs);
+});

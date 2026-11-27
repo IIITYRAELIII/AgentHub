@@ -49,8 +49,16 @@ export async function inspectCodexExecutableBundle(candidate, {
   acquireInspectionCustody = acquireCodexExecutableCustody,
   retainCustody,
   measure = (_phase, work) => work(),
+  verifiedMainSha256,
 } = {}) {
-  const root = path.dirname(candidate.path), files = [];
+  const root = path.dirname(candidate.path), members = [], files = [];
+  const mainName = path.basename(candidate.path);
+  if (expectedBundle && !validCodexBundle(expectedBundle)) throw new Error("Recorded Codex bundle identity is invalid");
+  const recordedFiles = expectedBundle && verifiedMainSha256 === undefined
+    ? new Map(expectedBundle.files.map(file => [file.name, file.sha256])) : null;
+  if (recordedFiles && recordedFiles.get(mainName) !== candidate.sha256) {
+    throw new Error("Recorded Codex executable SHA-256 does not match the bundle");
+  }
   const walk = async directory => {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name), info = await lstat(file);
@@ -58,18 +66,40 @@ export async function inspectCodexExecutableBundle(candidate, {
       if (info.isDirectory()) { await walk(file); continue; }
       if (!info.isFile() || await realpath(file) !== file) throw new Error("Codex bundle member canonical path changed");
       const name = path.relative(root, file).split(path.sep).join("/");
-      const sha256 = await hashFile(file);
-      if (file === candidate.path && sha256 !== candidate.sha256) throw new Error("Codex executable changed during bundle verification");
-      files.push({ name, sha256, ...(file === candidate.path && candidate.publisher ? { publisher: candidate.publisher } : {}) });
+      members.push({ file, name });
     }
   };
-  await measure("bundleInventoryMs", () => walk(root));
+  await measure("bundleInventoryMs", async () => {
+    await measure("bundleMetadataMs", () => walk(root));
+    await measure("bundleHashMs", async () => {
+      for (const { file, name } of members) {
+        const isMain = file === candidate.path;
+        // Recorded verification just hashed this path. Native custody below
+        // still hashes the newly opened handles before anything may execute.
+        const sha256 = recordedFiles ? recordedFiles.get(name)
+          : isMain && verifiedMainSha256 !== undefined ? verifiedMainSha256 : await hashFile(file);
+        if (isMain && sha256 !== candidate.sha256) throw new Error("Codex executable changed during bundle verification");
+        files.push({ name, sha256, ...(isMain && candidate.publisher ? { publisher: candidate.publisher } : {}) });
+      }
+    });
+  });
   files.sort((left, right) => left.name.localeCompare(right.name, "en"));
-  if (expectedBundle && (!validCodexBundle(expectedBundle) || !sameBundleFiles(files, expectedBundle.files))) {
+  const recordedMainName = recordedFiles || verifiedMainSha256 !== undefined ? mainName : undefined;
+  if ((recordedMainName && !files.some(file => file.name === recordedMainName))
+      || (expectedBundle && !sameBundleFiles(files, expectedBundle.files))) {
+    // Preserve the main mismatch outcome even when another bundle member disappeared.
+    if (recordedFiles && await measure("recordedMainHashMs", () => hashFile(candidate.path, { measure })) !== candidate.sha256) {
+      throw new Error("Recorded Codex executable SHA-256 changed");
+    }
     throw Object.assign(new Error("Recorded Codex bundle identity changed"), { code: "CODEX_BUNDLE_UNAVAILABLE" });
   }
   // Probe the executable only while the complete verified bundle is held.
-  const custody = await measure("inspectionCustodyMs", () => acquireInspectionCustody({ installRoot, root, files }));
+  const custodyFiles = recordedMainName
+    ? [files.find(file => file.name === recordedMainName), ...files.filter(file => file.name !== recordedMainName)]
+    : files;
+  const custody = await measure("inspectionCustodyMs", () => acquireInspectionCustody({
+    installRoot, root, files: custodyFiles, ...(recordedMainName ? { recordedMainName } : {}),
+  }));
   let retained = false;
   try {
     custody.assertAlive();

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setImmediate } from "node:timers/promises";
 import { createAgentHubBootstrapComposition } from "../../src/composition/agent-hub-bootstrap-composition.mjs";
 import { createRuntimeLifecycleComposition } from "../../src/composition/runtime-lifecycle-composition.mjs";
 import { RuntimeResourceRegistry } from "../../src/runtime/runtime-resource-registry.mjs";
@@ -37,6 +38,7 @@ test("runtime composition marks readiness before starting background timers", as
   });
 
   assert.equal(await lifecycle.startAgentHub(), "polling");
+  await setImmediate();
   assert.deepEqual(events, ["ready", "timers"]);
 });
 
@@ -66,7 +68,10 @@ test("Agent Hub bootstrap starts and stops every boundary without a real process
       releaseLock: async () => events.push("resources:lock"),
       finalize: async () => events.push("resources:finalize"),
     },
-    miniAppLifecycle: { start: async () => events.push("mini-app:start") },
+    miniAppLifecycle: {
+      startLocal: async () => events.push("mini-app:start"),
+      startTransports: async () => events.push("mini-app:transports"),
+    },
     sanitizeRollouts: async () => events.push("rollouts:sanitize"),
     initializeProvider: async () => events.push("provider:start"),
     providerIsRunning: () => false,
@@ -98,7 +103,11 @@ test("Agent Hub bootstrap starts and stops every boundary without a real process
   assert.equal(events.filter((item) => item === "desktop:start").length, 1);
   assert.equal(events.filter((item) => item === "runtime-command:start").length, 1);
   assert.equal(events.filter((item) => item === "mcp:start").length, 1);
+  await setImmediate();
   assert.equal(events.filter((item) => item === "projections:retry").length, 1);
+  assert.ok(events.indexOf("mini-app:start") < events.indexOf("provider:start"));
+  assert.ok(events.indexOf("ready") < events.indexOf("mini-app:transports"));
+  assert.ok(events.indexOf("ready") < events.indexOf("telegram:commands"));
   assert.equal(await bootstrap.shutdownAgentHub("test"), true);
   assert.equal(await bootstrap.shutdownAgentHub("test"), false);
   assert.equal(events.includes("resources:finalize"), true);
@@ -109,6 +118,7 @@ test("Agent Hub bootstrap retries terminal projections when Telegram is disabled
   const events = [];
   let signalStarted;
   const startupReachedTimers = new Promise((resolve) => { signalStarted = resolve; });
+  const projectionStarted = Promise.withResolvers();
   const noOp = async () => {};
   const bootstrap = createAgentHubBootstrapComposition({
     config: { telegramEnabled: false },
@@ -128,13 +138,16 @@ test("Agent Hub bootstrap retries terminal projections when Telegram is disabled
       releaseLock: noOp,
       finalize: noOp,
     },
-    miniAppLifecycle: { start: noOp },
+    miniAppLifecycle: { startLocal: noOp, startTransports: noOp },
     sanitizeRollouts: noOp,
     initializeProvider: noOp,
     providerIsRunning: () => false,
     backfillProviderMetadata: noOp,
     recoverRuns: noOp,
-    retryTerminalProjections: async () => events.push("projections:retry"),
+    retryTerminalProjections: async () => {
+      events.push("projections:retry");
+      projectionStarted.resolve();
+    },
     retryNotifications: async () => events.push("notifications:retry"),
     restoreBackgroundJobs: async () => events.push("jobs:restore"),
     startRuntimeTimers: () => {
@@ -160,7 +173,9 @@ test("Agent Hub bootstrap retries terminal projections when Telegram is disabled
     }),
   ]);
 
-  assert.deepEqual(events, ["projections:retry", "ready", "timers:start"]);
+  assert.deepEqual(events, ["ready", "timers:start"]);
+  await projectionStarted.promise;
+  assert.deepEqual(events, ["ready", "timers:start", "projections:retry"]);
   assert.equal(bootstrap.startAgentHub(), started);
 });
 

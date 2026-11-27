@@ -71,6 +71,7 @@ export class MiniAppLifecycleService {
   }
 
   async startTransports(address = this.localAddress) {
+    if (this.closing) return address ?? null;
     const generation = this.transportGeneration;
     if (this.transportStartup && this.transportStartupGeneration === generation) {
       return this.transportStartup;

@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { setImmediate } from "node:timers/promises";
+import { setImmediate, setTimeout } from "node:timers/promises";
 import { agentHubRuntimeHealth } from "./runtime-health.mjs";
+
+const TELEGRAM_COMMAND_RETRY_DELAYS_MS = [500, 2_000, 10_000, 30_000];
 
 let activeStartupCoordinator = null;
 
@@ -33,10 +35,12 @@ export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
   { id: "history", label: "Проверка истории Codex" },
   { id: "provider", label: "Инициализация провайдера" },
   { id: "provider-metadata", label: "Восстановление метаданных провайдера" },
-  { id: "notifications", label: "Восстановление проекций завершённых ходов" },
+  { id: "notifications", label: "Сверка квитанций команд" },
+  { id: "terminal-projections", label: "Восстановление проекций завершённых ходов", background: true },
+  { id: "telegram-delivery", label: "Доставка завершённых ходов в Telegram", background: true },
   { id: "background-jobs", label: "Восстановление фоновых операций" },
   { id: "timers", label: "Запуск фоновых таймеров" },
-  { id: "telegram", label: "Регистрация команд Telegram" },
+  { id: "telegram", label: "Регистрация команд Telegram", background: true },
   { id: "restart", label: "Завершение перезапуска" },
   { id: "readiness", label: "Подтверждение готовности" },
   { id: "recovery", label: "Подтверждение восстановления хранилища" },
@@ -44,9 +48,12 @@ export const AGENT_HUB_STARTUP_OPERATIONS = Object.freeze([
 
 export class AgentHubStartupCoordinator {
   #initialStartupFinished = false;
+  #readyRecoveryPromise = null;
   #retryPromise = null;
   #metadataPromise = null;
   #metadataAbort = null;
+  #notificationAbort = null;
+  #notificationRecovery = null;
   #providerInitializeObserved = false;
   #providerUpdatePending = false;
 
@@ -56,10 +63,12 @@ export class AgentHubStartupCoordinator {
     startRuntimeCommand,
     startHubMcp,
     startMiniApp,
+    startMiniAppTransports = null,
     sanitizeRollouts,
     initializeProvider,
     providerIsRunning,
     backfillProviderMetadata,
+    prepareStartupCommandAdmission = async () => {},
     retryTerminalProjections,
     retryNotifications,
     restoreBackgroundJobs,
@@ -87,10 +96,12 @@ export class AgentHubStartupCoordinator {
       startRuntimeCommand,
       startHubMcp,
       startMiniApp,
+      startMiniAppTransports,
       sanitizeRollouts,
       initializeProvider,
       providerIsRunning,
       backfillProviderMetadata,
+      prepareStartupCommandAdmission,
       retryTerminalProjections,
       retryNotifications,
       restoreBackgroundJobs,
@@ -107,6 +118,7 @@ export class AgentHubStartupCoordinator {
       sqliteRecovery,
       acknowledgeSqliteRecovery,
       captureException,
+      startupTraceId,
       log,
       logError,
     });
@@ -118,12 +130,14 @@ export class AgentHubStartupCoordinator {
     }
     // Wrap the existing awaited ports, keeping their order and failure handling.
     // Recording the start separately makes a never-settled port observable.
-    for (const [name, stage] of [
+    for (const [name, stage, action] of [
       ["startMiniApp", "web"], ["startDesktopControl", "desktop-control"],
       ["startRuntimeCommand", "runtime-command"], ["startHubMcp", "hub-mcp"],
       ["sanitizeRollouts", "history"], ["initializeProvider", "provider"],
       ["backfillProviderMetadata", "provider-metadata"],
-      ["retryTerminalProjections", "notifications"], ["retryNotifications", "notifications"],
+      ["prepareStartupCommandAdmission", "notifications", "terminal-admission"],
+      ["retryTerminalProjections", "notifications", "terminal-projections"],
+      ["retryNotifications", "notifications", "telegram-delivery"],
       ["restoreBackgroundJobs", "background-jobs"],
       ["registerTelegramCommands", "telegram"], ["finalizeRestart", "restart"],
       ["markReady", "readiness"], ["startTimers", "timers"],
@@ -133,7 +147,7 @@ export class AgentHubStartupCoordinator {
       if (commandTrace?.measureBestEffort && typeof operation === "function") {
         this[name] = (...args) => {
           const startedAtMs = Date.now();
-          const metadata = { startupTraceId, operationId: stage };
+          const metadata = { startupTraceId, operationId: stage, ...(action ? { action } : {}) };
           return commandTrace.measureBestEffort({
             commandId: `startup:${startupTraceId}`, stage: `startup-${stage}`,
             transport: "server-runtime", metadata,
@@ -258,8 +272,7 @@ export class AgentHubStartupCoordinator {
     else this.health.setCapability("telegram", { critical: false, state: "disabled" });
     this.health.startOperation("notifications");
     try {
-      await this.retryTerminalProjections();
-      if (this.telegramEnabled) await this.retryNotifications();
+      await this.prepareStartupCommandAdmission({ startupTraceId: this.startupTraceId });
       this.health.completeOperation("notifications");
     } catch (error) {
       this.health.failOperation("notifications", error);
@@ -287,25 +300,8 @@ export class AgentHubStartupCoordinator {
     }
     if (this.telegramEnabled && !backgroundFailed) this.health.completeOperation("background-jobs");
 
-    if (this.telegramEnabled) {
-      this.health.startOperation("telegram");
-      await this.registerTelegramCommands().then(() => {
-        this.health.completeOperation("telegram");
-      }).catch((error) => {
-        this.health.failOperation("telegram", error);
-        this.#capture(error, "telegram");
-        this.health.setCapability("telegram", {
-          critical: false,
-          state: "failed",
-          error: error.message,
-        });
-        this.logError("Cannot register Telegram commands:", error.message);
-      });
-      if (!this.health.snapshot().capabilities.some((capability) => capability.name === "telegram" && capability.state === "failed")) {
-        this.health.setCapability("telegram", { critical: false, state: "ready" });
-      }
-    } else {
-      this.health.skipOperation("telegram");
+    if (this.telegramEnabled && !backgroundFailed) {
+      this.health.setCapability("telegram", { critical: false, state: "ready" });
     }
 
     if (this.hasPendingRestart()) {
@@ -315,8 +311,6 @@ export class AgentHubStartupCoordinator {
     }
 
     await this.#runOperation("readiness", this.markReady);
-
-    await this.#runOperation("timers", async () => this.startTimers());
 
     if (this.sqliteRecovery?.degraded) {
       this.health.startOperation("recovery");
@@ -337,7 +331,11 @@ export class AgentHubStartupCoordinator {
 
     this.health.complete();
     this.#initialStartupFinished = true;
+    if (this.startMiniAppTransports) {
+      void this.startMiniAppTransports().catch(error => this.#capture(error, "web-transports"));
+    }
     if (this.#providerInitializeObserved) this.providerInitialized();
+    await this.#startReadyRecovery();
     if (!providerFailed && providerRunning) this.#startMetadataBackfill();
     const status = this.health.snapshot();
     if (status.status === "ready") this.log(this.readyMessage());
@@ -372,7 +370,15 @@ export class AgentHubStartupCoordinator {
     }
     this.#providerUpdatePending = false;
     this.health.setCapability("provider", { critical: true, state: "ready" });
+    void this.#startReadyRecovery()?.catch(error => this.logError("Cannot start runtime timers:", error.message));
     this.#startMetadataBackfill();
+  }
+
+  #startReadyRecovery() {
+    if (this.#readyRecoveryPromise || !this.health.snapshot().ready) return this.#readyRecoveryPromise;
+    this.#readyRecoveryPromise = this.#runOperation("timers", async () => this.startTimers());
+    this.#startNotificationRecovery();
+    return this.#readyRecoveryPromise;
   }
 
   #startMetadataBackfill() {
@@ -393,12 +399,66 @@ export class AgentHubStartupCoordinator {
     return this.#metadataPromise;
   }
 
+  #startNotificationRecovery() {
+    if (this.#notificationRecovery) return;
+    this.#notificationAbort = new AbortController();
+    const signal = this.#notificationAbort.signal;
+    const operations = [["terminal-projections",
+      () => this.retryTerminalProjections({ startupTraceId: this.startupTraceId, signal })]];
+    if (this.telegramEnabled) {
+      operations.push(
+        ["telegram-delivery", () => this.retryNotifications({ startupTraceId: this.startupTraceId, signal })],
+        ["telegram", () => this.#registerTelegramWithRetry(signal)],
+      );
+    } else {
+      this.health.skipOperation("telegram-delivery");
+      this.health.skipOperation("telegram");
+    }
+    this.#notificationRecovery = setImmediate(undefined, { signal }).then(() =>
+      Promise.all(operations.map(async ([id, recover]) => {
+        this.health.startOperation(id, { background: true });
+        try {
+          await recover();
+          this.health.completeOperation(id);
+        } catch (error) {
+          if (signal.aborted) {
+            this.health.skipOperation(id);
+            return;
+          }
+          this.health.failOperation(id, error);
+          this.#capture(error, id);
+          this.logError(`Cannot recover ${id}:`, error.message);
+        }
+      }))
+    ).catch((error) => {
+      if (!signal.aborted) this.logError("Cannot start notification recovery:", error.message);
+    }).finally(() => { this.#notificationRecovery = null; });
+  }
+
+  async #registerTelegramWithRetry(signal) {
+    for (let attempt = 0; ; attempt++) {
+      signal?.throwIfAborted();
+      try {
+        return await this.registerTelegramCommands({ signal });
+      } catch (error) {
+        signal?.throwIfAborted();
+        const backoffMs = TELEGRAM_COMMAND_RETRY_DELAYS_MS[attempt];
+        const retryAfterMs = Number(error?.retryAfterMs);
+        if (error?.retryable !== true || backoffMs === undefined
+          || retryAfterMs > 2_147_483_647) throw error;
+        const waitMs = Math.max(backoffMs, Number.isFinite(retryAfterMs) ? retryAfterMs : 0);
+        await setTimeout(waitMs, undefined, { signal });
+      }
+    }
+  }
+
   stopBackgroundWork() {
     this.#metadataAbort?.abort();
+    this.#notificationAbort?.abort();
   }
 
   async waitForBackgroundWork() {
-    await this.#metadataPromise;
+    await Promise.all([this.#metadataPromise, this.#notificationRecovery]);
   }
 
   requestRetry({ startedAtMs } = {}) {
@@ -407,7 +467,7 @@ export class AgentHubStartupCoordinator {
       throw new Error("Процесс Хаба уже сменился. Обновите состояние запуска.");
     }
     if (!this.#initialStartupFinished) throw new Error("Первичный запуск ещё выполняется. Можно перезапустить Хаб.");
-    const retryableIds = new Set(["provider", "provider-metadata", "notifications", "background-jobs", "telegram", "recovery"]);
+    const retryableIds = new Set(["provider", "provider-metadata", "notifications", "terminal-projections", "telegram-delivery", "background-jobs", "telegram", "recovery"]);
     const failed = snapshot.startup.operations.filter((operation) => operation.state === "failed");
     if (!this.#retryPromise && failed.length && !failed.some((operation) => retryableIds.has(operation.id))) {
       throw new Error("Оставшиеся инфраструктурные этапы требуют перезапуска Хаба.");
@@ -426,15 +486,15 @@ export class AgentHubStartupCoordinator {
   async #retryFailed() {
     const operations = this.health.snapshot().startup.operations;
     const providerRetry = operations.some((operation) => operation.id === "provider" && operation.state === "failed");
+    const signal = this.#notificationAbort?.signal;
     const retryable = [
       ["provider", this.initializeProvider, "provider"],
       ["provider-metadata", this.backfillProviderMetadata],
-      ["notifications", async () => {
-        await this.retryTerminalProjections();
-        if (this.telegramEnabled) await this.retryNotifications();
-      }],
+      ["notifications", () => this.prepareStartupCommandAdmission({ startupTraceId: this.startupTraceId })],
+      ["terminal-projections", () => this.retryTerminalProjections({ startupTraceId: this.startupTraceId, signal })],
+      ["telegram-delivery", () => this.retryNotifications({ startupTraceId: this.startupTraceId, signal })],
       ["background-jobs", this.restoreBackgroundJobs, "telegram"],
-      ["telegram", this.registerTelegramCommands, "telegram"],
+      ["telegram", () => this.#registerTelegramWithRetry(signal)],
       ["recovery", this.acknowledgeSqliteRecovery, "sqlite_recovery"],
     ];
     try {
@@ -447,7 +507,7 @@ export class AgentHubStartupCoordinator {
           this.#startMetadataBackfill();
           continue;
         }
-        this.health.retryOperation(id);
+        this.health.retryOperation(id, { background: operation?.background === true });
         if (capability) this.health.setCapability(capability, { critical: capability === "provider" });
         try {
           await run();
@@ -468,6 +528,7 @@ export class AgentHubStartupCoordinator {
       }
     } finally {
       this.health.complete();
+      await this.#startReadyRecovery();
     }
   }
 }

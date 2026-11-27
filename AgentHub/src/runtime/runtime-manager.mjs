@@ -60,7 +60,7 @@ async function pruneReplacedStableFiles(layout) {
     .map((entry) => rm(path.join(layout.root, entry.name), { force: true }).catch(() => {})));
 }
 
-function stableRuntimeFiles(layout, releaseRoot) {
+export function stableRuntimeFiles(layout, releaseRoot) {
   const files = [{
     source: path.join(releaseRoot, "codex-stop-hook-launcher.mjs"),
     target: layout.codexHookLauncherFile,

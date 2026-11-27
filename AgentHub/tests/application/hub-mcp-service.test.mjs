@@ -799,6 +799,8 @@ async function fixture(context, {
     }),
     cleanup: async () => ({ removed: 1 }),
     cleanupOwned: async (...args) => defaultTaskGitWorkspaces.cleanup(...args),
+    planCloseArtifactsOwned: async () => ({ repositories: [] }),
+    removeClosedTaskArtifactsOwned: async () => ({ worktrees: [], branches: [] }),
   };
   const taskGitWorkspaces = taskGitWorkspacesFactory
     ? await taskGitWorkspacesFactory({
@@ -1328,17 +1330,10 @@ test("HubMcpService keeps workflow Done visible until explicit completion", asyn
     task_id: "task-current",
     status: "done",
   });
-  const completePreview = await service.call("hub_task_complete", {
+  const completed = await service.call("hub_task_complete", {
     context_token: token,
     request_id: "task-complete",
     task_id: "task-current",
-  });
-  const completed = await service.call("hub_task_complete", {
-    context_token: token,
-    request_id: "task-complete-confirmed",
-    task_id: "task-current",
-    confirm_cleanup: true,
-    expected_cleanup_token: completePreview.cleanupToken,
   });
 
   assert.equal(testing.workflowStatus, "testing");
@@ -2252,7 +2247,7 @@ test("claim forwards an explicit user dependency exception and complete forwards
   const schema = service.tools().find((tool) => tool.name === "hub_task_complete").inputSchema;
   assert.deepEqual(schema.properties.absorption_mode.enum, ["published_duplicate"]);
   assert.deepEqual(schema.properties.completion_mode.enum,
-    ["published_release_service", "published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"]);
+    ["close", "published_release_service", "published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"]);
   await service.call("hub_task_complete", { context_token: token,
     request_id: "release-service-preview", task_id: "task-current",
     completion_mode: "published_release_service" });

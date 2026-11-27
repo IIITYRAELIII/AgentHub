@@ -9,6 +9,8 @@ using Microsoft.Win32.SafeHandles;
 
 // Read-only lifetime custody. No copy, replacement, assignment or process stop.
 public sealed class AgentHubCodexBundleCustody : IDisposable {
+  public sealed class RecordedMainChangedException : IOException { }
+  public sealed class RecordedMemberChangedException : IOException { }
   [StructLayout(LayoutKind.Sequential)] private struct Info {
     public uint Attributes, CreationLow, CreationHigh, AccessLow, AccessHigh,
       WriteLow, WriteHigh, Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
@@ -51,7 +53,7 @@ public sealed class AgentHubCodexBundleCustody : IDisposable {
   private void Directory(string p) {
     if (directories.Add(p)) held.Add(Open(p, true));
   }
-  public static AgentHubCodexBundleCustody Acquire(string root, string boundary, string[] names, string[] hashes) {
+  public static AgentHubCodexBundleCustody Acquire(string root, string boundary, string[] names, string[] hashes, string recordedMainName) {
     AgentHubCodexBundleCustody lease = new AgentHubCodexBundleCustody();
     try {
       root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
@@ -77,8 +79,12 @@ public sealed class AgentHubCodexBundleCustody : IDisposable {
         lease.held.Add(stream);
         using (SHA256 hash = SHA256.Create()) {
           string actual = BitConverter.ToString(hash.ComputeHash(stream)).Replace("-", "");
-          if (!String.Equals(actual, hashes[i], StringComparison.OrdinalIgnoreCase))
+          if (!String.Equals(actual, hashes[i], StringComparison.OrdinalIgnoreCase)) {
+            if (String.Equals(names[i], recordedMainName, StringComparison.OrdinalIgnoreCase))
+              throw new RecordedMainChangedException();
+            if (!String.IsNullOrEmpty(recordedMainName)) throw new RecordedMemberChangedException();
             throw new InvalidDataException("Codex bundle member SHA-256 changed");
+          }
         }
       }
       return lease;

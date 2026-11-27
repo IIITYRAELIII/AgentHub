@@ -82,8 +82,11 @@ export function createRuntimeFacadesComposition({
     repairTurnEndAttachments(identity, options) {
       return turnEndDelivery.reconcileResponseAttachments(identity, options);
     },
-    retryPendingTurnEndNotifications() {
-      return turnEndDelivery.retryPendingTelegram();
+    retryPendingTurnEndNotifications(options = {}) {
+      return turnEndDelivery.retryPendingTelegram(options);
+    },
+    prepareStartupCommandAdmission() {
+      return turnEndDelivery.prepareStartupCommandAdmission();
     },
     retryPendingTurnEndProjections(options = {}) {
       return turnEndDelivery.retryPendingProjections(options);

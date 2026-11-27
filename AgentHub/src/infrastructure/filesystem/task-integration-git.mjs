@@ -18,14 +18,14 @@ import process from "node:process";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 
 import { taskRepositoryKey, taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
-import { assertReleaseBaseProvenance, NATIVE_MAIN_PROVENANCE, LOCAL_SOURCE_BASELINE_PROVENANCE, normalizedReleaseBaseProvenance } from "../../domain/release-base-provenance.mjs";
+import { assertReleaseBaseProvenance, localSourceSelectionHash, NATIVE_MAIN_PROVENANCE, LOCAL_SOURCE_BASELINE_PROVENANCE, normalizedReleaseBaseProvenance } from "../../domain/release-base-provenance.mjs";
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { selectedCompositionFields } from "../../domain/task-selected-composition.mjs";
 import { canonicalPath } from "./config.mjs";
 import { withInterprocessLocks, interprocessLockAdmissionTimeoutPath } from "../process/interprocess-lock.mjs";
 import { measureTaskOperation, recordTaskOperationTiming } from "../process/task-operation-timing.mjs";
 import { publicationStateFile, publicationStateRepositories, readPublicationState } from "../persistence/publication-state.mjs";
-import { assertNativeTaskHistories, assertNativePreparedComposition, mergeSelectedResults, NATIVE_RELEASE_POLICY } from "./native-release-merge.mjs";
+import { assertNativeTaskHistories, assertNativePreparedComposition, assertNativeMergedResults, mergeSelectedResults, NATIVE_RELEASE_POLICY } from "./native-release-merge.mjs";
 
 const RELEASE_MARKER = "agent-hub-release-clone.json";
 const RELEASE_BRANCH = "PreRelease";
@@ -474,6 +474,7 @@ export class TaskIntegrationGitService {
   #validationBundle = null;
   #validationReferenceRoot = null;
   #isolationContext = null;
+  #derivedLocalSourceProofs = new WeakMap();
   #readPreparationAuthority;
   #readPreparationOriginal;
   #publicationDataDir;
@@ -783,6 +784,7 @@ export class TaskIntegrationGitService {
       });
       isolated.#publicationDataDir = this.#publicationDataDir;
       isolated.#repositoryOwner = this.#repositoryOwner;
+      isolated.#derivedLocalSourceProofs = this.#derivedLocalSourceProofs;
       const candidate = await isolated.prepareCandidate({
         planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit, baseProvenance,
         validateBeforeCommit,
@@ -827,8 +829,10 @@ export class TaskIntegrationGitService {
       }
       const verify = async verificationRepository => {
       const git = (args, options = {}) => runGit(args, { ...options, cwd: verificationRepository });
+      const derived = this.#derivedLocalSourceProof({ projectRoot, provenance: baseProvenance, planRevision, tasks });
+      if (derived) await this.assertDerivedInstalledSourceCurrent({ projectRoot, provenance: baseProvenance, planRevision, tasks });
       const historyAuthority = await this.#nativeHistoryAuthority({ projectRoot, provenance: manifest.baseProvenance,
-        planRevision, tasks });
+        planRevision, tasks, verifiedLocalSource: derived?.verified });
       await assertNativePreparedComposition({ git, baseCommit: source.baseCommit, tasks,
         historyAuthority,
         merges: manifest.merges, head: source.preReleaseHead, tree: source.tree,
@@ -922,7 +926,7 @@ export class TaskIntegrationGitService {
   }
 
   async deriveInstalledLocalSourceBaselineForSelection({ projectRoot, planRevision, tasks,
-    publishedRevision, adoptions = [] } = {}) {
+    publishedRevision, adoptions = [], retainProof = false } = {}) {
     this.#assertAvailable("deriveInstalledLocalSourceBaselineForSelection");
     const initial = await primarySnapshot(projectRoot);
     this.#assertAvailable("assertPrimaryInvariant");
@@ -938,13 +942,40 @@ export class TaskIntegrationGitService {
     if (JSON.stringify(pins) !== JSON.stringify(adoptions)) {
       throw new Error("Ordinary Await selected adoption evidence changed");
     }
+    let proof;
     const provenance = await installedNativeHistoryBaseline({ git,
+      ...(retainProof ? { onVerified: (verified, assertCurrent) => { proof = { verified, assertCurrent }; } } : {}),
       sourceGit: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
       repositoryRoot: initial.root, primaryMainCommit: initial.mainCommit, publishedRevision,
       runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }), planRevision, tasks, adoptions: actual,
       readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }) });
     if (!provenance && pins.length) throw new Error("Ordinary adopted Await has no verified installed source baseline");
-    return provenance ? { ...provenance, compositionBaseCommit: provenance.ownGitPublication?.commit ?? publishedRevision } : null;
+    if (!provenance) return null;
+    const base = { ...provenance, compositionBaseCommit: provenance.ownGitPublication?.commit ?? publishedRevision };
+    if (retainProof) {
+      if (!proof?.assertCurrent) throw Error("Ordinary Await installed source proof is missing");
+      const verified = { ...proof.verified, provenance: Object.freeze(base) };
+      this.#derivedLocalSourceProofs.set(base, { verified, assertCurrent: proof.assertCurrent,
+        repositoryRoot: canonicalPath(initial.root) });
+    }
+    return base;
+  }
+
+  #derivedLocalSourceProof({ projectRoot, provenance, planRevision, tasks }) {
+    const proof = this.#derivedLocalSourceProofs.get(provenance);
+    if (!proof) return null;
+    if (proof.repositoryRoot !== canonicalPath(projectRoot) || provenance.planRevision !== planRevision
+        || provenance.selectionHash !== localSourceSelectionHash(tasks)) {
+      throw Error("Ordinary Await installed source proof scope changed");
+    }
+    return proof;
+  }
+
+  async assertDerivedInstalledSourceCurrent(request) {
+    const proof = this.#derivedLocalSourceProof(request);
+    if (!proof) throw Error("Ordinary Await installed source proof is missing");
+    await measureTaskOperation("native:installed-source-current", proof.assertCurrent);
+    return proof.verified;
   }
 
   #historicalChangelogOriginal(provenance) {
@@ -973,12 +1004,13 @@ export class TaskIntegrationGitService {
     });
   }
 
-  async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks, expectedPublishedMetadata = undefined, primary = null }) {
+  async #nativeHistoryAuthority({ projectRoot, provenance, planRevision, tasks, expectedPublishedMetadata = undefined, primary = null, verifiedLocalSource = null }) {
     return measureTaskOperation("native:history-authority", async () => {
     // Isolated composition keeps original Test and publication receipts at the parent owner.
     const dataDir = this.#publicationDataDir;
     if (provenance?.kind === LOCAL_SOURCE_BASELINE_PROVENANCE) {
-      const verified = await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
+      const verified = verifiedLocalSource
+        ?? await this.validateLocalSourceBaseline({ projectRoot, provenance, planRevision, tasks });
       const publicBases = [...new Set([verified.provenance.compositionBaseCommit ?? verified.provenance.sourceBaseCommit,
         ...(verified.provenance.compositionBaseCommit ? [verified.provenance.publishedBaseCommit] : []),
         ...(verified.provenance.ownGitPublication ? [verified.provenance.ownGitPublication.commit] : [])])];
@@ -1502,8 +1534,13 @@ export class TaskIntegrationGitService {
           await git(["fetch", workspace, commit]);
         }
       }
-      const validateLocalSource = async () => {
-        if (localSource) await assertInstalledLocalSourceBaseline({ provenance: localSource, git,
+      const derivedRequest = { projectRoot: initial.root, provenance: baseProvenance, planRevision: revision, tasks };
+      const derived = this.#derivedLocalSourceProof(derivedRequest);
+      let assertLocalSourceCurrent;
+      if (derived) assertLocalSourceCurrent = () => this.assertDerivedInstalledSourceCurrent(derivedRequest);
+      const verifiedLocalSource = derived?.verified ?? (localSource ? await measureTaskOperation("native:installed-source-proof",
+        async () => assertInstalledLocalSourceBaseline({ provenance: localSource, git,
+          onVerified: recheck => { assertLocalSourceCurrent = recheck; },
           readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }),
           originalAuthority: this.#historicalChangelogOriginal(localSource),
           repositoryRoot: initial.root,
@@ -1511,13 +1548,17 @@ export class TaskIntegrationGitService {
           primaryMainCommit: (await primarySnapshot(initial.root)).mainCommit,
           publishedRevision: await durablePublishedRevision(this.#environment, initial.root),
           planRevision: revision, tasks, runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }),
-        });
-      };
-      await validateLocalSource();
+        })) : null);
+      if (derived) await assertLocalSourceCurrent();
       const historyRequest = { projectRoot: initial.root, provenance, planRevision: revision, tasks };
-      let historyAuthority = await this.#nativeHistoryAuthority(historyRequest);
+      const historyAuthority = await this.#nativeHistoryAuthority({ ...historyRequest, verifiedLocalSource });
       if (historyAuthority?.publishedMetadata) historyRequest.expectedPublishedMetadata = historyAuthority.publishedMetadata;
-      await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority }));
+      let assertHistoryCurrent;
+      const historyGit = (args, options) => git(["--no-replace-objects", ...args], options);
+      await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({
+        git: historyGit, baseCommit, tasks, historyAuthority,
+        onVerified: recheck => { assertHistoryCurrent = recheck; },
+      }));
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
       const readLegacyReuseBinding = async () => measureTaskOperation("native:legacy-prepared-verify", async () => {
@@ -1564,9 +1605,9 @@ export class TaskIntegrationGitService {
             || state.head !== head) throw interruptedAwaitRefusal("completed native selection differs");
         await preparationObjectStore().withInputMath({
           sourceRoot: clone.releaseRoot, inputs: [head, baseCommit, ...tasks.map(task => task.resultCommit)],
-        }, ({ repository }) => assertNativePreparedComposition({
-          git: (args, options = {}) => runGit(args, { ...options, cwd: repository }),
-          baseCommit, tasks, merges: state.merges, head, tree, identity, historyAuthority,
+        }, ({ repository }) => assertNativeMergedResults({
+          git: (args, options = {}) => runGit(["--no-replace-objects", ...args], { ...options, cwd: repository }),
+          baseCommit, tasks, merges: state.merges, head, tree, identity,
         }));
         return { head, tree, merges: state.merges };
       };
@@ -1693,18 +1734,14 @@ export class TaskIntegrationGitService {
         if (await durablePublishedRevision(this.#environment, initial.root) !== published) {
           throw new Error("Publication authority changed during native release preparation");
         }
-        await validateLocalSource();
-        historyAuthority = await this.#nativeHistoryAuthority({ ...historyRequest, primary: current });
-        await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority }));
-        if (historyAuthority?.adoptions.length) await assertNativeUpstreamOrigin({
-          git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }),
-          adoptions: historyAuthority.adoptions, originCommit: localSource.approvedOriginMainCommit });
-        else if (localSource?.ownGitPublication) await assertOwnGitPublicationOrigin({ provenance: localSource,
-          repositoryRoot: initial.root, tasks,
-          readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }),
-          git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }) });
-        else if (localSource?.adoptions) await assertInstalledAgreedMainOrigin({ provenance: localSource,
-          git: (args, options = {}) => runGit(args, { ...options, cwd: initial.root }) });
+        if (verifiedLocalSource) await assertLocalSourceCurrent();
+        else {
+          const currentAuthority = await this.#nativeHistoryAuthority({ ...historyRequest, primary: current });
+          if (taskGitIdentityHash(currentAuthority) !== taskGitIdentityHash(historyAuthority)) {
+            throw new Error("Native Task history authority changed during release preparation");
+          }
+        }
+        await assertHistoryCurrent();
         if (nativeAwaitRecovery) {
           const remote = await git(["ls-remote", "origin", "refs/heads/main"]);
           if (remote.split(/\s/u)[0] !== nativeAwaitRecovery.originMainCommit) {

@@ -199,14 +199,16 @@ test('an incomplete workspace batch refuses projection without committing a part
   assert.equal((await s.worker.projectJournal(s.options, { workspaceResolver: resolver })).projected, true);
 });
 
-test('startup backlog retains every real outbox ACK fence before Ready with the optimized worker', async t => {
+test('startup leaves history and journal recovery in the background and retains every real outbox ACK fence', async t => {
   const s = await fixture(t);
   const completions = Array.from({ length: 17 }, (_, i) => ({ ...s.record(i),
     status: 'completed', finalAnswer: `Exact retained final ${i}`,
     clientUserMessageId: `fixture-startup-original-${i}`, resolveAccount: false }));
   for (const c of completions) s.catalog.bindThread({ ...c, streamId: s.workspace.stream.id, source: 'created' });
   const terminalStore = new ProviderTurnTerminalStore({ dataDir: s.root });
-  const terminal = new TerminalTurnCommitService({ store: terminalStore });
+  const terminal = new TerminalTurnCommitService({ store: terminalStore,
+    messageCommands: { transitionMessageCommand: async () => ({ record: null }) },
+  });
   for (const c of completions) await terminal.commit(c);
   const realUsage = createWorkLogUsageStore({ ledgerFile: path.join(s.root, 'retired.json'),
     databaseFile: s.databaseFile, defaultProjectRoot: s.root, usageSyncStore: s.worker,
@@ -219,7 +221,8 @@ test('startup backlog retains every real outbox ACK fence before Ready with the 
   const saving = new Promise(resolve => { reachedSave = resolve; });
   const service = new TurnEndDeliveryService({ terminalCommits: terminal,
     notifications: { values: () => [], markDelivered() {} }, taskRuns: { forEvent: () => null },
-    persistHistory: async () => {}, projectTurn: (...args) => journal.projectTurn(...args),
+    persistHistory: async () => assert.equal(ready, 1, "history recovery began before Ready"),
+    projectTurn: (...args) => journal.projectTurn(...args),
     ensureTurnUsageFact: (...args) => journal.ensureTurnUsageFact(...args),
     readTurnProjection: (...args) => journal.turnProjectionStatus(...args),
     flushTurnProjections: (...args) => journal.flushTurnProjections(...args),
@@ -232,18 +235,18 @@ test('startup backlog retains every real outbox ACK fence before Ready with the 
     health, startMiniApp: noop, startDesktopControl: noop,
     startRuntimeCommand: noop, startHubMcp: noop, sanitizeRollouts: noop,
     initializeProvider: noop, providerIsRunning: () => false, recoverRuns: noop,
+    prepareStartupCommandAdmission: () => service.prepareStartupCommandAdmission(),
     retryTerminalProjections: () => service.retryPendingProjections({ recoverProjecting: true }),
     retryNotifications: noop, restoreBackgroundJobs: noop, startTimers: noop,
     hasPendingRestart: () => false, markReady: () => { ready++; }, readyMessage: () => 'ready',
     waitForever: noop, log() {}, logError() {} });
   const start = startup.start();
   try {
-    await Promise.race([saving, start.then(() => {
-      throw new Error('startup completed before its terminal persistence fence');
-    })]);
-    assert.equal(ready, 0);
+    await start;
+    await saving;
+    assert.equal(ready, 1);
     assert.ok((await terminal.pendingProjections()).length > 0);
-    releaseSave(); await start;
+    releaseSave(); await startup.waitForBackgroundWork();
     assert.equal(ready, 1);
     assert.deepEqual(await terminal.pendingProjections(), []);
     for (const c of completions) assert.equal((await journal.turnProjectionStatus(c)).current, true);

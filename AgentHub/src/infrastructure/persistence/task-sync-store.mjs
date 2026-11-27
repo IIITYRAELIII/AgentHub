@@ -220,6 +220,8 @@ function cleanHistory(history, limit, { provider = "" } = {}) {
           : {}),
         ...(item?.startedAt ? { startedAt: cleanText(item.startedAt, 80) } : {}),
         ...(item?.completedAt ? { completedAt: cleanText(item.completedAt, 80) } : {}),
+        ...(Number.isSafeInteger(item?.completedAtRevision) && item.completedAtRevision > 0
+          ? { completedAtRevision: item.completedAtRevision } : {}),
         attachments: cleanAttachments(item?.attachments),
         activities: cleanActivities(item?.activities),
         ...(cleanActivityGroups(item?.activityGroups).length
@@ -488,7 +490,10 @@ function preserveDurableChronology(existingHistory, incomingHistory) {
       }));
     const next = { ...turn };
     if (!turn?.startedAt && existingTurn?.startedAt) next.startedAt = existingTurn.startedAt;
-    if (!turn?.completedAt && existingTurn?.completedAt) next.completedAt = existingTurn.completedAt;
+    if (existingTurn.completedAtRevision > (turn.completedAtRevision ?? 0)) {
+      next.completedAt = existingTurn.completedAt;
+      next.completedAtRevision = existingTurn.completedAtRevision;
+    } else if (!turn?.completedAt && existingTurn?.completedAt) next.completedAt = existingTurn.completedAt;
     if (Array.isArray(turn?.messages)) {
       next.messages = turn.messages.map((message) => {
         if (message?.time) return message;
@@ -811,6 +816,7 @@ function configure(database) {
       activity_groups_json TEXT NOT NULL DEFAULT '[]',
       user_message_authority TEXT NOT NULL DEFAULT '',
       user_message_recovery_version INTEGER NOT NULL DEFAULT 0,
+      completed_at_revision INTEGER NOT NULL DEFAULT 0,
       user_message_snapshot_authority TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (provider, thread_id, position),
       FOREIGN KEY (provider, thread_id)
@@ -926,6 +932,9 @@ function configure(database) {
   }
   if (!turnColumns.has("user_message_authority")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN user_message_authority TEXT NOT NULL DEFAULT ''");
+  }
+  if (!turnColumns.has("completed_at_revision")) {
+    database.exec("ALTER TABLE task_read_model_turns ADD COLUMN completed_at_revision INTEGER NOT NULL DEFAULT 0");
   }
   if (!turnColumns.has("user_message_recovery_version")) {
     database.exec("ALTER TABLE task_read_model_turns ADD COLUMN user_message_recovery_version INTEGER NOT NULL DEFAULT 0");
@@ -1526,6 +1535,7 @@ export class LocalTaskSyncStore {
         status: String(row.status ?? ""),
         active: Number(row.active) === 1,
         completed: Number(row.completed) === 1,
+        ...(row.completed_at_revision > 0 ? { completedAtRevision: Number(row.completed_at_revision) } : {}),
         ...(row.user_message_authority === "terminal-ledger"
           ? { userMessageAuthority: "terminal-ledger" }
           : {}),
@@ -1647,15 +1657,16 @@ export class LocalTaskSyncStore {
     return turns.map((turn) => {
       const record = terminals.get(String(turn?.id ?? "").trim());
       if (!record) return turn;
+      // A terminal revision can reach chat before the journal repairs its older date.
       return {
         ...turn,
         prompt: cleanText(record.prompt, 12_000) || turn.prompt,
         answer: turn.answer || cleanText(record.body ?? record.text, 40_000),
-        status: cleanText(record.status, 40),
+        status: (turn.terminalRevision || turn.completedAtRevision) && turn.completed ? turn.status : cleanText(record.status, 40),
         active: false,
         completed: true,
         ...(record.startedAt ? { startedAt: cleanText(record.startedAt, 80) } : {}),
-        ...(record.completedAt ? { completedAt: cleanText(record.completedAt, 80) } : {}),
+        ...(record.completedAt && !turn.completedAtRevision ? { completedAt: cleanText(record.completedAt, 80) } : {}),
       };
     });
   }
@@ -1928,8 +1939,8 @@ export class LocalTaskSyncStore {
         completed, started_at, completed_at, prompt_author, prompt_origin_json,
         prompt_annotations_json, prompt_request,
         attachments_json, activities_json, activity_groups_json, user_message_authority,
-        user_message_snapshot_authority, user_message_recovery_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        user_message_snapshot_authority, user_message_recovery_version, completed_at_revision
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertMessage = this.#database.prepare(`
       INSERT INTO task_read_model_messages (
@@ -1965,6 +1976,7 @@ export class LocalTaskSyncStore {
         turn.userMessageAuthority ?? "",
         turn.userMessageSnapshotAuthority ?? "",
         turn.userMessageRecoveryVersion ?? 0,
+        turn.completedAtRevision ?? 0,
       );
       turn.messages.forEach((message, messagePosition) => {
         insertMessage.run(

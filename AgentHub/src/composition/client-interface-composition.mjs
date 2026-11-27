@@ -110,8 +110,8 @@ export async function createClientInterfaceComposition({
     rememberSpeechText: (...args) => mediaController?.rememberSpeechText(...args) ?? null,
     messageLimit: telegramLimit,
   });
-  const telegram = (method, body) => {
-    if (method !== "answerCallbackQuery") return telegramClient.request(method, body);
+  const telegram = (method, body, options) => {
+    if (method !== "answerCallbackQuery") return telegramClient.request(method, body, options);
     telegramClient.answerCallback(body, {
       onError: (error) => console.warn(`Telegram callback acknowledgement failed: ${error.message}`),
     });

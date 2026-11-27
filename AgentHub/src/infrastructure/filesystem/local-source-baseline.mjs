@@ -12,7 +12,9 @@ import { publicationStateRepositories } from "../persistence/publication-state.m
 import { canonicalPath } from "./config.mjs";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
-import { verifyRuntimeManifest } from "./runtime-manifest-verifier.mjs";
+import { measureTaskOperation } from "../process/task-operation-timing.mjs";
+import { observeRuntimeContent } from "./runtime-installation-custody.mjs";
+import { verifyRuntimeManifest, releasePath } from "./runtime-manifest-verifier.mjs";
 
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const reject = message => { throw new TaskPreparationRejectedError(`Installed local source baseline: ${message}`); };
@@ -265,7 +267,7 @@ export async function assertInstalledLocalSourceBaseline({
   adoptionGit = git, repositoryRoot = null,
   originalAuthority = null,
   readOwnGitPublication = null,
-  inheritedMainMetadata = [],
+  inheritedMainMetadata = [], onVerified = null,
 }) {
   const p = normalizedReleaseBaseProvenance(provenance);
   if (p?.kind !== LOCAL_SOURCE_BASELINE_PROVENANCE) reject("missing provenance");
@@ -282,15 +284,22 @@ export async function assertInstalledLocalSourceBaseline({
     const tree = await git(["-C", manifest.sourceRoot, "rev-parse", "HEAD^{tree}"]);
     await ensureRetainedSourceHistory({ git, sourceRoot: manifest.sourceRoot, commit: manifest.publicationRevision, tree });
   }
-  let adoptions = [];
-  if (p.adoptions) {
+  const readAdoptions = async () => {
+    if (!p.adoptions) {
+      if (String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] !== publishedRevision) {
+        reject("origin differs from the pinned OWN publication");
+      }
+      return [];
+    }
     if (!repositoryRoot) reject("adoption repository is absent");
-    adoptions = await readNativeUpstreamAdoptions({ git: adoptionGit, tasks, repositoryRoot,
+    const adoptions = await readNativeUpstreamAdoptions({ git: adoptionGit, tasks, repositoryRoot,
       localMainCommit: primaryMainCommit });
     const pins = adoptions.map(({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }) =>
       ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit }));
     if (JSON.stringify(pins) !== JSON.stringify(p.adoptions)) reject("selected adoption receipts changed");
-  } else if (String(await git(["ls-remote", "origin", "refs/heads/main"])).split(/\s/u)[0] !== publishedRevision) reject("origin differs from the pinned OWN publication");
+    return adoptions;
+  };
+  const adoptions = await readAdoptions();
   const validateOrigin = async () => {
     if (p.ownGitPublication) return assertOwnGitPublicationOrigin({ provenance: p, git: adoptionGit,
       readOwnGitPublication, repositoryRoot, tasks });
@@ -320,7 +329,6 @@ export async function assertInstalledLocalSourceBaseline({
         || typeof manifest.sourceRoot !== "string" || !path.isAbsolute(manifest.sourceRoot)) {
       reject("published baseline requires an older retained installed source");
     }
-    await verifyRuntimeManifest(releaseRoot, p.installedReleaseId);
   }
   if (manifest.releaseId !== p.installedReleaseId || !Array.isArray(manifest.files)
       || manifest.files.some(file => typeof file.path !== "string"
@@ -347,6 +355,17 @@ export async function assertInstalledLocalSourceBaseline({
   const needsHost = changed.some(file => file.startsWith("AgentHub/") && hostInputs.has(file.slice(9)));
   const sources = await sourceBlobs(git, objects, [...new Set([...runtimePaths,
     ...(needsHost ? [...hostInputs].map(relative => `AgentHub/${relative}`) : [])])]);
+  const observedFiles = onVerified ? await observeRuntimeContent([
+    path.join(releaseRoot, "runtime-manifest.json"), path.join(runtimeRoot, "current.json"),
+    ...(publishedOnly ? manifest.files.map(file => releasePath(releaseRoot, file.path))
+      : runtimePaths.map(relative => releasePath(releaseRoot, relative.slice(9)))),
+    ...(needsHost ? [
+      path.join(releaseRoot, "AgentHub.RuntimeHost.exe"),
+      path.join(releaseRoot, "AgentHub.RuntimeHost.source.sha256"),
+      ...[...hostInputs].map(file => path.join(manifest.sourceRoot ?? releaseRoot, file)),
+    ] : []),
+  ], releaseRoot) : null;
+  if (publishedOnly) await verifyRuntimeManifest(releaseRoot, p.installedReleaseId);
   let runtimeFiles = 0;
   let hostChanged = false;
   let repositoryFilesVerified = false;
@@ -391,23 +410,37 @@ export async function assertInstalledLocalSourceBaseline({
   // Keep the exact installed source's inherited metadata when an explicitly
   // verified source base has incorporated a later agreed main. This identity
   // comes from the hash-pinned installed manifest, never from Task arguments.
-  if (typeof manifest.publicationRevision === "string" && /^[a-f0-9]{40}$/u.test(manifest.publicationRevision)
-      && typeof manifest.sourceRoot === "string" && path.isAbsolute(manifest.sourceRoot)) {
-    const installedSource = manifest.publicationRevision;
-    if (await git(["-C", manifest.sourceRoot, "rev-parse", "HEAD^{commit}"]) !== installedSource
-        || await git(["-C", manifest.sourceRoot, "status", "--porcelain=v1", "-z", "--untracked-files=all"])) {
+  const installedSource = typeof manifest.sourceRoot === "string" && path.isAbsolute(manifest.sourceRoot)
+    && /^[a-f0-9]{40}$/u.test(manifest.publicationRevision ?? "") ? manifest.publicationRevision : null;
+  const assertSource = async () => {
+    if (installedSource && (await git(["-C", manifest.sourceRoot, "rev-parse", "HEAD^{commit}"]) !== installedSource
+        || await git(["-C", manifest.sourceRoot, "status", "--porcelain=v1", "-z", "--untracked-files=all"]))) {
       reject("retained installed source identity changed");
     }
+  };
+  if (installedSource) {
+    await assertSource();
     await git(["merge-base", "--is-ancestor", installedSource, p.sourceBaseCommit]);
     if (installedSource !== p.sourceBaseCommit) metadataBases.push(installedSource);
   }
   await validateOrigin();
-  const changelogEntries = await assertHistoricalChangelog({ provenance: p, originalAuthority, tasks, repositoryRoot, git, runtimeRoot });
-  if (current.current !== JSON.parse(await regular(path.join(runtimeRoot, "current.json"))).current) reject("installed release changed");
-  if (!manifestBytes.equals(await regular(path.join(releaseRoot, "runtime-manifest.json")))) reject("installed manifest changed");
-  if (publishedOnly) {
-    if (!currentBytes.equals(await regular(path.join(runtimeRoot, "current.json")))) reject("installed release changed");
-  }
+  const readChangelog = () => assertHistoricalChangelog({ provenance: p, originalAuthority, tasks, repositoryRoot, git, runtimeRoot });
+  const changelogEntries = await readChangelog();
+  const assertInstalledIdentity = async () => {
+    const pointerBytes = await regular(path.join(runtimeRoot, "current.json"));
+    if (current.current !== JSON.parse(pointerBytes).current
+        || publishedOnly && !currentBytes.equals(pointerBytes)) reject("installed release changed");
+    if (!manifestBytes.equals(await regular(path.join(releaseRoot, "runtime-manifest.json")))) reject("installed manifest changed");
+    await observedFiles?.();
+  };
+  await assertInstalledIdentity();
+  onVerified?.(async () => {
+    await readAdoptions();
+    await validateOrigin();
+    await assertSource();
+    await readChangelog();
+    await assertInstalledIdentity();
+  });
   return { provenance: p, runtimeFiles, hostChanged, metadataBases, ...(changelogEntries.length ? { changelogEntries } : {}), ...(p.adoptions ? { adoptions } : {}) };
 }
 
@@ -416,7 +449,7 @@ export async function assertInstalledLocalSourceBaseline({
 // the complete ordinary baseline verifier above accepts it.
 export async function installedNativeHistoryBaseline({ git, sourceGit, repositoryRoot,
   primaryMainCommit, publishedRevision, tasks, runtimeRoot, planRevision, adoptions = [], readOwnGitPublication = null,
-  inheritedMainMetadata = [] }) {
+  inheritedMainMetadata = [], onVerified = null }) {
   const currentFile = path.join(runtimeRoot, "current.json");
   if (!await lstat(currentFile).catch(error => { if (error.code === "ENOENT") return null; throw error; })) return null;
   const currentBytes = await regular(currentFile);
@@ -469,12 +502,16 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
         ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit })),
     } : ownGitPublication ? { approvedOriginMainCommit: ownGitPublication.commit, adoptions: [], ownGitPublication }
       : agreedOrigin ? { approvedOriginMainCommit: primaryMainCommit, adoptions: [] } : {}) };
-  const verified = await assertInstalledLocalSourceBaseline({ provenance: p, git, repositoryRoot, primaryMainCommit,
-    publishedRevision, planRevision, tasks, runtimeRoot, readOwnGitPublication, inheritedMainMetadata });
+  let assertCurrent;
+  const verified = await measureTaskOperation("native:installed-source-proof", () =>
+    assertInstalledLocalSourceBaseline({ provenance: p, git, repositoryRoot, primaryMainCommit,
+      publishedRevision, planRevision, tasks, runtimeRoot, readOwnGitPublication, inheritedMainMetadata,
+      ...(onVerified ? { onVerified: recheck => { assertCurrent = recheck; } } : {}) }));
   if (!currentBytes.equals(await regular(currentFile))) reject("installed release changed");
   if (!bytes.equals(await regular(path.join(runtimeRoot, "releases", current.current, "runtime-manifest.json")))) reject("installed manifest changed");
   if (await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{commit}"]) !== sourceBaseCommit
       || await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{tree}"]) !== sourceBaseTree
       || await sourceGit(manifest.sourceRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])) reject("retained source checkout changed");
+  onVerified?.(verified, assertCurrent);
   return verified.provenance;
 }

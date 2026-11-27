@@ -64,7 +64,14 @@ selection, identity, replay boundaries and the other content proofs remain intac
 
 ## Task card archive (ADR-HUB-466)
 
-Ordinary card archive does not attest delivery. It can clean exact, clean,
+Ordinary Close archives the card and removes its managed working directories and
+local Task branches immediately, including dirty or unpublished work. It
+preserves the Task record and workflow history. Desktop, Web and a bare
+hub_task_complete call use this command. It needs no publication evidence,
+runtime verification, network access or cleanup preview. The durable close
+intent lets the original operation resume if deletion was interrupted.
+
+The explicit legacy archive mode does not attest delivery. It can clean exact, clean,
 Task-owned branches and worktrees using the existing published-result proof
 independently of which runtime is currently installed. Unverified repositories,
 later or foreign branches, and dirty or ignored data are preserved. Confirmation
@@ -76,11 +83,20 @@ explicit confirmation.
 
 ## Verified manual delivery (ADR-HUB-466)
 
-Task Complete can explicitly verify a real manual installation instead of
-consulting an old publication generation. Exact runtime/manifest/source,
-main/origin and Task-result containment are mandatory. Workflow Done precedes
-closing. Ready requires the existing authenticated live desktop control owner,
-matching PID/release and a stable endpoint, not a retained Ready lock alone.
+Manual Done verifies the exact runtime, manifest, source, main/origin and
+Task-result containment. Ready requires the authenticated live desktop control
+owner, matching PID/release and a stable endpoint. Workflow Done precedes closing.
+Manual Complete checks the published Git revision and exact Task-result
+containment, independently of the current installation. It checks remote main
+once per invocation for a standalone publication clone. Later checks in that
+invocation recheck local repository and artifact identity.
+Manual main-to-dev synchronization verifies the installed bytes in one proof
+per invocation. Before checkout, ref promotion and terminal readback it checks the
+same manifest, installation, runtime endpoint, published authority and verified
+files' identities and change metadata. A change invalidates the invocation's proof.
+Immediately before each effect and terminal settlement it checks current dev state
+and physical ownership. Partial effects keep the original recovery identity.
+See ADR-HUB-569 for the one-proof boundary.
 Preview/confirmation uses existing Task CAS. Complete removes only the listed
 clean managed branches/worktrees after exact published result/current HEAD
 verification, then archives the card. Every present worktree must independently
@@ -96,9 +112,9 @@ A partial cleanup retains its admitted original intent;
 addressed reconciliation checks the remaining subset and finishes that original.
 An already closed archive can receive a fresh read-only cleanup preview and
 confirmation without rewriting its status, workflow or completion time. An old
-canonical manual Complete can pin its source via completed_operation_request_id;
-missing receipts require the full fresh delivery proof, never archive status or
-ancestry alone. Preserve-only old confirmations retain their original meaning.
+canonical manual Complete can pin its source via completed_operation_request_id.
+Missing receipts require fresh publication and Task-source proof. Preserve-only
+old confirmations and already admitted legacy cleanup keep their original meaning.
 If physical cleanup already removed the exact owned Task/repository-key path,
 its still-registered Git worktree can be listed separately in the same preview.
 Positive path absence, unchanged branch/head and the exact non-reparse managed
@@ -106,9 +122,9 @@ Task parent are checked again before targeted native worktree removal and branch
 CAS. Existing/replaced/foreign paths refuse. No global worktree prune is used.
 When the registered primary remains behind an already published main, the
 configured Hub-owned standalone clone is the read-only delivery authority.
-Its existing marker must bind this primary/common directory and managed layout;
-its clean main/HEAD/origin and actual origin main must match the installed
-revision. A foreign remote/root, stale tracking, or changing identity refuses.
+Its existing marker must bind this primary/common directory and managed layout.
+Its clean main/HEAD/origin and actual origin main must match the requested
+published revision. A foreign remote/root, stale tracking, or changing identity refuses.
 Proof and confirmation retain that binding while primary HEAD/index/tree stay
 unchanged. Without an existing clone, the retained primary-only proof remains.
 The explicit main-to-dev service may bind the same proof to its existing

@@ -2953,3 +2953,38 @@ test("terminal identity recovery skips malformed newest rows within hard aggrega
   );
   store.close();
 });
+
+test("an exact terminal date and status survive an older journal row and reopening the chat store", async t => {
+  const filePath = await storeFile();
+  const databaseFile = path.join(path.dirname(filePath), "journal.sqlite");
+  let store = new LocalTaskSyncStore({ filePath, databaseFile });
+  t.after(() => { store.close(); return rm(path.dirname(filePath), { force: true, recursive: true }); });
+  await store.load();
+  const oldDate = "2026-08-25T12:00:30.000Z";
+  const newDate = "2026-08-25T12:00:01.000Z";
+  const db = new DatabaseSync(databaseFile);
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS journal_records (
+      provider TEXT, thread_id TEXT, task_thread_id TEXT, turn_id TEXT, record_json TEXT,
+      project_root TEXT, completed_at_ms INTEGER, PRIMARY KEY(provider, thread_id, turn_id)
+    )`);
+    const insert = db.prepare(`INSERT INTO journal_records
+      (provider,thread_id,task_thread_id,turn_id,record_json,project_root,completed_at_ms) VALUES(?,?,?,?,?,?,?)`);
+    for (const id of ["corrected", "legacy"]) {
+      insert.run(task.provider, task.threadId, task.threadId, id,
+        JSON.stringify({ status: "completed", completedAt: oldDate }), task.projectRoot, Date.parse(oldDate));
+    }
+  } finally { db.close(); }
+  await store.recordHistory(task, [
+    { id: "corrected", answer: "Corrected", status: "aborted", completed: true, completedAtRevision: 2, completedAt: newDate },
+    { id: "legacy", status: "completed", completed: true },
+  ]);
+  store.close();
+  store = new LocalTaskSyncStore({ filePath, databaseFile });
+  await store.load();
+  const corrected = store.history(task).find(turn => turn.id === "corrected");
+  assert.equal(corrected.answer, "Corrected");
+  assert.equal(corrected.status, "aborted");
+  assert.equal(corrected.completedAt, newDate);
+  assert.equal(store.history(task).find(turn => turn.id === "legacy").completedAt, oldDate);
+});

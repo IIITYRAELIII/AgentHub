@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile, unlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, utimes, rm, writeFile, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -88,6 +88,30 @@ async function publicFixture(t) {
   return { ...f, raw, catalog, board, task, taskGit, managed, lifecycle, hub,
     call: (name, args) => hub.call(name, { context_token: token, ...args }) };
 }
+
+test("ordinary Close removes dirty unpublished artifacts with no publication or preview", async t => {
+  const f = await publicFixture(t);
+  await writeFile(path.join(f.managed.projectRoot, "unpublished.txt"), "local result");
+  const unpublished = await f.commit(f.managed.projectRoot);
+  assert.notEqual(unpublished, f.base);
+  await writeFile(path.join(f.managed.projectRoot, "unpublished.txt"), "dirty result");
+  await mkdir(path.join(f.managed.projectRoot, "WIP"));
+  await writeFile(path.join(f.managed.projectRoot, "WIP", "local.txt"), "ignored data");
+  await f.git(["branch", "unrelated", f.base]);
+  f.taskGit.cleanupPreview = () => assert.fail("Close should not prepare a cleanup preview");
+  f.taskGit.readManualDelivery = () => assert.fail("Close should not verify installation");
+  f.taskGit.readManualPublishedRepository = () => assert.fail("Close should not verify publication");
+  const args = { task_id: f.task.id, request_id: "close-dirty" };
+  const result = await f.call("hub_task_complete", args);
+  assert.equal(result.status, "done");
+  assert.equal(result.workflowStatus, f.task.workflowStatus);
+  await assert.rejects(stat(f.managed.projectRoot), { code: "ENOENT" });
+  await assert.rejects(f.git(["rev-parse", "--verify", "refs/heads/" + f.managed.branch]));
+  assert.equal(await f.git(["rev-parse", "refs/heads/unrelated"]), f.base);
+  assert.equal(await f.git(["rev-parse", "refs/heads/main"]), f.base);
+  assert.equal(f.board.task(f.task.id).status, "done");
+  assert.deepEqual(await f.call("hub_task_complete", args), JSON.parse(JSON.stringify(result)));
+});
 
 test("manual Complete removes the verified clean branch and worktree before closing; original readback preserves history", async t => {
   const f = await publicFixture(t);
@@ -411,6 +435,20 @@ test("manual delivery verifies actual Git containment and rejects source/manifes
   await assert.rejects(f.read({ verifyInstalled: async () => {
     await writeFile(path.join(f.runtimeRoot, "current.json"), '{"current":"other"}'); return true;
   } }), /changed during/u);
+});
+
+test("manual delivery proof refuses an installed write with unchanged size and restored mtime", async t => {
+  const f = await fixture(t), file = path.join(f.runtimeRoot, "releases/manual/app.mjs");
+  let recheck;
+  let proofs = 0;
+  await f.read({ verifyInstalled: async () => { proofs += 1; return true; }, onVerified: check => { recheck = check; } });
+  await recheck();
+  const before = await stat(file);
+  const original = await readFile(file, "utf8");
+  await writeFile(file, original.replace("base", "edit"));
+  await utimes(file, before.atime, before.mtime);
+  await assert.rejects(recheck(), /file changed after content proof/u);
+  assert.equal(proofs, 1);
 });
 
 async function reviewedSyncFixture(t) {
@@ -813,6 +851,8 @@ test("manual Done and Complete verify delivered owned source without manufacturi
   const f = await publicFixture(t);
   await writeFile(path.join(f.managed.projectRoot, "AgentHub/app.mjs"), "export const version = 'own-delivered-change';\n");
   const own = await f.commit(f.managed.projectRoot);
+  let proofs = 0;
+  f.ports.verifyInstalled = async () => { proofs += 1; return true; };
   const before = f.board.task(f.task.id);
   await assert.rejects(f.lifecycle.updateWorkflowStatus({ taskId: f.task.id, operationId: "not-delivered",
     status: "done", manualDelivery: f.input, expectedRevision: before.revision, expectedWorkflowStatus: before.workflowStatus }));
@@ -825,16 +865,20 @@ test("manual Done and Complete verify delivered owned source without manufacturi
     status: "testing", manual_delivery: delivery, expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus }), /Done requires exact Task\/status CAS/u);
   const ordinary = await f.catalog.runMutation(() => f.catalog.createStream({ workspaceId: before.workspaceId, name: "worker" }));
   await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "worker", streamId: ordinary.id }));
+  proofs = 0;
   const done = await f.hub.call("hub_task_status_update", { context_token: f.hub.contextToken({ provider: "codex", threadId: "worker" }),
     request_id: "actual-delivery-done", task_id: f.task.id,
     status: "done", manual_delivery: delivery, expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus });
   assert.equal(done.workflowStatus, "done"); assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
   assert.equal(f.raw.lifecycleOutcome("actual-delivery-done").result.evidence.outcome, "verified_manual_delivery");
+  assert.equal(proofs, 1);
   const args = { task_id: f.task.id, completion_mode: "manual_delivery", manual_delivery: delivery };
   const p = await f.call("hub_task_complete", { ...args, request_id: "delivered-preview" });
   assert.equal(p.preview.manualDelivery[0].sourceKind, "owned-managed-source-without-test-ref");
+  assert.equal(proofs, 1);
   const closed = await f.call("hub_task_complete", { ...args, request_id: "delivered-close", confirm_cleanup: true, expected_cleanup_token: p.cleanupToken });
   assert.equal(closed.status, "done"); assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
+  assert.equal(proofs, 1);
   assert.deepEqual(await f.taskGit.describe(f.task.id), []);
   await assert.rejects(f.git(["rev-parse", "--verify", f.managed.branch]));
 });
@@ -1137,9 +1181,13 @@ test("manual standalone authority refuses foreign markers/remotes, stale trackin
 
 test("manual standalone sync merges disjoint object stores through existing isolated owner and preserves primary and later dev", async t => {
   const f = await fixture(t), dataDir = path.join(f.root, "data");
+  let deliveryReads = 0;
   const service = new TaskGitWorkspaceService({ dataDir, runtimeRoot: f.runtimeRoot, recordTiming: () => {},
     readPublication: async () => { throw Error("No fabricated publication history"); },
-    readManualDelivery: args => readManualTaskDelivery({ ...args, ...f.ports }) });
+    readManualDelivery: args => {
+      deliveryReads += 1;
+      return readManualTaskDelivery({ ...args, ...f.ports });
+    } });
   const dev = await service.prepareDev(f.repo);
   await writeFile(path.join(dev.projectRoot, "AgentHub/app.mjs"), "export const version = 'later-dev';\n");
   await writeFile(path.join(dev.projectRoot, "later.txt"), "retain Task work\n");
@@ -1152,11 +1200,13 @@ test("manual standalone sync merges disjoint object stores through existing isol
     operationId: "standalone-main-to-dev", workspaceId: "workspace", expectedDevCommit: devCommit, delivery: published.delivery } };
   const conflict = await service.synchronizeMainIntoDev(args);
   assert.equal(conflict.status, "review_required"); assert.equal(await f.git(["rev-parse", "dev"]), devCommit);
+  assert.equal(deliveryReads, 1);
   await writeFile(path.join(conflict.nativeConflictRoot, "AgentHub/app.mjs"),
     "export const version = 'published-standalone';\nexport const later = 'later-dev';\n");
   const resolved = await f.commit(conflict.nativeConflictRoot);
   const result = await service.synchronizeMainIntoDev(args);
   assert.equal(result.integrated, true); assert.equal(result.headCommit, resolved); assert.equal(result.repositoryRoot, f.repo);
+  assert.equal(deliveryReads, 2);
   await runTaskGitCommand(["merge-base", "--is-ancestor", devCommit, resolved], { cwd: dev.projectRoot });
   await runTaskGitCommand(["merge-base", "--is-ancestor", published.revision, resolved], { cwd: dev.projectRoot });
   assert.equal(await readFile(path.join(dev.projectRoot, "later.txt"), "utf8"), "retain Task work\n");
@@ -1165,9 +1215,10 @@ test("manual standalone sync merges disjoint object stores through existing isol
   assert.equal(await f.git(["rev-parse", "origin/main"]), f.base);
   assert.equal(sha(await readFile(path.join(f.repo, ".git/index"))), indexBefore);
   assert.equal((await service.synchronizeMainIntoDev(args)).headCommit, resolved);
+  assert.equal(deliveryReads, 3);
 });
 
-test("batch Complete archives independently, preserves work and returns each original receipt", async t => {
+test("batch Close removes managed work and returns independent child receipts", async t => {
   const f = await publicFixture(t);
   const workspaceId = f.task.workspaceId;
   const create = text => f.raw.create({ text, bucket: "workspace", workspaceId });
@@ -1181,10 +1232,11 @@ test("batch Complete archives independently, preserves work and returns each ori
   const earlier = f.board.task(closed.id);
   const retained = path.join(f.managed.projectRoot, "local-work.txt");
   await writeFile(retained, "unpublished local copy");
-  const inspect = f.taskGit.archiveCleanupPreview.bind(f.taskGit);
-  f.taskGit.archiveCleanupPreview = async (task, options) => {
-    if (task.id === denied.id) throw new Error("fixture: cannot inspect this checkout");
-    return inspect(task, options);
+  f.taskGit.archiveCleanupPreview = () => assert.fail("batch Close should not request a preview");
+  const remove = f.taskGit.removeClosedTaskArtifactsOwned.bind(f.taskGit);
+  f.taskGit.removeClosedTaskArtifactsOwned = async (task, options) => {
+    if (task.id === denied.id) throw new Error("fixture: cannot delete this checkout");
+    return remove(task, options);
   };
 
   const batch = { request_id: "batch-mixed-outcomes",
@@ -1199,7 +1251,7 @@ test("batch Complete archives independently, preserves work and returns each ori
   assert.equal(done.taskOperation.status, "succeeded");
   const results = done.result.results;
   assert.deepEqual(results.map(({ taskId, outcome }) => [taskId, outcome]), [
-    [f.task.id, "archived"], [denied.id, "unknown"], [closed.id, "already_closed"],
+    [f.task.id, "archived"], [denied.id, "unknown"], [closed.id, "archived"],
     ["missing-task", "not_found"], [later.id, "archived"],
   ]);
   const readback = await f.hub.call("hub_task_operation_get", { context_token: token, task_id: f.task.id,
@@ -1207,13 +1259,13 @@ test("batch Complete archives independently, preserves work and returns each ori
   assert.equal(readback.taskOperation.status, "succeeded");
   assert.equal(readback.result.workflowStatus, f.task.workflowStatus);
   assert.equal(readback.result.description, f.task.description);
-  assert.ok(readback.result.archive.remainingArtifacts.some(item => item.path === f.managed.projectRoot));
-  assert.match(results[1].error, /cannot inspect/u);
+  assert.equal(readback.result.status, "done");
+  assert.match(results[1].error, /cannot delete/u);
   assert.equal(f.board.task(denied.id).status, denied.status);
   assert.equal(f.board.task(later.id).status, "done");
   assert.deepEqual(f.board.task(closed.id), earlier);
-  assert.equal(await readFile(retained, "utf8"), "unpublished local copy");
-  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  await assert.rejects(stat(retained), { code: "ENOENT" });
+  await assert.rejects(f.git(["rev-parse", "--verify", "refs/heads/" + f.managed.branch]));
   assert.deepEqual(await f.hub.call("hub_task_complete_batch", authenticated), done.result);
   await assert.rejects(f.hub.call("hub_task_complete_batch", { ...authenticated, task_ids: [later.id] }), /another operation/u);
 });
@@ -1274,7 +1326,7 @@ test("batch Complete uses the existing delivery proof for Done before archive", 
   assert.equal(good.results[0].workflowStatus, "done");
   assert.equal(good.results[0].doneReceipt.status, "succeeded");
   assert.equal(f.board.task(f.task.id).status, "done");
-  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  await assert.rejects(f.git(["rev-parse", "--verify", "refs/heads/" + f.managed.branch]));
 });
 
 test("batch Complete uses the admitted single archive receipt after a lost Task outcome", async t => {
@@ -1293,34 +1345,34 @@ test("batch Complete uses the admitted single archive receipt after a lost Task 
   assert.equal(item.outcome, "archived");
   const original = f.catalog.mcpOperation(item.receipt.requestId);
   assert.equal(original.status, "succeeded");
-  assert.equal(original.result.operatorReconciliation.kind, "task-archive-original-v1");
+  assert.equal(original.result.operatorReconciliation.kind, "direct-task-close-original-v1");
   assert.equal(original.result.operatorReconciliation.lifecycleOperationId, original.requestId);
   assert.equal(f.board.lifecycleOutcome(original.requestId).taskId, f.task.id);
-  assert.equal(await readFile(retained, "utf8"), "preserve");
-  assert.equal(await f.git(["rev-parse", f.managed.branch]), f.base);
+  await assert.rejects(stat(retained), { code: "ENOENT" });
+  await assert.rejects(f.git(["rev-parse", "--verify", "refs/heads/" + f.managed.branch]));
   assert.deepEqual(await f.call("hub_task_complete_batch", batch), response);
   assert.equal(attempts, 2);
 });
 
-test("batch Complete retains verified Done when archive preview fails", async t => {
+test("batch Close retains verified Done when removal fails", async t => {
   const f = await publicFixture(t);
   const next = f.raw.create({ text: "Archive the next verified delivery", bucket: "workspace", workspaceId: f.task.workspaceId });
   await f.taskGit.prepare({ taskId: next.id, projectRoot: f.repo, dependencyMode: "skip" });
-  const preview = f.taskGit.archiveCleanupPreview.bind(f.taskGit);
-  let blockedPreviews = 0;
-  f.taskGit.archiveCleanupPreview = async (task, options) => {
+  const remove = f.taskGit.removeClosedTaskArtifactsOwned.bind(f.taskGit);
+  let blockedRemovals = 0;
+  f.taskGit.removeClosedTaskArtifactsOwned = async (task, options) => {
     if (task.id === f.task.id) {
-      blockedPreviews += 1;
-      throw new Error("fixture: archive inventory unavailable after Done");
+      blockedRemovals += 1;
+      throw new Error("fixture: managed directory cannot be removed");
     }
-    return preview(task, options);
+    return remove(task, options);
   };
 
   const original = { request_id: "batch-partial-delivery", task_ids: [f.task.id, next.id], manual_delivery: f.input };
   const response = await f.call("hub_task_complete_batch", original);
   const [partial, archived] = response.results;
   assert.equal(partial.taskId, f.task.id);
-  assert.equal(partial.stage, "preview");
+  assert.equal(partial.stage, "archive");
   assert.equal(partial.outcome, "unknown");
   assert.equal(partial.receipt.status, "unknown");
   assert.equal(f.board.task(f.task.id).workflowStatus, "done");
@@ -1336,7 +1388,7 @@ test("batch Complete retains verified Done when archive preview fails", async t 
   const partialRevision = f.board.task(f.task.id).revision;
   const archivedRevision = f.board.task(next.id).revision;
   assert.deepEqual(await f.call("hub_task_complete_batch", original), response);
-  assert.equal(blockedPreviews, 1);
+  assert.equal(blockedRemovals, 2);
   assert.equal(f.board.task(f.task.id).revision, partialRevision);
   assert.equal(f.board.task(next.id).revision, archivedRevision);
 });
@@ -1588,4 +1640,36 @@ test("large Task archive preview reaches the real Desktop reader and confirmatio
   } finally {
     await browser.close();
   }
+});
+
+test("published sync has to recheck publication at settlement", async t => {
+  const f = await fixture(t);
+  const dataDir = path.join(f.root, "data");
+  let publication, invalid = false;
+  const service = new TaskGitWorkspaceService({ dataDir, runtimeRoot: f.runtimeRoot, recordTiming: () => {},
+    readPublication: async () => publication });
+  const dev = await service.prepareDev(f.repo);
+  const oldDev = await f.git(["rev-parse", "dev"]);
+  await writeFile(path.join(f.repo, "AgentHub/app.mjs"), "export const version = 'published';\n");
+  const main = await f.commit();
+  await f.git(["update-ref", "refs/remotes/origin/main", main]);
+  publication = { generation: 1, repositories: [{ root: f.repo, revision: main }] };
+  const run = service.runCommand;
+  let reattached = false;
+  service.runCommand = async (args, options) => {
+    const result = await run(args, options);
+    if (options.cwd === dev.projectRoot && args[0] === "symbolic-ref" && args[2] === "refs/heads/dev") reattached = true;
+    if (reattached && options.cwd === dev.projectRoot && args[0] === "rev-parse" && args.at(-1) === "REVERT_HEAD") invalid = true;
+    return result;
+  };
+  const options = { projectRoot: f.repo, publishedRevision: main, publishedSync: {
+      operationId: "published-terminal", workspaceId: "workspace", expectedDevCommit: oldDev,
+      generation: 1, candidateIdentity: "a".repeat(64), tasks: [{ taskId: "selected", resultCommit: main }] },
+    validatePublishedSync: async () => { if (invalid) throw Error("controlled release finalization authority changed"); } };
+  const result = await service.synchronizeMainIntoDev(options).then(r => r.status, e => e.message);
+  const block = await readFile(path.join(dataDir, "integration-blocks", `${taskRepositoryKey(f.repo)}.json`), "utf8")
+    .then(JSON.parse, error => { if (error.code === "ENOENT") return null; throw error; });
+  assert.equal(invalid, true);
+  assert.equal(result, "controlled release finalization authority changed");
+  assert.ok(block?.publishedDevSync);
 });

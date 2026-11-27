@@ -99,7 +99,7 @@ function normalizedAttachments(value) {
   });
 }
 
-function normalizedCompletion(value) {
+export function normalizedCompletion(value) {
   const base = validBase(value);
   const turnId = String(value?.turnId ?? "").trim();
   const projectRoot = String(value?.projectRoot ?? "").trim();

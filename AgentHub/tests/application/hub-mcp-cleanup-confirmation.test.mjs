@@ -177,19 +177,20 @@ test("legacy absorbed recovery refuses survivor drift and keeps unrelated specia
 
 for (const toolName of ["hub_task_complete", "hub_task_delete"]) test(`${toolName}: oversized preview survives pending ACK, first read, repeated read and restart`, async t => {
   const f = await fixture(t), call = await f.endpoint(f.hub);
-  const reply = await call(toolName, { ...f.args, context_token: f.token(f.hub) });
+  const previewArgs = { ...f.args, confirm_cleanup: false, context_token: f.token(f.hub) };
+  const reply = await call(toolName, previewArgs);
   assert.equal(reply.isError, false);
   assert.equal(reply.structuredContent.taskOperation.status, "pending");
   // Join the existing admitted invocation; HTTP reply above intentionally contained no token.
-  await f.hub.call(toolName, { ...f.args, context_token: f.token(f.hub) });
-  const first = await f.read();
+  await f.hub.call(toolName, previewArgs);
+  const first = await f.read(f.hub, previewArgs);
   assert.match(first.result.cleanupToken, /^[a-f0-9]{64}$/);
   assert.equal(first.result.action, toolName === "hub_task_complete" ? "complete" : "delete");
   assert.equal(first.result.task.id, f.task.id);
   assert.ok(Buffer.byteLength(JSON.stringify(first.result)) <= 65536);
-  assert.deepEqual(await f.read(), first);
+  assert.deepEqual(await f.read(f.hub, previewArgs), first);
   const reopened = await f.open();
-  assert.deepEqual(await f.read(reopened.hub), first);
+  assert.deepEqual(await f.read(reopened.hub, previewArgs), first);
   const confirmed = await reopened.hub.call(toolName, { task_id: f.task.id, request_id: "confirm",
     expected_cleanup_token: first.result.cleanupToken, context_token: f.token(reopened.hub) });
   assert.equal(toolName === "hub_task_complete" ? confirmed.status : confirmed.deleted, toolName === "hub_task_complete" ? "done" : true);
@@ -199,7 +200,7 @@ for (const toolName of ["hub_task_complete", "hub_task_delete"]) {
   test(`${toolName} ID-only recovery reads committed cleanup without a second effect`, async t => {
     const f = await fixture(t);
     const context_token = f.token(f.hub);
-    const preview = await f.hub.call(toolName, { ...f.args, context_token });
+    const preview = await f.hub.call(toolName, { ...f.args, confirm_cleanup: false, context_token });
     const complete = f.rawCatalog.completeMcpOperation.bind(f.rawCatalog);
     f.rawCatalog.completeMcpOperation = (id, result) => {
       if (id === "cleanup-lost-ack") throw new Error("controlled lost receipt completion");
@@ -222,7 +223,7 @@ for (const toolName of ["hub_task_complete", "hub_task_delete"]) {
 
 test("missing and stale confirmations are definite pre-admission failures; lawful later closure still works", async t => {
   const f = await fixture(t), before = f.tasks.task(f.task.id);
-  const preview = await f.hub.call("hub_task_complete", { ...f.args, context_token: f.token(f.hub) });
+  const preview = await f.hub.call("hub_task_complete", { ...f.args, confirm_cleanup: false, context_token: f.token(f.hub) });
   for (const [request_id, extra] of [["missing", {}], ["stale", { expected_cleanup_token: "0".repeat(64) }]]) {
     const args = { task_id: f.task.id, request_id, confirm_cleanup: true, ...extra, context_token: f.token(f.hub) };
     await assert.rejects(f.hub.call("hub_task_complete", args), /confirmation/);

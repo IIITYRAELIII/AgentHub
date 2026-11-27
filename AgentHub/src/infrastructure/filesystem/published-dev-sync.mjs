@@ -9,6 +9,7 @@ function unknown(message, cause) {
 // publication receipt or second approval ledger is created by this owner.
 export async function synchronizePublishedDev({ root, sourceRoot, devRoot, devBranch, identity,
   gitAt, readJson, writeJson, fence, beforeDelivery, afterDelivery,
+  beforeCheckout = null, beforeRefUpdate = null, beforeReadback = null,
   nativeResolutionReview = null, verifyManualReview = null }) {
   const git = (args, options) => gitAt(devRoot, args, options);
   const file = path.join(root, "merge.json");
@@ -53,17 +54,28 @@ export async function synchronizePublishedDev({ root, sourceRoot, devRoot, devBr
   await git(["fetch", "--no-tags", "--no-write-fetch-head", composition.root, composition.head]);
   await fence();
   let state = await inspect(composition.head);
+  if (state.head !== composition.head && beforeCheckout) {
+    await beforeCheckout();
+    await fence();
+    state = await inspect(composition.head);
+  }
   try {
     if (state.head !== composition.head) {
       await git(["checkout", "--detach", "--no-overwrite-ignore", composition.head]);
     }
     await fence();
     state = await inspect(composition.head);
+    if (state.ref !== composition.head && beforeRefUpdate) {
+      await beforeRefUpdate();
+      await fence();
+      state = await inspect(composition.head);
+    }
     if (state.ref !== composition.head) {
       await git(["update-ref", `refs/heads/${devBranch}`, composition.head, identity.devCommit]);
     }
     await fence();
     await git(["symbolic-ref", "HEAD", `refs/heads/${devBranch}`]);
+    await beforeReadback?.();
     await fence();
     state = await inspect(composition.head);
     if (state.head !== composition.head || state.ref !== composition.head

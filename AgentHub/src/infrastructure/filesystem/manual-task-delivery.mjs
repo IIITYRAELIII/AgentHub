@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { readFile, lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import { runtimeLayout, runtimeReleaseDirectory } from "./runtime-layout.mjs";
-import { verifyInstalledRuntime, runtimeStatus } from "../../runtime/runtime-manager.mjs";
-import { isRuntimeSourceFile } from "./runtime-manifest-verifier.mjs";
+import { observeRuntimeContent } from "./runtime-installation-custody.mjs";
+import { verifyInstalledRuntime, runtimeStatus, stableRuntimeFiles } from "../../runtime/runtime-manager.mjs";
+import { isRuntimeSourceFile, releasePath } from "./runtime-manifest-verifier.mjs";
 import { sourceBlobs, sourceMatches } from "./local-source-baseline.mjs";
 import { RUNTIME_HOST_SOURCE_INPUTS, runtimeHostSourceHash } from "../process/runtime-host-source-identity.mjs";
 import { callDesktopControl, readDesktopControlEndpoint } from "../process/desktop-control.mjs";
@@ -14,7 +15,7 @@ const sha = value => createHash("sha256").update(value).digest("hex");
 
 // Discover the existing clone marker, never a caller-supplied replacement root.
 // The primary remains the registered Task/dev repository and is read-only here.
-export async function readManualPublishedRepository({ dataDir, repositoryRoot, revision, gitAt }) {
+export async function readManualPublishedRepository({ dataDir, repositoryRoot, revision, gitAt, verifyOrigin = true }) {
   const primaryRoot = path.resolve(repositoryRoot);
   const managedRoot = path.join(dataDir, "release-repositories");
   const root = path.join(managedRoot, taskRepositoryKey(primaryRoot), "repository");
@@ -50,12 +51,12 @@ export async function readManualPublishedRepository({ dataDir, repositoryRoot, r
     gitAt(root, ["rev-parse", "HEAD^{commit}"]), gitAt(root, ["symbolic-ref", "HEAD"]),
     gitAt(root, ["rev-parse", "refs/heads/main^{commit}"]),
     gitAt(root, ["rev-parse", "refs/remotes/origin/main^{commit}"]),
-    gitAt(root, ["ls-remote", "--exit-code", "origin", "refs/heads/main"]),
+    verifyOrigin ? gitAt(root, ["ls-remote", "--exit-code", "origin", "refs/heads/main"]) : null,
     gitAt(root, ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"]),
     gitAt(primaryRoot, ["rev-parse", "refs/heads/main^{commit}"]),
   ]);
   if (head !== revision || main !== revision || origin !== revision || branch !== "refs/heads/main" || dirty
-      || actualRemote !== `${revision}\trefs/heads/main`) throw Error("Manual published main/origin/current remote differs");
+      || verifyOrigin && actualRemote !== `${revision}\trefs/heads/main`) throw Error("Manual published main/origin/current remote differs");
   if (directory !== await physical(root) || commonDirectory !== await physical(releaseCommon)) {
     throw Error("Manual published repository directory changed during verification");
   }
@@ -69,7 +70,7 @@ export async function readManualPublishedRepository({ dataDir, repositoryRoot, r
 export async function readManualTaskDelivery({ runtimeRoot, input, git, resultCommits = [],
   hostSourceRoot = null,
   verifyInstalled = verifyInstalledRuntime, status = runtimeStatus,
-  readEndpoint = readDesktopControlEndpoint, probe = callDesktopControl } = {}) {
+  readEndpoint = readDesktopControlEndpoint, probe = callDesktopControl, onVerified = null } = {}) {
   if (!runtimeRoot || !input || Object.keys(input).some(k => !["revision", "releaseId", "manifestSha256"].includes(k))
       || !/^[a-f0-9]{40}$/u.test(input.revision ?? "") || !/^[a-f0-9]{64}$/u.test(input.manifestSha256 ?? "")) {
     throw Error("Exact manual delivery revision, release and manifest hash are required");
@@ -106,6 +107,12 @@ export async function readManualTaskDelivery({ runtimeRoot, input, git, resultCo
       instanceId: health.process.instanceId ?? null };
   };
   const running = await inspect();
+  const observedFiles = onVerified && Array.isArray(manifest.files) ? await observeRuntimeContent([
+    manifestPath, pointerPath,
+    ...manifest.files.map(file => releasePath(releaseRoot, file.path)),
+    ...stableRuntimeFiles(runtimeLayout(runtimeRoot), releaseRoot).flatMap(file => [file.source, file.target]),
+    ...(hostSourceRoot ? RUNTIME_HOST_SOURCE_INPUTS.map(file => path.join(hostSourceRoot, file)) : []),
+  ], releaseRoot) : null;
   if (!await verifyInstalled({ runtimeRoot, releaseId: input.releaseId, releaseRoot })) {
     throw Error("Manual delivery installed runtime verification failed");
   }
@@ -150,8 +157,13 @@ export async function readManualTaskDelivery({ runtimeRoot, input, git, resultCo
     if (!/^[a-f0-9]{40}$/u.test(result ?? "")) throw Error("Exact Task result is required");
     await git(["merge-base", "--is-ancestor", result, input.revision]);
   }
-  if (!(await readFile(manifestPath)).equals(manifestRaw) || !(await readFile(pointerPath)).equals(pointerRaw)
-      || JSON.stringify(await inspect()) !== JSON.stringify(running)) throw Error("Manual delivery changed during verification");
+  const assertCurrent = async () => {
+    if (!(await readFile(manifestPath)).equals(manifestRaw) || !(await readFile(pointerPath)).equals(pointerRaw)
+        || JSON.stringify(await inspect()) !== JSON.stringify(running)) throw Error("Manual delivery changed during verification");
+    await observedFiles?.();
+  };
+  await assertCurrent();
+  onVerified?.(assertCurrent);
   return { kind: "verified-manual-task-delivery-v1", runtimeRoot: path.resolve(runtimeRoot),
     ...input, pointerSha256: sha(pointerRaw), running, resultCommits: [...resultCommits] };
 }

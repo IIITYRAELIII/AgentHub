@@ -74,6 +74,7 @@ export function createAgentHubDeferredPorts() {
     "rememberCodexTaskSettings", "restoreCodexTaskSettings", "applyCodexThreadSettings",
     "backfillWorkLogPricingMetadata", "auditClaudeTranscriptSnapshots", "finalizeTaskCatalog",
     "refreshTaskCatalog",
+    "prepareStartupCommandAdmission",
     "retryPendingTurnEndProjections",
   ]);
   const statePersistence = createDeferredCompositionPort("state persistence", [

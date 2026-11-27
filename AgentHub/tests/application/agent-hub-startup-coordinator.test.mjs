@@ -50,6 +50,7 @@ test("actual automatic initialize heals its startup failure without replaying co
     providerIsRunning: () => running,
   });
   await service.start();
+  await service.waitForBackgroundWork();
   const before = [...calls];
   running = true; // A running process alone is deliberately insufficient.
   assert.equal(health.snapshot().ready, false);
@@ -57,10 +58,10 @@ test("actual automatic initialize heals its startup failure without replaying co
   await service.waitForBackgroundWork();
   assert.equal(health.snapshot().ready, true);
   assert.equal(health.snapshot().startup.operations.find(operation => operation.id === "provider").state, "completed");
-  assert.deepEqual(calls.slice(before.length), ["backfill"]);
+  assert.deepEqual(calls.slice(before.length), ["timers", "projections", "notifications", "commands", "backfill"]);
   service.providerInitialized();
   await service.waitForBackgroundWork();
-  assert.deepEqual(calls.slice(before.length), ["backfill"]);
+  assert.deepEqual(calls.slice(before.length), ["timers", "projections", "notifications", "commands", "backfill"]);
 });
 
 test("old-run recovery is absent even when its former port throws", async () => {
@@ -89,6 +90,7 @@ test("failed provider retries once without repeating completed startup work", as
     providerIsRunning: () => available,
   });
   await service.start();
+  await service.waitForBackgroundWork();
   const before = [...calls];
   const startedAtMs = health.snapshot().startup.startedAtMs;
   service.requestRetry({ startedAtMs });
@@ -100,7 +102,7 @@ test("failed provider retries once without repeating completed startup work", as
   await service.waitForBackgroundWork();
   assert.equal(health.snapshot().ready, true);
   assert.equal(health.snapshot().startup.startedAtMs, startedAtMs);
-  assert.deepEqual(calls.slice(before.length), ["backfill"]);
+  assert.deepEqual(calls.slice(before.length), ["timers", "backfill", "projections", "notifications", "commands"]);
   assert.equal(health.snapshot().startup.operations.find((entry) => entry.id === "provider").state, "completed");
   service.requestRetry({ startedAtMs });
   await service.waitForRetry();
@@ -137,15 +139,15 @@ test("startup preserves control, recovery and readiness order", async () => {
     "mcp",
     "sanitize",
     "provider",
-    "projections",
-    "notifications",
     "jobs",
-    "commands",
     "restart",
     "ready",
     "timers",
     "log:ready message",
     "poll",
+    "projections",
+    "notifications",
+    "commands",
     "backfill",
   ]);
   assert.deepEqual(
@@ -161,6 +163,8 @@ test("startup preserves control, recovery and readiness order", async () => {
       { id: "provider", state: "completed" },
       { id: "provider-metadata", state: "completed" },
       { id: "notifications", state: "completed" },
+      { id: "terminal-projections", state: "completed" },
+      { id: "telegram-delivery", state: "completed" },
       { id: "background-jobs", state: "completed" },
       { id: "timers", state: "completed" },
       { id: "telegram", state: "completed" },
@@ -171,7 +175,7 @@ test("startup preserves control, recovery and readiness order", async () => {
   );
 });
 
-test("startup isolates recoverable failures and still marks ready", async () => {
+test("startup isolates recoverable failures without starting Ready work prematurely", async () => {
   const captured = [];
   const { service, calls, health } = coordinator({
     captureException: (error, context) => captured.push([error.message, context.action]),
@@ -186,6 +190,7 @@ test("startup isolates recoverable failures and still marks ready", async () => 
   assert.ok(calls.includes("poll"));
   assert.equal(calls.includes("log:ready message"), false);
   assert.match(calls.find((value) => value.startsWith("log:Agent Hub started unready")), /provider/u);
+  await service.waitForBackgroundWork();
   const { startup, ...healthSnapshot } = health.snapshot();
   assert.deepEqual(healthSnapshot, {
     live: true,
@@ -195,19 +200,18 @@ test("startup isolates recoverable failures and still marks ready", async () => 
     capabilities: [
       { name: "mini_app", critical: false, state: "failed", error: "mini" },
       { name: "provider", critical: true, state: "failed", error: "provider" },
-      { name: "telegram", critical: false, state: "failed", error: "commands" },
+      { name: "telegram", critical: false, state: "failed", error: "jobs" },
     ],
   });
   assert.deepEqual(
     startup.operations.filter(({ state }) => state === "failed").map(({ id }) => id),
-    ["web", "provider", "background-jobs", "telegram"],
+    ["web", "provider", "background-jobs"],
   );
   assert.ok(calls.some((value) => value.includes("медиа-задачи: jobs")));
   assert.deepEqual(captured, [
     ["mini", "web"],
     ["provider", "provider"],
     ["jobs", "background-jobs"],
-    ["commands", "telegram"],
   ]);
 });
 
@@ -254,6 +258,7 @@ test("core-only startup restores runs but skips Telegram-only work", async () =>
   });
   await service.start();
   assert.equal(calls.includes("recover"), false);
+  await service.waitForBackgroundWork();
   assert.equal(calls.includes("projections"), true);
   assert.equal(calls.includes("notifications"), false);
   assert.equal(calls.includes("commands"), false);
@@ -263,8 +268,36 @@ test("core-only startup restores runs but skips Telegram-only work", async () =>
     health.snapshot().startup.operations
       .filter(({ state }) => state === "skipped")
       .map(({ id }) => id),
-    ["background-jobs", "telegram", "restart", "recovery"],
+    ["telegram-delivery", "background-jobs", "telegram", "restart", "recovery"],
   );
+});
+
+test("both projection startup entry points wait for SQLite acknowledgement and actual Ready", async () => {
+  const entered = Promise.withResolvers();
+  const acknowledge = Promise.withResolvers();
+  const observations = [];
+  const { service, health, calls } = coordinator({
+    sqliteRecovery: { degraded: true, recoveryId: "held", message: "restored journal" },
+    acknowledgeSqliteRecovery: () => {
+      entered.resolve();
+      return acknowledge.promise;
+    },
+    startTimers: () => observations.push(["timers", health.snapshot().ready]),
+    retryTerminalProjections: async () => observations.push(["projections", health.snapshot().ready]),
+  });
+  const started = service.start();
+  try {
+    await entered.promise;
+    await setImmediate();
+    assert.equal(health.snapshot().ready, false);
+    assert.ok(calls.includes("ready"));
+    assert.deepEqual(observations, []);
+  } finally {
+    acknowledge.resolve();
+    await started;
+    await service.waitForBackgroundWork();
+  }
+  assert.deepEqual(observations, [["timers", true], ["projections", true]]);
 });
 
 test("replacement startup exposes sqlite recovery as degraded until acknowledgement", async () => {
@@ -460,4 +493,97 @@ test("failed retry retains both selection attempts on the original provider star
   assert.deepEqual(failure.metadata.codexSelection.phases, { inspectionCustodyMs: 9 });
   assert.equal(failure.metadata.codexSelection.previousAttempt.outcome, "failed");
   assert.deepEqual(failure.metadata.codexSelection.previousAttempt.phases, { canaryMs: 23 });
+});
+
+test("Ready waits for admission and stays ready during blocked accounting and retry", async () => {
+  const accounting = Promise.withResolvers();
+  let failed = true;
+  let telegram = 0;
+  const { service, calls, health } = coordinator({
+    prepareStartupCommandAdmission: async () => calls.push("admission"),
+    retryTerminalProjections: async () => {
+      assert.equal(health.snapshot().ready, true);
+      await accounting.promise;
+      if (failed) throw new Error("journal busy");
+    },
+    retryNotifications: async () => { telegram++; },
+  });
+  await service.start();
+  assert.ok(calls.indexOf("admission") < calls.indexOf("ready"));
+  assert.equal(health.snapshot().ready, true);
+  accounting.resolve();
+  await service.waitForBackgroundWork();
+  const operation = () => health.snapshot().startup.operations.find(({ id }) => id === "terminal-projections");
+  assert.equal(operation().state, "failed");
+  failed = false;
+  service.requestRetry({ startedAtMs: health.snapshot().startup.startedAtMs });
+  await service.waitForRetry();
+  assert.equal(operation().state, "completed");
+  assert.equal(telegram, 1);
+});
+
+test("failed command admission prevents Ready and background delivery", async () => {
+  const { service, health, calls } = coordinator({
+    prepareStartupCommandAdmission: async () => { throw new Error("unresolved command"); },
+  });
+  await assert.rejects(service.start(), /unresolved command/);
+  assert.equal(health.snapshot().ready, false);
+  assert.equal(calls.includes("ready"), false);
+  assert.equal(calls.includes("notifications"), false);
+});
+
+test("transient Telegram registration retries after Ready and honors retry_after", async () => {
+  const attempts = [];
+  const { service, health } = coordinator({
+    async registerTelegramCommands({ signal }) {
+      signal.throwIfAborted();
+      assert.equal(health.snapshot().ready, true);
+      attempts.push(performance.now());
+      if (attempts.length === 1) throw Object.assign(new Error("rate limited"), {
+        retryable: true, retryAfterMs: 650,
+      });
+    },
+  });
+  await service.start();
+  assert.equal(health.snapshot().ready, true);
+  assert.deepEqual(attempts, []);
+  await service.waitForBackgroundWork();
+  assert.equal(attempts.length, 2);
+  assert.ok(attempts[1] - attempts[0] >= 620);
+  assert.equal(health.snapshot().startup.operations.find(({ id }) => id === "telegram").state, "completed");
+});
+
+test("permanent Telegram registration denial keeps Hub ready and does not retry", async () => {
+  let attempts = 0;
+  const { service, health } = coordinator({
+    async registerTelegramCommands() {
+      attempts++;
+      throw new Error("invalid Telegram credentials");
+    },
+  });
+  await service.start();
+  await service.waitForBackgroundWork();
+  assert.equal(attempts, 1);
+  assert.equal(health.snapshot().ready, true);
+  const operation = health.snapshot().startup.operations.find(({ id }) => id === "telegram");
+  assert.equal(operation.state, "failed");
+  assert.equal(operation.background, true);
+});
+
+test("shutdown cancels Telegram registration retry without sending again", async () => {
+  const started = Promise.withResolvers();
+  let attempts = 0;
+  const { service, health } = coordinator({
+    async registerTelegramCommands() {
+      attempts++;
+      started.resolve();
+      throw Object.assign(new Error("network unavailable"), { retryable: true, retryAfterMs: 60_000 });
+    },
+  });
+  await service.start();
+  await started.promise;
+  service.stopBackgroundWork();
+  await service.waitForBackgroundWork();
+  assert.equal(attempts, 1);
+  assert.equal(health.snapshot().startup.operations.find(({ id }) => id === "telegram").state, "skipped");
 });

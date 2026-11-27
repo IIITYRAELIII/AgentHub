@@ -884,13 +884,13 @@ export class HubMcpService {
         main_result_commit: { type: "string" },
         confirm_adoption: { type: "boolean", description: "Legacy confirmation field." },
       }, ["task_id", "expected_task_revision", "evidence_turn_id", "reported_result_commit", "main_result_commit"]),
-      tool("hub_task_complete", "Preview, then confirm closing a Task. Use absorbed_into_task_id after agent-led consolidation. Published duplicate and release service closure verify durable publication evidence.", {
+      tool("hub_task_complete", "Close a Task and delete its managed working folders and local branches, including unpublished changes. Use an explicit mode for publication or consolidation workflows.", {
         task_id: { type: "string" },
         confirm_cleanup: { type: "boolean", description: "Optional legacy selector. Supplying the preview token selects confirmation." },
         expected_cleanup_token: { type: "string" },
         absorbed_into_task_id: { type: "string", description: "Surviving tested Task that contains the source work. The source must already be returned from Test/Await." },
         absorption_mode: { type: "string", enum: ["published_duplicate"], description: "An open zero-own-delta source whose survivor is already Done and exactly published." },
-        completion_mode: { type: "string", enum: ["published_release_service", "published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"], description: "Archive retains history and workflow status. Manual delivery verifies actual delivery. Abandoned release service preserves exact failed release history." },
+        completion_mode: { type: "string", enum: ["close", "published_release_service", "published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"], description: "Archive retains history and workflow status. Manual delivery verifies actual delivery. Abandoned release service preserves exact failed release history." },
         retain_artifacts: { type: "boolean", description: "For archive only. On confirmation use the exact retainArtifacts value returned in its preview." },
         abandoned_release: { type: "object", properties: {
           operationId: { type: "string" }, expectedRevision: { type: "integer", minimum: 1 }, expectedGeneration: { type: "integer", minimum: 1 },
@@ -907,7 +907,7 @@ export class HubMcpService {
           sourceCommit: { type: "string", pattern: "^[a-f0-9]{40}$" }, publicationBaseCommit: { type: "string", pattern: "^[a-f0-9]{40}$" },
         }, required: ["runtimeRoot", "publicationRunSha256", "preparedSha256", "sourceBaseCommit", "sourceCommit", "publicationBaseCommit"], additionalProperties: false },
       }, ["task_id"]),
-      tool(TASK_COMPLETE_BATCH, "Archive the listed Tasks in one operation, preserving their history and local Git artifacts. Returns each Task's outcome and child receipt. Optional manual_delivery uses the existing verified Done transition before archive.", {
+      tool(TASK_COMPLETE_BATCH, "Close the listed Tasks and delete their managed folders and local branches. Returns each Task's outcome and child receipt. Optional manual_delivery explicitly requests a verified Done transition first.", {
         task_ids: { type: "array", minItems: 1, maxItems: MAX_BATCH_COMPLETIONS, items: { type: "string" },
           description: "Task IDs in processing order. Each unique ID is processed once." },
         manual_delivery: MANUAL_DELIVERY_SCHEMA,
@@ -2278,12 +2278,14 @@ export class HubMcpService {
     abandoned_release: abandonedRelease = null,
     } = args;
     const task = this.#task(context, taskId);
-    this.#validateCleanupToken(task, args, "complete");
+    const mode = completionMode ?? (!absorbedIntoTaskId && !absorptionMode
+      && !expectedCleanupToken && !Object.hasOwn(args, "confirm_cleanup") ? "close" : null);
+    if (mode !== "close") this.#validateCleanupToken(task, args, "complete");
     const result = await this.taskLifecycle.complete({
       taskId: task.id, operationId, confirmCleanup: taskCleanupIsConfirmed(args), expectedCleanupToken, absorbedIntoTaskId,
-      absorptionMode, completionMode, publishedDelivery, manualDelivery, retainedRepositories, completedOperationRequestId, retainArtifacts,
+      absorptionMode, completionMode: mode, publishedDelivery, manualDelivery, retainedRepositories, completedOperationRequestId, retainArtifacts,
       abandonedRelease,
-      originalArguments: ["published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"].includes(completionMode)
+      originalArguments: ["close", "published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"].includes(mode)
         ? Object.fromEntries(Object.entries(args).filter(([key]) => key !== "context_token")) : null,
     });
     return compactCompleteResult(result);
@@ -2316,10 +2318,9 @@ export class HubMcpService {
     const id = stage => `batch-${stage}-${createHash("sha256").update(JSON.stringify([batchId, taskId])).digest("hex")}`;
     const previewId = id("preview"), archiveId = id("archive"), doneId = id("done");
     const archiveOriginal = this.workspaceCatalog.mcpOperation(archiveId);
+    const legacyArchive = archiveOriginal?.taskExecution?.arguments?.completion_mode === "archive"
+      || Boolean(this.workspaceCatalog.mcpOperation(previewId));
     const task = this.taskBoard.task(taskId, { required: false });
-    if (!archiveOriginal && task?.status === "done") {
-      return { taskId, outcome: "already_closed", workflowStatus: task.workflowStatus, taskRevision: task.revision };
-    }
     if (!task) return { taskId, outcome: "not_found" };
 
     const archiveArgs = { task_id: taskId, completion_mode: "archive", retain_artifacts: true };
@@ -2341,13 +2342,17 @@ export class HubMcpService {
     }
     const completedWorkflow = doneReceipt ? { workflowStatus: "done", doneReceipt }
       : task.workflowStatus === "done" ? { workflowStatus: task.workflowStatus } : {};
-    const preview = await run("hub_task_complete", { ...archiveArgs, request_id: previewId });
-    if (preview.outcome !== "succeeded" || !preview.result?.cleanupToken) {
-      return { taskId, stage: "preview", ...preview.summary, ...completedWorkflow,
-        ...(preview.outcome === "succeeded" ? { outcome: "unknown" } : {}) };
+    let archiveInput = { task_id: taskId, request_id: archiveId, completion_mode: "close" };
+    if (legacyArchive) {
+      const preview = await run("hub_task_complete", { ...archiveArgs, request_id: previewId });
+      if (preview.outcome !== "succeeded" || !preview.result?.cleanupToken) {
+        return { taskId, stage: "preview", ...preview.summary, ...completedWorkflow,
+          ...(preview.outcome === "succeeded" ? { outcome: "unknown" } : {}) };
+      }
+      archiveInput = { ...archiveArgs, request_id: archiveId,
+        confirm_cleanup: true, expected_cleanup_token: preview.result.cleanupToken };
     }
-    const archive = await run("hub_task_complete", { ...archiveArgs, request_id: archiveId,
-      confirm_cleanup: true, expected_cleanup_token: preview.result.cleanupToken });
+    const archive = await run("hub_task_complete", archiveInput);
     const result = archive.result;
     const summary = { taskId, stage: "archive", ...archive.summary, ...completedWorkflow };
     if (archive.outcome !== "succeeded") return summary;
@@ -2374,10 +2379,9 @@ export class HubMcpService {
       operation = this.workspaceCatalog.mcpOperation(requestId);
     }
     if (operation && !matches(operation)) return { outcome: "failed", summary: { outcome: "failed", error: "Child receipt identity differs" } };
-    if (operation?.status === "unknown" && args.completion_mode === "archive" && args.confirm_cleanup === true
-        && !this.#pendingMutations.has(requestId)) {
-      // Only the single Complete reconciler may settle a previously admitted
-      // archive. It verifies its original hash and never repeats cleanup.
+    if (operation?.status === "unknown" && !this.#pendingMutations.has(requestId)
+        && (args.completion_mode === "close" || (args.completion_mode === "archive" && args.confirm_cleanup === true))) {
+      // Continue the admitted child through the single-operation reconciler.
       try {
         await this.#reconcilePublishedDeliveryComplete(context, { operation_request_id: requestId,
           task_id: args.task_id, expected_arguments_hash: childHash });
@@ -3519,6 +3523,27 @@ export class HubMcpService {
     const archiveTransition = this.taskBoard.lifecycleTransition?.(args.operation_request_id);
     const archiveOutcome = this.taskBoard.lifecycleOutcome?.(args.operation_request_id);
     const archiveEvidence = archiveOutcome?.result?.evidence ?? archiveTransition?.evidence;
+    if (archiveEvidence?.directClose === true) {
+      const captured = archiveEvidence.originalArguments;
+      if (originalArchive?.toolName !== "hub_task_complete" || originalArchive.workspaceId !== context.workspaceId
+          || (args.expected_arguments_hash && originalArchive.argumentsHash !== args.expected_arguments_hash) || !captured
+          || captured.request_id !== originalArchive.requestId || captured.task_id !== args.task_id
+          || argumentsHash(captured) !== originalArchive.argumentsHash
+          || (archiveTransition ?? archiveOutcome)?.taskId !== args.task_id
+          || !["pending", "reconciling", "unknown", "succeeded"].includes(originalArchive.status)) {
+        refuse("Original Task close identity differs");
+      }
+      const result = archiveOutcome ? compactCompleteResult(archiveOutcome.result.result) : await this.#completeTask(context, captured);
+      const reconciliation = { kind: "direct-task-close-original-v1", lifecycleOperationId: originalArchive.requestId };
+      if (originalArchive.status === "unknown") {
+        await this.workspaceCatalog.completeUnknownMcpOperation(originalArchive.requestId, {
+          workspaceId: context.workspaceId, toolName: "hub_task_complete", result, reconciliation,
+        });
+      } else if (originalArchive.status !== "succeeded") {
+        await this.workspaceCatalog.completeMcpOperation(originalArchive.requestId, result);
+      }
+      return { taskId: args.task_id, operationId: originalArchive.requestId, outcome: "COMPLETED", result };
+    }
     if (archiveEvidence?.archive === true) {
       const captured = archiveEvidence.originalArguments;
       if (Object.keys(args).some(key => !["context_token", "request_id", "task_id", "operation_request_id",

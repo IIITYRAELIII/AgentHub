@@ -40,11 +40,19 @@ export function durationRecoveryForRecord(record) {
   const evidence = record?.durationRecovery;
   if (evidence?.version !== 1 || !sameIdentity(record, evidence)
     || evidence.originalStartedAt !== record.startedAt
-    || evidence.originalCompletedAt !== record.completedAt) return null;
+    || evidence.originalCompletedAt !== evidence.completedAt
+    || !Number.isFinite(Date.parse(evidence.originalCompletedAt))) return null;
   return evidence;
 }
 
 export function durationStartForRecord(record) {
   const evidence = durationRecoveryForRecord(record);
-  return evidence ? evidence.state === "known" ? evidence.startedAt : "" : record?.startedAt;
+  if (!evidence) return record?.startedAt;
+  if (evidence.state !== "known") return "";
+  // The original finish bounds the captured provider evidence. The effective
+  // finish may subsequently change without invalidating the proven start.
+  const startedMs = Date.parse(evidence.startedAt ?? "");
+  const effectiveEndMs = Date.parse(record.completedAt ?? "");
+  return Number.isFinite(startedMs) && startedMs === evidence.turnStartedAtMs
+    && effectiveEndMs >= startedMs ? evidence.startedAt : "";
 }

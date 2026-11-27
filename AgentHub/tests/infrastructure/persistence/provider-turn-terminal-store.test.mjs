@@ -1241,3 +1241,102 @@ test("a silent correction cannot revoke a pending Telegram terminal intent", asy
   assert.equal(corrected.outbox.channels.telegram.state, "intent");
   assert.equal(corrected.outbox.channels.telegram.intent.message, "Corrected final answer");
 });
+
+test("preceding completion time is limited to the same current terminal and chronological bounds", async (context) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "agent-hub-terminal-preceding-date-"));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const terminal = new TerminalTurnCommitService({ store: new ProviderTurnTerminalStore({ dataDir }) });
+  const first = completion({ startedAt: "2026-08-25T11:59:00.000Z" });
+  await terminal.commit(first);
+  const { outbox } = await terminal.commit({
+    ...first, finalAnswer: "reconciled", completedAt: null,
+  });
+  assert.equal(await terminal.precedingProjectionCompletedAt(outbox), first.completedAt);
+  assert.equal(await terminal.precedingProjectionCompletedAt({ ...outbox, threadId: "foreign" }), null);
+
+  const changedStatus = await terminal.commit({
+    ...first, status: "failed", finalAnswer: "later failure", completedAt: null,
+  });
+  assert.equal(await terminal.precedingProjectionCompletedAt(outbox), null);
+  assert.equal(await terminal.precedingProjectionCompletedAt(changedStatus.outbox), null);
+
+  const lateStartBase = { ...first, turnId: "another-turn" };
+  await terminal.commit(lateStartBase);
+  const lateStart = await terminal.commit({
+    ...lateStartBase, finalAnswer: "reconciled", completedAt: null, startedAt: "2026-08-25T12:01:00.000Z",
+  });
+  assert.equal(await terminal.precedingProjectionCompletedAt(lateStart.outbox), null);
+});
+
+test("startup admits only the current command revision before and after legacy channel migration", async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "hub-legacy-command-revisions-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const seed = new TerminalTurnCommitService({ store: new ProviderTurnTerminalStore({ dataDir }) });
+  const turn = completion({ clientUserMessageId: "legacy-command" });
+  const first = await seed.commit(turn);
+  await seed.acknowledge(await seed.claim(first.outbox));
+  await seed.commit({ ...turn, finalAnswer: "Intermediate" });
+  await seed.commit({ ...turn, finalAnswer: "Current" });
+
+  const database = new DatabaseSync(path.join(dataDir, "runtime.sqlite"));
+  try {
+    database.exec(`
+      DROP INDEX provider_turn_terminal_outbox_command_intent_idx;
+      ALTER TABLE provider_turn_terminal_outbox DROP COLUMN command_state;
+      ALTER TABLE provider_turn_terminal_outbox DROP COLUMN command_client_user_message_id;
+      ALTER TABLE provider_turn_terminal_outbox DROP COLUMN command_last_error;
+      ALTER TABLE provider_turn_terminal_outbox DROP COLUMN command_updated_at;
+    `);
+    const store = new ProviderTurnTerminalStore({ dataDir });
+    const page = await store.startupPendingCommands();
+    assert.deepEqual(page.map(item => [item.terminalRevision, item.channels.command.state]), [[3, "intent"]]);
+    const oldStates = () => database.prepare(`
+      SELECT state, command_state FROM provider_turn_terminal_outbox WHERE terminal_revision < 3 ORDER BY terminal_revision
+    `).all().map(row => [row.state, row.command_state]);
+    assert.deepEqual(oldStates(), [["delivered", "not-required"], ["superseded", "not-required"]]);
+
+    // Earlier migrations also assigned a command intent to obsolete revisions.
+    database.exec("UPDATE provider_turn_terminal_outbox SET command_state = 'intent' WHERE terminal_revision < 3");
+    const reconciled = [];
+    const terminal = new TerminalTurnCommitService({ store, messageCommands: {
+      transitionMessageCommand(command) {
+        reconciled.push(command.result.terminalRevision);
+        return { changed: true, record: { state: "completed" } };
+      },
+    } });
+    assert.deepEqual(await terminal.reconcileStartupCommands(), { reconciled: 1 });
+    assert.deepEqual(await store.startupPendingCommands(), []);
+    assert.deepEqual(reconciled, [3]);
+    assert.deepEqual(oldStates(), [["delivered", "intent"], ["superseded", "intent"]]);
+    const [pending] = await store.pendingProjections();
+    assert.equal(pending.terminalRevision, 3);
+    assert.equal(pending.channels.command.state, "acked");
+    assert.equal(pending.state, "pending");
+  } finally {
+    database.close();
+  }
+});
+
+test("startup reconciles every page of command intents without touching pending history", async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "hub-startup-pages-"));
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  let available = false;
+  const store = new ProviderTurnTerminalStore({ dataDir });
+  const terminal = new TerminalTurnCommitService({ store, logger: { error() {} },
+    messageCommands: { transitionMessageCommand: async () => {
+      if (!available) throw new Error("ledger unavailable");
+      return { changed: true, record: { state: "completed" } };
+    } },
+  });
+  const owner = new TurnEndDeliveryService({
+    terminalCommits: terminal, taskRuns: { forEvent: () => null },
+    persistHistory: async () => assert.fail("history must stay in the background"),
+  });
+  for (let i = 0; i < 101; i++) {
+    await terminal.commit(completion({ turnId: String(i).padStart(3, "0"), clientUserMessageId: `original-${i}` }));
+  }
+  await assert.rejects(owner.prepareStartupCommandAdmission(), /Cannot reconcile startup command/);
+  available = true;
+  assert.equal((await owner.prepareStartupCommandAdmission()).reconciled, 101);
+  assert.equal((await store.pendingProjections({ limit: 101 })).length, 101);
+});

@@ -693,6 +693,13 @@ order, so permanent failures cannot starve a later page and a full page never
 creates a zero-delay loop. Transient contention uses one runtime-scoped
 single-flight retry with capped exponential backoff; a bounded low-frequency
 pass retains eventual recovery after that fast budget or an enumeration failure.
+Startup terminal-recovery spans retain the original terminal command identity
+and include the startup trace ID so their queue and projection time can be joined
+to startup. The startup-notifications span identifies the pre-Ready action
+terminal-admission and the post-Ready actions terminal-projections and
+telegram-delivery. The legacy migration loop has one separate
+span under that startup ID. A current journal record with retained time or usage is
+not rewritten merely because an older terminal payload omitted those fields.
 Usage-history aggregation and pricing/image-estimate metadata scans also execute
 in that existing worker. After legacy-read readiness is established, statistics
 reads do not wait on the runtime mutation FIFO or materialize its ledger. They
@@ -982,7 +989,11 @@ selection response or conditional background history response. The existing
 history-page-paint and control measurements share that selection's client trace
 identity and fixed loaded-asset marker. The read ACK retains its own original
 identity and existing paint/receipt/marker-clear spans; exact final identity
-correlates it with displayed history without turning a click into read evidence.
+correlates it with displayed history. A queue click on a locally rendered answer
+uses its existing DOM card without a history read. Queue entries contain scalar metadata.
+The terminal transaction maintains a chronological index, allowing the account cursor
+to seek directly to pending entries. The browser creates the first group of buttons
+on open and adds further groups as the reader approaches the end.
 An unchanged repeated selection uses the existing select-task mutation plus
 known-version task-history read instead of another full open-task history page.
 Layout notification yields to the synchronous selection intent before starting

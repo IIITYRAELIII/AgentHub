@@ -34,6 +34,7 @@ export class ManagedRunHistoryService {
     active = true,
     turnId = run?.turnId,
     terminalRevision = null,
+    completedAt = null,
   } = {}) {
     if (!run?.threadId || !turnId) return;
     // Служебная свёртка контекста Claude не является ходом разговора.
@@ -50,14 +51,21 @@ export class ManagedRunHistoryService {
           terminalRevision: committedTerminal.terminalRevision,
         };
       }
+      if (terminalRevision && committedTerminal && terminalRevision < committedTerminal.terminalRevision) {
+        return { absorbed: true, terminalRevision: committedTerminal.terminalRevision };
+      }
       const resolvedTerminalRevision = Number(terminalRevision)
         || Number(committedTerminal?.terminalRevision)
         || null;
       const activityAtMs = this.nowMs();
+      const exactCompletionMs = Date.parse(String(completedAt ?? ""));
+      const exactCompletion = Number.isFinite(exactCompletionMs)
+        ? new Date(exactCompletionMs).toISOString()
+        : null;
       const telemetry = providerTurnTelemetrySnapshot(run, {
         turnId,
         status,
-        completedAtMs: active ? null : activityAtMs,
+        completedAtMs: active ? null : exactCompletion ? exactCompletionMs : activityAtMs,
       });
       const projection = codexAssistantResponseProjection(answer || run.responseText, run.responseAnnotationReferences);
       const history = this.taskSyncStore.history(run);
@@ -99,7 +107,8 @@ export class ManagedRunHistoryService {
         current.activityGroups = Array.isArray(run.activityGroups)
           ? structuredClone(run.activityGroups)
           : [];
-        if (!active) current.completedAt = this.nowIso();
+        if (!active) current.completedAt = exactCompletion ?? current.completedAt ?? this.nowIso();
+        if (!active && exactCompletion && terminalRevision) current.completedAtRevision = terminalRevision;
         if (resolvedTerminalRevision) current.terminalRevision = resolvedTerminalRevision;
         if (telemetry) current.telemetry = structuredClone(telemetry);
         if (current.answer || responseAttachments.length) {

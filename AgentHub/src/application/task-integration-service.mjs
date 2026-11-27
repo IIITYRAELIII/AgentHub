@@ -404,8 +404,7 @@ export class TaskIntegrationService {
           }
         }
       }
-      for (const request of localSourceChecks) await this.measureOperation("preparation:local-source-baseline",
-        () => this.releaseGitWorkspaces.validateLocalSourceBaseline(request));
+      for (const request of localSourceChecks) await this.releaseGitWorkspaces.assertDerivedInstalledSourceCurrent(request);
     };
     const result = () => ({
       workspaceId: String(workspaceId), planRevision: plan.revision,
@@ -472,15 +471,13 @@ export class TaskIntegrationService {
         requiredMethod(this.releaseGitWorkspaces, "deriveInstalledLocalSourceBaselineForSelection");
         localSource = await this.releaseGitWorkspaces.deriveInstalledLocalSourceBaselineForSelection({
           projectRoot: repository.projectRoot, planRevision: plan.revision, tasks: evidence.tasks,
-          publishedRevision: base.publishedBaseCommit, adoptions: base.adoptions ?? [],
+          publishedRevision: base.publishedBaseCommit, adoptions: base.adoptions ?? [], retainProof: true,
         });
       }
       if (localSource) {
         const request = { projectRoot: repository.projectRoot, provenance: localSource,
           planRevision: plan.revision, tasks: evidence.tasks };
-        const verified = await this.measureOperation("preparation:local-source-baseline",
-          () => this.releaseGitWorkspaces.validateLocalSourceBaseline(request));
-        localSource = verified.provenance;
+        requiredMethod(this.releaseGitWorkspaces, "assertDerivedInstalledSourceCurrent");
         localSourceChecks.push(request);
         if (localSource.compositionBaseCommit !== (localSource.ownGitPublication?.commit ?? base.publishedBaseCommit)) {
           throw new TaskPreparationRejectedError("Installed source is operational only; rebuild the PUBLIC Await candidate from its published base");

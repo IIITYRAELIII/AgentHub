@@ -953,7 +953,10 @@ export class TaskLifecycleService {
         }
         throw new Error(revisionChanged ? "Task workflow cutover revision changed" : "Task workflow cutover status changed");
       }
-      const readManual = () => this.taskGitWorkspaces.manualDeliveryPreviewOwned({ task, input: manualDelivery, lease });
+      const operationProofs = manualDelivery ? new Map() : null;
+      const readManual = () => this.taskGitWorkspaces.manualDeliveryPreviewOwned({
+        task, input: manualDelivery, lease, operationProofs,
+      });
       const manualProof = manualDelivery ? await readManual() : null;
       if (manualProof) operationEvidence = { ...(operationEvidence ?? {}), manualDelivery: manualProof };
       const snapshotsResult = releaseWorkflow && workflowStatus === "testing";
@@ -2257,10 +2260,11 @@ export class TaskLifecycleService {
       // A previously admitted preserve-only original keeps its original meaning.
       // New cleanup is never retrofitted to that old confirmation.
       const legacy = Boolean(prior && !prior.cleanup?.manualCleanup);
+      const operationProofs = confirmCleanup ? new Map() : null;
       const read = () => legacy
-        ? this.taskGitWorkspaces.manualDeliveryPreviewOwned({ task, input: manualDelivery, lease, retainedRepositories })
+        ? this.taskGitWorkspaces.manualDeliveryPreviewOwned({ task, input: manualDelivery, lease, retainedRepositories, operationProofs })
         : this.taskGitWorkspaces.manualDeliveryCleanupPreviewOwned({ task, input: manualDelivery, lease, retainedRepositories,
-          admitted: prior?.cleanup?.manualCleanup ?? null, acceptedSource });
+          admitted: prior?.cleanup?.manualCleanup ?? null, acceptedSource, operationProofs });
       const cleanup = await read(), retained = cleanup.manualCleanup?.source ?? cleanup;
       const preview = confirmation(task, "complete", cleanup);
       preview.warning = legacy
@@ -2373,12 +2377,48 @@ export class TaskLifecycleService {
     });
   }
 
+  async #closeTask({ taskId, operationId, originalArguments }) {
+    return this.#withLock(taskId, async lease => {
+      const outcome = this.taskBoard.lifecycleOutcome?.(operationId);
+      if (outcome?.taskId === taskId && outcome.kind === "complete" && outcome.result.evidence?.directClose) {
+        return outcome.result.result;
+      }
+      const task = this.#task(taskId);
+      const transition = this.taskBoard.lifecycleTransition?.(operationId);
+      let evidence = transition?.evidence;
+      if (transition) {
+        if (transition.taskId !== task.id || transition.kind !== "complete" || transition.phase !== "cleanup"
+            || transition.expectedRevision !== task.revision || evidence?.directClose !== true
+            || !Array.isArray(evidence.targets?.repositories)
+            || JSON.stringify(evidence.originalArguments) !== JSON.stringify(originalArguments)) {
+          throw Error("Original Task close intent changed");
+        }
+      } else {
+        const targets = await this.taskGitWorkspaces.planCloseArtifactsOwned(task, {
+          registeredProjectRoot: this.#projectRoot(task), lease,
+        });
+        evidence = { directClose: true, originalArguments, targets };
+        await this.#assertOwned(lease);
+        await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
+          id: task.id, operationId, kind: "complete", expectedRevision: task.revision, evidence,
+        }), operationId);
+      }
+      const removed = await this.taskGitWorkspaces.removeClosedTaskArtifactsOwned(task, {
+        targets: evidence.targets, lease,
+      });
+      await this.#assertOwned(lease);
+      return this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
+        preserveCompletedTask: true, receiptEvidence: { ...evidence, removed },
+      }), operationId);
+    });
+  }
+
   async complete({
     taskId, operationId, confirmCleanup = false, expectedCleanupToken = null, retainArtifacts = false,
     absorbedIntoTaskId = null, absorptionMode = null, completionMode = null, publishedDelivery = null, manualDelivery = null, retainedRepositories = [], originalArguments = null, completedOperationRequestId = null,
     abandonedRelease = null,
   } = {}) {
-    if (completionMode != null && !["published_release_service", "published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"].includes(completionMode)) {
+    if (completionMode != null && !["close", "published_release_service", "published_delivery", "operational", "manual_delivery", "archive", "abandoned_release_service"].includes(completionMode)) {
       throw new Error("Unsupported Task completion mode");
     }
     if (completionMode && (absorptionMode || absorbedIntoTaskId)) {
@@ -2392,6 +2432,7 @@ export class TaskLifecycleService {
     if (abandonedRelease && completionMode !== "abandoned_release_service") throw Error("Abandoned release proof requires its explicit completion mode");
     if (completionMode === "abandoned_release_service") return this.#completeAbandonedReleaseService({ taskId, operationId,
       confirmCleanup, expectedCleanupToken, abandonedRelease, originalArguments });
+    if (completionMode === "close") return this.#closeTask({ taskId, operationId, originalArguments });
     if (completionMode === "archive") return this.#archiveTask({
       taskId, operationId, confirmCleanup, expectedCleanupToken, retainArtifacts, originalArguments,
     });
