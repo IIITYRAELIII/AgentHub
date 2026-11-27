@@ -707,6 +707,9 @@ export class TaskIntegrationGitService {
       if (await runGit(["rev-parse", "HEAD^{commit}"], { cwd: layout.releaseRoot }) !== primary.mainCommit) {
         throw new Error("Initial release checkout does not match the agreed main");
       }
+      if (!this.#validationBundle) {
+        await runGit(["update-ref", "refs/remotes/workspace/main", primary.mainCommit, "0".repeat(40)], { cwd: layout.releaseRoot });
+      }
     }
 
     const releaseRoot = await repositoryRoot(layout.releaseRoot);
@@ -739,7 +742,7 @@ export class TaskIntegrationGitService {
       releaseRoot,
       releaseGitCommonDir: releaseCommonDir,
     };
-    await writeJsonAtomic(markerFile, marker);
+    if (stableManifest(existingMarker) !== stableManifest(marker)) await writeJsonAtomic(markerFile, marker);
     return { ...layout, ...marker, markerFile };
   }
 
@@ -1525,15 +1528,25 @@ export class TaskIntegrationGitService {
       // owner completed, ordinary later selections read their exact objects
       // from the registered primary without changing either repository's config.
       const workspace = authority?.phase === "completed" && !forwardPreparation ? initial.root : "workspace";
-      if (!preparedPromotion) await git(["fetch", "--prune", workspace, "+refs/heads/main:refs/remotes/workspace/main"]);
       // Operational source objects are verification inputs, not merge bases.
-      for (const commit of [baseCommit, ...(localSource ? [localSource.sourceBaseCommit] : []),
-        ...tasks.map((task) => task.resultCommit)]) {
-        if (await gitMaybe(["cat-file", "-e", `${commit}^{commit}`], { cwd: clone.releaseRoot }) === null) {
-          if (preparedPromotion) throw interruptedAwaitRefusal("exact prepared input is missing");
-          await git(["fetch", workspace, commit]);
+      await measureTaskOperation("native:release-inputs", async () => {
+        const commits = [...new Set([baseCommit, ...(localSource ? [localSource.sourceBaseCommit] : []),
+          ...tasks.map(task => task.resultCommit)])];
+        const trackingMain = "refs/remotes/workspace/main";
+        const queries = [...commits, trackingMain];
+        const available = String(await git(["--no-replace-objects", "cat-file",
+          "--batch-check=%(objectname) %(objecttype)"], { input: queries.join("\n") + "\n" })).split(/\r?\n/u);
+        if (available.length !== queries.length) throw new Error("Native release input lookup is malformed");
+        const missing = commits.filter((commit, index) => available[index] !== commit + " commit");
+        if (preparedPromotion) {
+          if (missing.length) throw interruptedAwaitRefusal("exact prepared input is missing");
+          return;
         }
-      }
+        const trackingChanged = available.at(-1) !== initial.mainCommit + " commit";
+        if (!trackingChanged && !missing.length) return;
+        const refspecs = [...(trackingChanged ? ["+refs/heads/main:" + trackingMain] : []), ...missing];
+        await git(["fetch", "--prune", workspace, "--stdin"], { input: refspecs.join("\n") + "\n" });
+      });
       const derivedRequest = { projectRoot: initial.root, provenance: baseProvenance, planRevision: revision, tasks };
       const derived = this.#derivedLocalSourceProof(derivedRequest);
       let assertLocalSourceCurrent;
@@ -1551,7 +1564,7 @@ export class TaskIntegrationGitService {
         })) : null);
       if (derived) await assertLocalSourceCurrent();
       const historyRequest = { projectRoot: initial.root, provenance, planRevision: revision, tasks };
-      const historyAuthority = await this.#nativeHistoryAuthority({ ...historyRequest, verifiedLocalSource });
+      const historyAuthority = await this.#nativeHistoryAuthority({ ...historyRequest, primary: initial, verifiedLocalSource });
       if (historyAuthority?.publishedMetadata) historyRequest.expectedPublishedMetadata = historyAuthority.publishedMetadata;
       const historyGit = (args, options) => git(["--no-replace-objects", ...args], options);
       let assertLegacyMetadataCurrent;
@@ -1619,7 +1632,7 @@ export class TaskIntegrationGitService {
         deliveredHead: checkpoint?.preReleaseHead ?? null,
         gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
         readJson, writeJson: writeJsonAtomic,
-        provisionNativeObjects: input => preparationObjectStore().provision({ ...input,
+        provisionNativeObjects: input => preparationObjectStore().provision({ ...input, reusableSource: clone.objectStorage ?? null,
           identityHash: taskGitIdentityHash({ repository: input.repository, identityHash: input.identityHash }) }),
         verifyNativeObjects: input => preparationObjectStore().assertConsumer({ ...input,
           identityHash: taskGitIdentityHash({ repository: input.repository, identityHash: input.identityHash }) }),

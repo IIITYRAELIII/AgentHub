@@ -5333,30 +5333,49 @@ export class TaskGitWorkspaceService {
       throw new Error(`Task branch does not match its repository: ${branch}`);
     }
     const repoKeys = [...new Set([taskRepositoryKey(repoRoot), taskRepositoryKey(projectRoot)])];
-    const existingCommits = async (refForKey) => {
+    const baseRefs = repoKeys.map(repoKey => this.#custodyBaseRef(id, repoKey));
+    const adoptionRefs = repoKeys.map(repoKey => taskLegacyAdoptionRef(id, repoKey));
+    const branchRef = `refs/heads/${storedBranch}`;
+    const custody = this.#claimNamespace(id);
+    if (custody && storedBranch !== custody.namespace.workspace.branch) throw new Error("Custody result branch differs");
+    const refNames = new Set([...baseRefs, ...adoptionRefs, ...(!custody ? [branchRef] : [])]);
+    const refObjects = new Map();
+    const refs = await runGit(["for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)",
+      ...refNames], { cwd: repoRoot });
+    for (const line of refs.split(/\r?\n/u).filter(Boolean)) {
+      const [ref, object, type] = line.split("\0");
+      if (refNames.has(ref)) refObjects.set(ref, { object, type });
+    }
+    const resolveRef = async (ref) => {
+      const observed = refObjects.get(ref);
+      if (!observed) return null;
+      if (observed.type === "commit") return observed.object;
+      return gitMaybe(["rev-parse", "--verify", `${ref}^{commit}`], { cwd: repoRoot });
+    };
+    const existingCommits = async (refList) => {
       const values = [];
-      for (const repoKey of repoKeys) {
-        const commit = await gitMaybe(["rev-parse", "--verify", `${refForKey(repoKey)}^{commit}`], { cwd: repoRoot });
+      for (const ref of refList) {
+        const commit = await resolveRef(ref);
         if (commit && !values.includes(commit)) values.push(commit);
       }
       if (values.length > 1) throw new Error("Task repository path aliases have conflicting Git evidence");
       return values[0] ?? null;
     };
-    const baseCommit = await existingCommits((repoKey) => this.#custodyBaseRef(id, repoKey));
+    const baseCommit = await existingCommits(baseRefs);
     if (!baseCommit) {
-      await runGit(["rev-parse", "--verify", `${this.#custodyBaseRef(id, repoKeys[0])}^{commit}`], { cwd: repoRoot });
+      await runGit(["rev-parse", "--verify", `${baseRefs[0]}^{commit}`], { cwd: repoRoot });
       throw new Error("Task base reference is unavailable");
     }
     const acceptedCommit = await runGit(["rev-parse", "--verify", `${String(resultCommit)}^{commit}`], { cwd: repoRoot });
-    const custody = this.#claimNamespace(id);
-    if (custody && storedBranch !== custody.namespace.workspace.branch) throw new Error("Custody result branch differs");
-    const branchCommit = await runGit(["rev-parse", "--verify", `refs/heads/${storedBranch}^{commit}`], {
-      cwd: custody ? custody.namespace.root : repoRoot });
+    const branchCommit = (!custody && await resolveRef(branchRef))
+      || await runGit(["rev-parse", "--verify", `${branchRef}^{commit}`], { cwd: custody?.namespace.root ?? repoRoot });
     if (custody && await runGit(["rev-parse", `${this.#custodyResultRef(id, taskRepositoryKey(repoRoot))}^{commit}`], { cwd: repoRoot }) !== acceptedCommit) {
       throw new Error("Task result is not the current custody result authority");
     }
-    await runGit(["merge-base", "--is-ancestor", acceptedCommit, branchCommit], { cwd: repoRoot });
-    const adoptedCommit = await existingCommits((repoKey) => taskLegacyAdoptionRef(id, repoKey));
+    if (acceptedCommit !== branchCommit) {
+      await runGit(["merge-base", "--is-ancestor", acceptedCommit, branchCommit], { cwd: repoRoot });
+    }
+    const adoptedCommit = await existingCommits(adoptionRefs);
     const pathspecs = adoptedCommit === acceptedCommit
       ? ["--", ".", ":(exclude,glob)**/CHANGELOG.md"]
       : ["--"];
