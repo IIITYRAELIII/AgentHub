@@ -164,13 +164,14 @@ export function nativeIntegrationRecordFile(dataDir, taskId, repoRoot, operation
     taskRepositoryKey(repoRoot), `${createHash("sha256").update(operation).digest("hex")}.json`);
 }
 
-async function returnedTestPublishedParent({ git, dataDir, prior, side, published }) {
+async function returnedTestPublishedParent({ git, dataDir, prior, side, published, evidence }) {
   if (!dataDir || !/^[a-f0-9]{40}$/u.test(side)) return false;
   const file = nativeIntegrationRecordFile(dataDir, prior.taskId, prior.projectRoot, prior.testOperationId);
-  const record = await readFile(file, "utf8").then(JSON.parse, error => {
+  const bytes = await readFile(file, "utf8").catch(error => {
     if (error.code === "ENOENT") return null;
     throw error;
   });
+  const record = bytes && JSON.parse(bytes);
   const metadata = record?.nativeHistoryAuthority?.publishedMetadata;
   if (record?.version !== 1 || record.kind !== "native-task-integration-v1" || record.phase === "failed"
       || record.operationId !== prior.testOperationId || record.snapshot?.taskId !== prior.taskId
@@ -180,15 +181,22 @@ async function returnedTestPublishedParent({ git, dataDir, prior, side, publishe
       || canonicalPath(metadata.repositoryRoot ?? "") !== canonicalPath(prior.projectRoot)
       || await git(["rev-parse", `${side}^{tree}`]) !== metadata.tree) return false;
   if (await maybe(git, ["merge-base", "--is-ancestor", side, published]) === null) return false;
-  const store = new TaskBoardStore({ databaseFile: path.join(dataDir, "journal.sqlite"), readOnly: true });
-  try {
-    return record.target === store.absorptionPriorTestDevCommit(prior);
-  } finally {
-    store.close();
-  }
+  const matchesReceipt = () => {
+    const store = new TaskBoardStore({ databaseFile: path.join(dataDir, "journal.sqlite"), readOnly: true });
+    try { return record.target === store.absorptionPriorTestDevCommit(prior); }
+    finally { store.close(); }
+  };
+  if (!matchesReceipt()) return false;
+  evidence?.push(async () => {
+    if (await readFile(file, "utf8") !== bytes || !matchesReceipt()) {
+      throw failure("Original absorbed Test evidence changed");
+    }
+  });
+  return true;
 }
 
-export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null }) {
+export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null, onVerified = null }) {
+  const evidence = onVerified ? [] : null;
   // Internal context, verified by the owning caller at every effect boundary.
   // Only Test may include its already managed dev ancestry here.
   const bases = [...new Set([baseCommit, ...(historyAuthority?.bases ?? [])])];
@@ -229,7 +237,7 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       const returnedMerge = sourceRows.find(row => row.length === 3 && row[0] === prior?.resultCommit);
       const publishedParent = published && returnedMerge
         && await returnedTestPublishedParent({ git, dataDir: historyAuthority.dataDir, prior,
-          side: returnedMerge[2], published }) ? returnedMerge[2] : null;
+          side: returnedMerge[2], published, evidence }) ? returnedMerge[2] : null;
       absorptions.push({ binding, d, prior, sourceRows, publishedParent,
         historical: publishedParent !== published ? publishedParent : null });
     }
@@ -351,6 +359,9 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       }
     }
   }
+  onVerified?.(async () => {
+    for (const recheck of evidence) await recheck();
+  });
 }
 
 async function entries(git, args) {

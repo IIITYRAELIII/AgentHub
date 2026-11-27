@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, realpath } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { runtimeLayout } from "./runtime-layout.mjs";
 import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
@@ -28,6 +28,44 @@ export async function withRuntimeInstallationLease(runtimeRoot, operation) {
   // owns migration into that directory and refuses an incomplete existing body.
   return withInterprocessLocks([path.join(physical, ".runtime-installation")],
     lease => withSealedRuntimeExecutor(() => operation(lease)));
+}
+
+// This witness lives only as long as the operation that verified the bytes.
+export async function observeRuntimeContent(files, releaseRoot) {
+  const paths = [...new Set(files.map(file => path.resolve(file)))];
+  const originalRoot = await realpath(releaseRoot);
+  const directory = await stat(originalRoot, { bigint: true });
+  const fingerprint = info => [info.dev, info.ino, info.birthtimeNs, info.size,
+    info.mtimeNs, info.ctimeNs, info.mode, info.nlink].join(":");
+  const missing = error => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  };
+  const read = async file => {
+    const named = await lstat(file, { bigint: true }).catch(missing);
+    if (!named || !named.isSymbolicLink()) return named && fingerprint(named);
+    const target = await stat(file, { bigint: true }).catch(missing);
+    return [fingerprint(named), target && fingerprint(target)].join(":");
+  };
+  const scan = async expected => {
+    const values = [];
+    for (let offset = 0; offset < paths.length; offset += 32) {
+      const entries = await Promise.all(paths.slice(offset, offset + 32).map(read));
+      if (expected && entries.some((value, index) => value !== expected[offset + index])) {
+        throw new Error("Installed runtime file changed after content proof");
+      }
+      if (!expected) values.push(...entries);
+    }
+    const root = await realpath(releaseRoot);
+    const current = await stat(root, { bigint: true });
+    if (root !== originalRoot || current.dev !== directory.dev || current.ino !== directory.ino
+        || current.birthtimeNs !== directory.birthtimeNs) {
+      throw new Error("Installed runtime directory changed after content proof");
+    }
+    return values;
+  };
+  const original = await scan();
+  return async () => { await scan(original); };
 }
 
 export async function readRuntimePointer(runtimeRoot) {

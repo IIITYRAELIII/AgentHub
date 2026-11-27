@@ -9,7 +9,7 @@ function unknown(message, cause) {
 // publication receipt or second approval ledger is created by this owner.
 export async function synchronizePublishedDev({ root, sourceRoot, devRoot, devBranch, identity,
   gitAt, readJson, writeJson, fence, beforeDelivery, afterDelivery,
-  beforeCheckout = null, beforeRefUpdate = null,
+  beforeCheckout = null, beforeRefUpdate = null, beforeReadback = null,
   nativeResolutionReview = null, verifyManualReview = null }) {
   const git = (args, options) => gitAt(devRoot, args, options);
   const file = path.join(root, "merge.json");
@@ -75,6 +75,7 @@ export async function synchronizePublishedDev({ root, sourceRoot, devRoot, devBr
     }
     await fence();
     await git(["symbolic-ref", "HEAD", `refs/heads/${devBranch}`]);
+    await beforeReadback?.();
     await fence();
     state = await inspect(composition.head);
     if (state.head !== composition.head || state.ref !== composition.head

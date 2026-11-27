@@ -2945,17 +2945,15 @@ export class TaskGitWorkspaceService {
       const currentLocalMain = await localMainCommit(repoRoot);
       if (manualSync) {
         if (publishedSync || validatePublishedSync) throw Error("Manual sync authority differs");
-        const read = async () => {
-          await releaseLease.assertOwned();
-          return this.#readManualDeliveryOwned(repoRoot, manualSync.delivery, [], lease);
-        };
-        const delivery = await read();
+        await releaseLease.assertOwned();
+        let assertCurrent;
+        const delivery = await this.#readManualDeliveryOwned(repoRoot, manualSync.delivery, [], lease,
+          recheck => { assertCurrent = recheck; });
+        if (!assertCurrent) throw Error("Manual sync content proof is absent");
         if (delivery.revision !== expectedMainCommit) throw Error("Manual sync revision differs from installed delivery");
         const sync = mathRoot => this.#synchronizePublishedMainOwned({ repoRoot, mathRoot, expectedMainCommit, currentLocalMain,
           publishedSync: manualSync, manualDelivery: delivery, lease, nativeResolutionReview,
-          validatePublishedSync: async () => {
-            if (JSON.stringify(await read()) !== JSON.stringify(delivery)) throw Error("Manual sync delivery changed");
-          } });
+          validatePublishedSync: () => assertCurrent(combinedLease(lease, releaseLease)) });
         if (samePath(delivery.publishedRepository.root, repoRoot)) return sync(repoRoot);
         const objects = this.createNativeObjectStore({ sourceRoot: repoRoot, lease });
         return objects.withInputMath({ sources: [
@@ -3079,9 +3077,10 @@ export class TaskGitWorkspaceService {
         verifyManualReview: (review, binding) => this.measureOperation("native:review-receipt", () =>
           verifyManualDevResolutionReview({ dataDir: this.dataDir, review, binding })),
         fence,
-        // Verify complete delivery at checkout, ref promotion and terminal readback.
+        // Recheck mutable inputs without reading and hashing the same bytes again.
         beforeCheckout: manualDelivery ? () => validatePublishedSync() : null,
         beforeRefUpdate: manualDelivery ? () => validatePublishedSync() : null,
+        beforeReadback: manualDelivery ? () => validatePublishedSync() : null,
         gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
           guardRepositoryRoot: repoRoot, timeoutMs: 300_000 }),
         beforeDelivery: async () => {
@@ -3094,8 +3093,6 @@ export class TaskGitWorkspaceService {
           }
         },
         afterDelivery: async () => {
-          await fence();
-          if (manualDelivery) await validatePublishedSync();
           const block = await readJson(blockFile);
           if (block?.publishedDevSync !== identityHash) throw new Error("Published sync recovery owner changed");
           await unlink(blockFile);
@@ -6980,13 +6977,14 @@ export class TaskGitWorkspaceService {
     return state;
   }
 
-  async #readManualDeliveryOwned(repoRoot, input, resultCommits, lease) {
+  async #readManualDeliveryOwned(repoRoot, input, resultCommits, lease, onVerified = null) {
     return this.measureOperation("manual-delivery-proof", async () => {
       // One process-tree guard owns one child at a time. The reader can request
       // independent facts together; drain this invocation's children on refusal.
       let gitTail = Promise.resolve();
+      let readLease = lease;
       const gitAt = (cwd, args, options = {}) => {
-        const next = gitTail.then(() => this.#runOwned(args, { ...options, cwd, lease,
+        const next = gitTail.then(() => this.#runOwned(args, { ...options, cwd, lease: readLease,
           guardRepositoryRoot: repoRoot }));
         gitTail = next.catch(() => {});
         return next;
@@ -6996,16 +6994,49 @@ export class TaskGitWorkspaceService {
       try {
         await lease.assertOwned();
         const publishedRepository = await inspect();
+        let assertCurrent;
         const delivery = await this.readManualDelivery({ runtimeRoot: this.runtimeRoot, input, resultCommits,
+          ...(onVerified ? { onVerified: check => { assertCurrent = check; } } : {}),
           ...(!samePath(publishedRepository.root, repoRoot) ? { hostSourceRoot: path.join(publishedRepository.root, "AgentHub") } : {}),
           git: (args, options) => gitAt(publishedRepository.root, args, options) });
         if (JSON.stringify(await inspect()) !== JSON.stringify(publishedRepository)) {
           throw Error("Manual published repository changed during verification");
         }
         await lease.assertOwned();
+        if (onVerified && assertCurrent) onVerified((currentLease = lease) =>
+          this.measureOperation("manual-delivery-current", async () => {
+            readLease = currentLease;
+            try {
+              await readLease.assertOwned();
+              if (JSON.stringify(await inspect()) !== JSON.stringify(publishedRepository)) {
+                throw Error("Manual published repository changed after content proof");
+              }
+              await assertCurrent();
+              await readLease.assertOwned();
+            } finally { await gitTail; }
+          }));
         return { ...delivery, publishedRepository };
       } finally { await gitTail; }
     });
+  }
+
+  async #readManualDeliveryForOperation(repoRoot, input, results, lease, operationProofs) {
+    const key = canonicalPath(repoRoot);
+    const identity = taskGitIdentityHash({ input, results });
+    const previous = operationProofs?.get(key);
+    if (previous) {
+      if (previous.identity !== identity) throw Error("Manual delivery result changed after content proof");
+      await previous.assertCurrent(lease);
+      return previous.delivery;
+    }
+    let assertCurrent;
+    const delivery = await this.#readManualDeliveryOwned(repoRoot, input, results, lease,
+      operationProofs ? check => { assertCurrent = check; } : null);
+    if (operationProofs) {
+      if (!assertCurrent) throw Error("Manual delivery content proof is absent");
+      operationProofs.set(key, { identity, delivery, assertCurrent });
+    }
+    return delivery;
   }
 
   async verifyManualDeliveryReferenceSourceOwned({ task, accepted, lease }) {
@@ -7043,7 +7074,7 @@ export class TaskGitWorkspaceService {
     });
   }
 
-  async manualDeliveryPreviewOwned({ task, input, lease, retainedRepositories = [] }) {
+  async manualDeliveryPreviewOwned({ task, input, lease, retainedRepositories = [], operationProofs = null }) {
     await requiredGuardLease(lease).assertOwned();
     const references = task.gitReferences ?? [];
     const workspaces = await this.describe(task.id);
@@ -7068,8 +7099,8 @@ export class TaskGitWorkspaceService {
       const owned = workspaces.filter(w => samePath(w.repositoryRoot, root));
       const delivery = await withInterprocessLocks([
         path.join(this.dataDir, "locks", `release-git-${taskRepositoryKey(root)}`),
-      ], releaseLease => this.#readManualDeliveryOwned(root, input,
-        [...new Set([...results, ...owned.map(w => w.headCommit)])], combinedLease(lease, releaseLease)),
+      ], releaseLease => this.#readManualDeliveryForOperation(root, input,
+        [...new Set([...results, ...owned.map(w => w.headCommit)])], combinedLease(lease, releaseLease), operationProofs),
       { signal: taskOperationExecution()?.signal });
       deliveries.push({ repositoryRoot: root, delivery, ...(!references.length ? { sourceKind: "owned-managed-source-without-test-ref" } : {}) });
     }
@@ -7083,10 +7114,11 @@ export class TaskGitWorkspaceService {
         w.ignoredPaths.map(name => ({ projectRoot: w.projectRoot, path: name }))) };
   }
 
-  async manualDeliveryCleanupPreviewOwned({ task, input, lease, retainedRepositories = [], admitted = null, acceptedSource = null }) {
+  async manualDeliveryCleanupPreviewOwned({ task, input, lease, retainedRepositories = [],
+    admitted = null, acceptedSource = null, operationProofs = null }) {
     await requiredGuardLease(lease).assertOwned();
     let source = admitted?.source ?? acceptedSource
-      ?? await this.manualDeliveryPreviewOwned({ task, input, lease, retainedRepositories });
+      ?? await this.manualDeliveryPreviewOwned({ task, input, lease, retainedRepositories, operationProofs });
     if (source.taskId !== task.id || JSON.stringify(source.gitReferences) !== JSON.stringify(task.gitReferences ?? [])) {
       throw Error("Manual cleanup Task results changed");
     }
@@ -7110,7 +7142,8 @@ export class TaskGitWorkspaceService {
       const results = [...source.gitReferences.filter(r => samePath(r.projectRoot, d.repositoryRoot)).map(r => r.resultCommit),
         ...source.workspaces.filter(w => samePath(w.repositoryRoot, d.repositoryRoot)).map(w => w.headCommit)];
       const current = await withInterprocessLocks([path.join(this.dataDir, "locks", `release-git-${taskRepositoryKey(d.repositoryRoot)}`)],
-        releaseLease => this.#readManualDeliveryOwned(d.repositoryRoot, input, [...new Set(results)], combinedLease(lease, releaseLease)),
+        releaseLease => this.#readManualDeliveryForOperation(d.repositoryRoot, input,
+          [...new Set(results)], combinedLease(lease, releaseLease), operationProofs),
         { signal: taskOperationExecution()?.signal });
       if (admitted && JSON.stringify(current) !== JSON.stringify(d.delivery)) throw Error("Manual cleanup publication or runtime changed");
       deliveries.push({ ...d, delivery: current });

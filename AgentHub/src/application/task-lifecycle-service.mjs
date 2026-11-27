@@ -953,7 +953,10 @@ export class TaskLifecycleService {
         }
         throw new Error(revisionChanged ? "Task workflow cutover revision changed" : "Task workflow cutover status changed");
       }
-      const readManual = () => this.taskGitWorkspaces.manualDeliveryPreviewOwned({ task, input: manualDelivery, lease });
+      const operationProofs = manualDelivery ? new Map() : null;
+      const readManual = () => this.taskGitWorkspaces.manualDeliveryPreviewOwned({
+        task, input: manualDelivery, lease, operationProofs,
+      });
       const manualProof = manualDelivery ? await readManual() : null;
       if (manualProof) operationEvidence = { ...(operationEvidence ?? {}), manualDelivery: manualProof };
       const snapshotsResult = releaseWorkflow && workflowStatus === "testing";
@@ -2257,10 +2260,11 @@ export class TaskLifecycleService {
       // A previously admitted preserve-only original keeps its original meaning.
       // New cleanup is never retrofitted to that old confirmation.
       const legacy = Boolean(prior && !prior.cleanup?.manualCleanup);
+      const operationProofs = confirmCleanup ? new Map() : null;
       const read = () => legacy
-        ? this.taskGitWorkspaces.manualDeliveryPreviewOwned({ task, input: manualDelivery, lease, retainedRepositories })
+        ? this.taskGitWorkspaces.manualDeliveryPreviewOwned({ task, input: manualDelivery, lease, retainedRepositories, operationProofs })
         : this.taskGitWorkspaces.manualDeliveryCleanupPreviewOwned({ task, input: manualDelivery, lease, retainedRepositories,
-          admitted: prior?.cleanup?.manualCleanup ?? null, acceptedSource });
+          admitted: prior?.cleanup?.manualCleanup ?? null, acceptedSource, operationProofs });
       const cleanup = await read(), retained = cleanup.manualCleanup?.source ?? cleanup;
       const preview = confirmation(task, "complete", cleanup);
       preview.warning = legacy

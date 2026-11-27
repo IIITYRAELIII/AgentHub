@@ -81,10 +81,13 @@ consulting an old publication generation. Exact runtime/manifest/source,
 main/origin and Task-result containment are mandatory. Workflow Done precedes
 closing. Ready requires the existing authenticated live desktop control owner,
 matching PID/release and a stable endpoint, not a retained Ready lock alone.
-Manual main-to-dev synchronization verifies the installed source at admission,
-before changing the dev checkout, before ref promotion and at terminal readback.
-Immediately before each effect it also checks the current dev state. Intermediate
-Git steps retain their ordinary ownership and directory checks.
+Manual main-to-dev synchronization verifies the installed bytes in one proof
+per invocation. Before checkout, ref promotion and terminal readback it checks the
+same manifest, installation, runtime endpoint, published authority and verified
+files' identities and change metadata. A change invalidates the invocation's proof.
+Immediately before each effect and terminal settlement it checks current dev state
+and physical ownership. Partial effects keep the original recovery identity.
+See ADR-HUB-569 for the one-proof boundary.
 Preview/confirmation uses existing Task CAS. Complete removes only the listed
 clean managed branches/worktrees after exact published result/current HEAD
 verification, then archives the card. Every present worktree must independently

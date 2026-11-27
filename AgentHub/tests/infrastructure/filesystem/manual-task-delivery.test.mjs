@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile, unlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, stat, utimes, rm, writeFile, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -413,6 +413,20 @@ test("manual delivery verifies actual Git containment and rejects source/manifes
   } }), /changed during/u);
 });
 
+test("manual delivery proof refuses an installed write with unchanged size and restored mtime", async t => {
+  const f = await fixture(t), file = path.join(f.runtimeRoot, "releases/manual/app.mjs");
+  let recheck;
+  let proofs = 0;
+  await f.read({ verifyInstalled: async () => { proofs += 1; return true; }, onVerified: check => { recheck = check; } });
+  await recheck();
+  const before = await stat(file);
+  const original = await readFile(file, "utf8");
+  await writeFile(file, original.replace("base", "edit"));
+  await utimes(file, before.atime, before.mtime);
+  await assert.rejects(recheck(), /file changed after content proof/u);
+  assert.equal(proofs, 1);
+});
+
 async function reviewedSyncFixture(t) {
   const f = await fixture(t), dataDir = path.join(f.root, "reviewed-data");
   const catalog = new WorkspaceCatalogStore({ databaseFile: path.join(dataDir, "journal.sqlite") }); await catalog.load();
@@ -813,6 +827,8 @@ test("manual Done and Complete verify delivered owned source without manufacturi
   const f = await publicFixture(t);
   await writeFile(path.join(f.managed.projectRoot, "AgentHub/app.mjs"), "export const version = 'own-delivered-change';\n");
   const own = await f.commit(f.managed.projectRoot);
+  let proofs = 0;
+  f.ports.verifyInstalled = async () => { proofs += 1; return true; };
   const before = f.board.task(f.task.id);
   await assert.rejects(f.lifecycle.updateWorkflowStatus({ taskId: f.task.id, operationId: "not-delivered",
     status: "done", manualDelivery: f.input, expectedRevision: before.revision, expectedWorkflowStatus: before.workflowStatus }));
@@ -825,16 +841,20 @@ test("manual Done and Complete verify delivered owned source without manufacturi
     status: "testing", manual_delivery: delivery, expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus }), /Done requires exact Task\/status CAS/u);
   const ordinary = await f.catalog.runMutation(() => f.catalog.createStream({ workspaceId: before.workspaceId, name: "worker" }));
   await f.catalog.runMutation(() => f.catalog.bindThread({ provider: "codex", threadId: "worker", streamId: ordinary.id }));
+  proofs = 0;
   const done = await f.hub.call("hub_task_status_update", { context_token: f.hub.contextToken({ provider: "codex", threadId: "worker" }),
     request_id: "actual-delivery-done", task_id: f.task.id,
     status: "done", manual_delivery: delivery, expected_task_revision: before.revision, expected_workflow_status: before.workflowStatus });
   assert.equal(done.workflowStatus, "done"); assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
   assert.equal(f.raw.lifecycleOutcome("actual-delivery-done").result.evidence.outcome, "verified_manual_delivery");
+  assert.equal(proofs, 1);
   const args = { task_id: f.task.id, completion_mode: "manual_delivery", manual_delivery: delivery };
   const p = await f.call("hub_task_complete", { ...args, request_id: "delivered-preview" });
   assert.equal(p.preview.manualDelivery[0].sourceKind, "owned-managed-source-without-test-ref");
+  assert.equal(proofs, 2);
   const closed = await f.call("hub_task_complete", { ...args, request_id: "delivered-close", confirm_cleanup: true, expected_cleanup_token: p.cleanupToken });
   assert.equal(closed.status, "done"); assert.deepEqual(f.board.task(f.task.id).gitReferences, []);
+  assert.equal(proofs, 3);
   assert.deepEqual(await f.taskGit.describe(f.task.id), []);
   await assert.rejects(f.git(["rev-parse", "--verify", f.managed.branch]));
 });
@@ -1162,7 +1182,7 @@ test("manual standalone sync merges disjoint object stores through existing isol
   const resolved = await f.commit(conflict.nativeConflictRoot);
   const result = await service.synchronizeMainIntoDev(args);
   assert.equal(result.integrated, true); assert.equal(result.headCommit, resolved); assert.equal(result.repositoryRoot, f.repo);
-  assert.equal(deliveryReads, 5);
+  assert.equal(deliveryReads, 2);
   await runTaskGitCommand(["merge-base", "--is-ancestor", devCommit, resolved], { cwd: dev.projectRoot });
   await runTaskGitCommand(["merge-base", "--is-ancestor", published.revision, resolved], { cwd: dev.projectRoot });
   assert.equal(await readFile(path.join(dev.projectRoot, "later.txt"), "utf8"), "retain Task work\n");
@@ -1171,7 +1191,7 @@ test("manual standalone sync merges disjoint object stores through existing isol
   assert.equal(await f.git(["rev-parse", "origin/main"]), f.base);
   assert.equal(sha(await readFile(path.join(f.repo, ".git/index"))), indexBefore);
   assert.equal((await service.synchronizeMainIntoDev(args)).headCommit, resolved);
-  assert.equal(deliveryReads, 7);
+  assert.equal(deliveryReads, 3);
 });
 
 test("batch Complete archives independently, preserves work and returns each original receipt", async t => {
