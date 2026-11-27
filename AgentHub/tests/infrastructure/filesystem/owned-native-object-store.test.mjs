@@ -220,7 +220,7 @@ test("a release consumer copies the exact owned prefix and packs only newly sele
   await gitAt(f.source, ["add", "."]);
   await gitAt(f.source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "later"]);
   const later = await gitAt(f.source, ["rev-parse", "HEAD"]);
-  await gitAt(donor, ["fetch", f.source, later]);
+  await gitAt(donor, ["-c", "fetch.unpackLimit=1", "fetch", f.source, later]);
   const incremental = path.join(f.root, "incremental");
   const selected = [...inputs, later];
   await f.objects.provision({ sourceRoot: donor, repository: incremental, inputs: selected,

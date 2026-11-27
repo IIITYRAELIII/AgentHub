@@ -1208,12 +1208,15 @@ measures these producer effects, not reclaimed production GB or provider latency
 Existing repository/pool and exact dependency-key locks serialize only their own
 resources; an unknown process tree retains its original lifetime fence.
 
-For a fresh durable Test or Await consumer, the existing owner sends the exact
-imported object closure to one native `git pack-objects` call. The
-`native:object-consumer-pack` span measures that command. This path creates
-an independent pack/index pair without JS-side pack inventories, per-object
-hardlinks or lease assertions per link. Durable consumer and Git connectivity
-boundaries remain in their existing owners. See ADR-HUB-568.
+For a fresh durable Test or Await consumer without a reusable exact pack, the
+existing owner sends the imported object closure to one native
+`git pack-objects` call. The `native:object-consumer-pack` span measures it.
+An Await consumer can copy an existing owned pack and index from a completed
+intake or an exact subset of the selected Git results. A newly required
+closure delta is packed separately. The `native:object-consumer-copy` span
+covers this path. Consumers keep independent files and connectivity checks.
+The import queries selected objects, and validates its existing receipt and
+publishes refs through its original owner. See ADR-HUB-568 and ADR-HUB-574.
 
 ## Cold history selection dependency
 

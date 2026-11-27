@@ -1545,7 +1545,8 @@ export class TaskIntegrationGitService {
         const trackingChanged = available.at(-1) !== initial.mainCommit + " commit";
         if (!trackingChanged && !missing.length) return;
         const refspecs = [...(trackingChanged ? ["+refs/heads/main:" + trackingMain] : []), ...missing];
-        await git(["fetch", "--prune", workspace, "--stdin"], { input: refspecs.join("\n") + "\n" });
+        await git(["-c", "fetch.unpackLimit=1", "fetch", "--prune", workspace, "--stdin"],
+          { input: refspecs.join("\n") + "\n" });
       });
       const derivedRequest = { projectRoot: initial.root, provenance: baseProvenance, planRevision: revision, tasks };
       const derived = this.#derivedLocalSourceProof(derivedRequest);
@@ -1778,7 +1779,7 @@ export class TaskIntegrationGitService {
         if (await git(["rev-parse", `${branchRef}^{commit}`]) !== composition.head) throw new Error("Native candidate ref changed");
         await requireCheckout(composition.head);
       } else {
-        if (!preparedPromotion) await git(["fetch", "--no-tags", composition.root, composition.head]);
+        if (!preparedPromotion) await git(["-c", "fetch.unpackLimit=1", "fetch", "--no-tags", composition.root, composition.head]);
         if (!journal || ["completed", "rolled_back"].includes(journal.phase)) {
           const before = {
             head: await git(["rev-parse", "HEAD^{commit}"]),

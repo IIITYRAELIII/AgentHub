@@ -558,9 +558,9 @@ export class OwnedNativeObjectStore {
         if (process.platform === "win32") await this.#git(repository, ["config", "core.longpaths", "true"]);
         await this.#git(repository, ["config", "gc.auto", "0"]);
         const reusable = await this.#reusableConsumerPack({ sourceRoot, reusableSource, inputs, objectCount: objects.length, shallow })
-          ?? (reuseCompleteImport && !shallow && await this.#availableConsumerPack({
+          ?? (reuseCompleteImport && !shallow ? await this.#availableConsumerPack({
             directory: path.join(this.repository, "objects", "pack"), pack: imported.metadata.completePack, delta: [],
-          }, { retiredIntake: true }));
+          }, { retiredIntake: true }) : null);
         const consumerPack = await this.#packConsumer(repository, objects, reusable);
         await measureTaskOperation("native:object-connectivity", async () => {
           if (!await hasExactGitCommitObjects((args, options) => this.#git(repository, args, options), inputs)) {
