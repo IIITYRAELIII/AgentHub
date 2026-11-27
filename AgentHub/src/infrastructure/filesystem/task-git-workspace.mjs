@@ -3093,6 +3093,7 @@ export class TaskGitWorkspaceService {
           }
         },
         afterDelivery: async () => {
+          if (!manualDelivery) await fence();
           const block = await readJson(blockFile);
           if (block?.publishedDevSync !== identityHash) throw new Error("Published sync recovery owner changed");
           await unlink(blockFile);

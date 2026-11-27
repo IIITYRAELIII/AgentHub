@@ -18,7 +18,7 @@ import process from "node:process";
 import { assertContourExternalEffects, assertContourGitAvailable } from "../../ports/contour-external-effects.mjs";
 
 import { taskRepositoryKey, taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
-import { assertReleaseBaseProvenance, NATIVE_MAIN_PROVENANCE, LOCAL_SOURCE_BASELINE_PROVENANCE, normalizedReleaseBaseProvenance } from "../../domain/release-base-provenance.mjs";
+import { assertReleaseBaseProvenance, localSourceSelectionHash, NATIVE_MAIN_PROVENANCE, LOCAL_SOURCE_BASELINE_PROVENANCE, normalizedReleaseBaseProvenance } from "../../domain/release-base-provenance.mjs";
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { selectedCompositionFields } from "../../domain/task-selected-composition.mjs";
 import { canonicalPath } from "./config.mjs";
@@ -474,6 +474,7 @@ export class TaskIntegrationGitService {
   #validationBundle = null;
   #validationReferenceRoot = null;
   #isolationContext = null;
+  #derivedLocalSourceProofs = new WeakMap();
   #readPreparationAuthority;
   #readPreparationOriginal;
   #publicationDataDir;
@@ -783,6 +784,7 @@ export class TaskIntegrationGitService {
       });
       isolated.#publicationDataDir = this.#publicationDataDir;
       isolated.#repositoryOwner = this.#repositoryOwner;
+      isolated.#derivedLocalSourceProofs = this.#derivedLocalSourceProofs;
       const candidate = await isolated.prepareCandidate({
         planRevision, projectRoot, workspaceId, frozenTasks, approvedBaseCommit, baseProvenance,
         validateBeforeCommit,
@@ -827,8 +829,10 @@ export class TaskIntegrationGitService {
       }
       const verify = async verificationRepository => {
       const git = (args, options = {}) => runGit(args, { ...options, cwd: verificationRepository });
+      const derived = this.#derivedLocalSourceProof({ projectRoot, provenance: baseProvenance, planRevision, tasks });
+      if (derived) await this.assertDerivedInstalledSourceCurrent({ projectRoot, provenance: baseProvenance, planRevision, tasks });
       const historyAuthority = await this.#nativeHistoryAuthority({ projectRoot, provenance: manifest.baseProvenance,
-        planRevision, tasks });
+        planRevision, tasks, verifiedLocalSource: derived?.verified });
       await assertNativePreparedComposition({ git, baseCommit: source.baseCommit, tasks,
         historyAuthority,
         merges: manifest.merges, head: source.preReleaseHead, tree: source.tree,
@@ -922,7 +926,7 @@ export class TaskIntegrationGitService {
   }
 
   async deriveInstalledLocalSourceBaselineForSelection({ projectRoot, planRevision, tasks,
-    publishedRevision, adoptions = [] } = {}) {
+    publishedRevision, adoptions = [], retainProof = false } = {}) {
     this.#assertAvailable("deriveInstalledLocalSourceBaselineForSelection");
     const initial = await primarySnapshot(projectRoot);
     this.#assertAvailable("assertPrimaryInvariant");
@@ -938,13 +942,40 @@ export class TaskIntegrationGitService {
     if (JSON.stringify(pins) !== JSON.stringify(adoptions)) {
       throw new Error("Ordinary Await selected adoption evidence changed");
     }
+    let proof;
     const provenance = await installedNativeHistoryBaseline({ git,
+      ...(retainProof ? { onVerified: (verified, assertCurrent) => { proof = { verified, assertCurrent }; } } : {}),
       sourceGit: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
       repositoryRoot: initial.root, primaryMainCommit: initial.mainCommit, publishedRevision,
       runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }), planRevision, tasks, adoptions: actual,
       readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }) });
     if (!provenance && pins.length) throw new Error("Ordinary adopted Await has no verified installed source baseline");
-    return provenance ? { ...provenance, compositionBaseCommit: provenance.ownGitPublication?.commit ?? publishedRevision } : null;
+    if (!provenance) return null;
+    const base = { ...provenance, compositionBaseCommit: provenance.ownGitPublication?.commit ?? publishedRevision };
+    if (retainProof) {
+      if (!proof?.assertCurrent) throw Error("Ordinary Await installed source proof is missing");
+      const verified = { ...proof.verified, provenance: Object.freeze(base) };
+      this.#derivedLocalSourceProofs.set(base, { verified, assertCurrent: proof.assertCurrent,
+        repositoryRoot: canonicalPath(initial.root) });
+    }
+    return base;
+  }
+
+  #derivedLocalSourceProof({ projectRoot, provenance, planRevision, tasks }) {
+    const proof = this.#derivedLocalSourceProofs.get(provenance);
+    if (!proof) return null;
+    if (proof.repositoryRoot !== canonicalPath(projectRoot) || provenance.planRevision !== planRevision
+        || provenance.selectionHash !== localSourceSelectionHash(tasks)) {
+      throw Error("Ordinary Await installed source proof scope changed");
+    }
+    return proof;
+  }
+
+  async assertDerivedInstalledSourceCurrent(request) {
+    const proof = this.#derivedLocalSourceProof(request);
+    if (!proof) throw Error("Ordinary Await installed source proof is missing");
+    await measureTaskOperation("native:installed-source-current", proof.assertCurrent);
+    return proof.verified;
   }
 
   #historicalChangelogOriginal(provenance) {
@@ -1503,8 +1534,11 @@ export class TaskIntegrationGitService {
           await git(["fetch", workspace, commit]);
         }
       }
+      const derivedRequest = { projectRoot: initial.root, provenance: baseProvenance, planRevision: revision, tasks };
+      const derived = this.#derivedLocalSourceProof(derivedRequest);
       let assertLocalSourceCurrent;
-      const verifiedLocalSource = localSource ? await measureTaskOperation("native:installed-source-proof",
+      if (derived) assertLocalSourceCurrent = () => this.assertDerivedInstalledSourceCurrent(derivedRequest);
+      const verifiedLocalSource = derived?.verified ?? (localSource ? await measureTaskOperation("native:installed-source-proof",
         async () => assertInstalledLocalSourceBaseline({ provenance: localSource, git,
           onVerified: recheck => { assertLocalSourceCurrent = recheck; },
           readOwnGitPublication: input => readOwnGitPublicationOrigin({ dataDir: this.#publicationDataDir, ...input }),
@@ -1514,7 +1548,8 @@ export class TaskIntegrationGitService {
           primaryMainCommit: (await primarySnapshot(initial.root)).mainCommit,
           publishedRevision: await durablePublishedRevision(this.#environment, initial.root),
           planRevision: revision, tasks, runtimeRoot: defaultRuntimeRoot({ environment: this.#environment }),
-        })) : null;
+        })) : null);
+      if (derived) await assertLocalSourceCurrent();
       const historyRequest = { projectRoot: initial.root, provenance, planRevision: revision, tasks };
       const historyAuthority = await this.#nativeHistoryAuthority({ ...historyRequest, verifiedLocalSource });
       if (historyAuthority?.publishedMetadata) historyRequest.expectedPublishedMetadata = historyAuthority.publishedMetadata;

@@ -1616,3 +1616,35 @@ test("large Task archive preview reaches the real Desktop reader and confirmatio
     await browser.close();
   }
 });
+
+test("published sync has to recheck publication at settlement", async t => {
+  const f = await fixture(t);
+  const dataDir = path.join(f.root, "data");
+  let publication, invalid = false;
+  const service = new TaskGitWorkspaceService({ dataDir, runtimeRoot: f.runtimeRoot, recordTiming: () => {},
+    readPublication: async () => publication });
+  const dev = await service.prepareDev(f.repo);
+  const oldDev = await f.git(["rev-parse", "dev"]);
+  await writeFile(path.join(f.repo, "AgentHub/app.mjs"), "export const version = 'published';\n");
+  const main = await f.commit();
+  await f.git(["update-ref", "refs/remotes/origin/main", main]);
+  publication = { generation: 1, repositories: [{ root: f.repo, revision: main }] };
+  const run = service.runCommand;
+  let reattached = false;
+  service.runCommand = async (args, options) => {
+    const result = await run(args, options);
+    if (options.cwd === dev.projectRoot && args[0] === "symbolic-ref" && args[2] === "refs/heads/dev") reattached = true;
+    if (reattached && options.cwd === dev.projectRoot && args[0] === "rev-parse" && args.at(-1) === "REVERT_HEAD") invalid = true;
+    return result;
+  };
+  const options = { projectRoot: f.repo, publishedRevision: main, publishedSync: {
+      operationId: "published-terminal", workspaceId: "workspace", expectedDevCommit: oldDev,
+      generation: 1, candidateIdentity: "a".repeat(64), tasks: [{ taskId: "selected", resultCommit: main }] },
+    validatePublishedSync: async () => { if (invalid) throw Error("controlled release finalization authority changed"); } };
+  const result = await service.synchronizeMainIntoDev(options).then(r => r.status, e => e.message);
+  const block = await readFile(path.join(dataDir, "integration-blocks", `${taskRepositoryKey(f.repo)}.json`), "utf8")
+    .then(JSON.parse, error => { if (error.code === "ENOENT") return null; throw error; });
+  assert.equal(invalid, true);
+  assert.equal(result, "controlled release finalization authority changed");
+  assert.ok(block?.publishedDevSync);
+});

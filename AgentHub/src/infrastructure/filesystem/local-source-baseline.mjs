@@ -12,6 +12,7 @@ import { publicationStateRepositories } from "../persistence/publication-state.m
 import { canonicalPath } from "./config.mjs";
 import { taskGitIdentityHash } from "../../domain/task-git-reference.mjs";
 import { createSelectedGitBundle } from "./selected-git-bundle.mjs";
+import { measureTaskOperation } from "../process/task-operation-timing.mjs";
 import { observeRuntimeContent } from "./runtime-installation-custody.mjs";
 import { verifyRuntimeManifest, releasePath } from "./runtime-manifest-verifier.mjs";
 
@@ -448,7 +449,7 @@ export async function assertInstalledLocalSourceBaseline({
 // the complete ordinary baseline verifier above accepts it.
 export async function installedNativeHistoryBaseline({ git, sourceGit, repositoryRoot,
   primaryMainCommit, publishedRevision, tasks, runtimeRoot, planRevision, adoptions = [], readOwnGitPublication = null,
-  inheritedMainMetadata = [] }) {
+  inheritedMainMetadata = [], onVerified = null }) {
   const currentFile = path.join(runtimeRoot, "current.json");
   if (!await lstat(currentFile).catch(error => { if (error.code === "ENOENT") return null; throw error; })) return null;
   const currentBytes = await regular(currentFile);
@@ -501,12 +502,16 @@ export async function installedNativeHistoryBaseline({ git, sourceGit, repositor
         ({ taskId, resultCommit, recordRef, recordHash, adoptedCommit, acceptedLocalMainCommit })),
     } : ownGitPublication ? { approvedOriginMainCommit: ownGitPublication.commit, adoptions: [], ownGitPublication }
       : agreedOrigin ? { approvedOriginMainCommit: primaryMainCommit, adoptions: [] } : {}) };
-  const verified = await assertInstalledLocalSourceBaseline({ provenance: p, git, repositoryRoot, primaryMainCommit,
-    publishedRevision, planRevision, tasks, runtimeRoot, readOwnGitPublication, inheritedMainMetadata });
+  let assertCurrent;
+  const verified = await measureTaskOperation("native:installed-source-proof", () =>
+    assertInstalledLocalSourceBaseline({ provenance: p, git, repositoryRoot, primaryMainCommit,
+      publishedRevision, planRevision, tasks, runtimeRoot, readOwnGitPublication, inheritedMainMetadata,
+      ...(onVerified ? { onVerified: recheck => { assertCurrent = recheck; } } : {}) }));
   if (!currentBytes.equals(await regular(currentFile))) reject("installed release changed");
   if (!bytes.equals(await regular(path.join(runtimeRoot, "releases", current.current, "runtime-manifest.json")))) reject("installed manifest changed");
   if (await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{commit}"]) !== sourceBaseCommit
       || await sourceGit(manifest.sourceRoot, ["rev-parse", "HEAD^{tree}"]) !== sourceBaseTree
       || await sourceGit(manifest.sourceRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])) reject("retained source checkout changed");
+  onVerified?.(verified, assertCurrent);
   return verified.provenance;
 }
