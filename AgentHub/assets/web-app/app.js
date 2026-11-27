@@ -14750,7 +14750,13 @@ function renderUsageHistoryContent() {
   if (status === "ready") {
     buildUsageChart(payload);
     renderUsageBurnSummary(payload, burnAnalysis);
-    const scopeNote = "Учтён весь локальный расход; расход других устройств — только в интервалы активности того же аккаунта на этом компьютере.";
+    const undated = payload.undatedUsage;
+    const undatedNote = undated?.turnCount > 0
+      ? ` Время завершения неизвестно у ${undated.turnCount} ход(ов). Расход вне графика: ${
+        formatUsageValue(usageUnit === "qu" ? undated.quotaUnits : undated.credits, usageUnit)
+      }${undated.unpricedCount ? `, без тарифа: ${undated.unpricedCount}` : ""}.` : "";
+    const scopeNote = "Учтён весь локальный расход; расход других устройств — только в интервалы активности того же аккаунта на этом компьютере."
+      + undatedNote;
     if (intensity) {
       usageNote.textContent = burnAnalysis?.forecastAvailable
         ? `${scopeNote} EMA считает календарный темп расхода cr/мин; прогноз суток не использует неизвестные лимиты Codex или Claude.`

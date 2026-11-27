@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
+import { terminalCompletionTime } from "../../domain/turn-completion-time.mjs";
 import { consistentInterstreamRecordIdentity } from "../../domain/interstream-message.mjs";
+import { withInterprocessLocks } from "../process/interprocess-lock.mjs";
 import { AsyncSqliteMutationQueue } from "./async-sqlite-mutation-queue.mjs";
 import { openRuntimeDatabase } from "./runtime-state-store.mjs";
 
@@ -8,6 +11,7 @@ const OUTBOX_STATES = new Set(["pending", "projecting", "delivered", "superseded
 const TELEGRAM_STATES = new Set(["not-requested", "intent", "uncertain", "acked", "failed", "superseded", "superseded-uncertain"]);
 const COMMAND_STATES = new Set(["not-required", "intent", "acked", "superseded"]);
 const NON_TERMINAL_STATUSES = new Set(["active", "inprogress", "running", "finishing", "progress"]);
+const COMPLETION_WRITER_REQUIRES_LOCK = Symbol("completion-writer-requires-lock");
 const TERMINAL_PAYLOAD_METADATA_MIGRATION_LIMIT = 200;
 const TERMINAL_PAYLOAD_METADATA_SAMPLE_CHARS = (2 * 1024 * 1024) + 1;
 
@@ -306,6 +310,24 @@ function selectPrecedingProjectionCompletedAt(database, key, revision, startedAt
     ? completedAt : null;
 }
 
+function selectCompletionTime(database, terminal, startedAt = terminal?.payload?.completion?.startedAt) {
+  if (!terminal) return null;
+  const completedAt = terminalCompletionTime(terminal.payload?.completion?.completedAt, startedAt);
+  if (completedAt) return { completedAt, revision: terminal.terminalRevision };
+  const earlier = database.prepare(`
+    SELECT terminal_revision AS revision, json_extract(payload_json, '$.completion.completedAt') AS completedAt
+    FROM provider_turn_terminal_outbox
+    WHERE provider = ? AND thread_id = ? AND turn_id = ? AND terminal_revision < ?
+      AND json_type(payload_json, '$.completion.completedAt') = 'text'
+    ORDER BY terminal_revision DESC
+  `).iterate(terminal.provider, terminal.threadId, terminal.turnId, terminal.terminalRevision);
+  for (const row of earlier) {
+    const time = terminalCompletionTime(row.completedAt, startedAt);
+    if (time) return { completedAt: time, revision: Number(row.revision) };
+  }
+  return null;
+}
+
 export class ProviderTurnTerminalStore {
   #dataDir;
   #mutations = new AsyncSqliteMutationQueue();
@@ -339,6 +361,25 @@ export class ProviderTurnTerminalStore {
     }
   }
 
+  #withCompletionLock(key, operation) {
+    const digest = contentHash([key.provider, key.threadId, key.turnId]);
+    const lockPath = path.join(path.resolve(this.#dataDir), `turn-completion-${digest}`);
+    return withInterprocessLocks([lockPath], operation);
+  }
+
+  async withCurrentCompletionRevision(value, operation) {
+    const key = identity(value);
+    if (key.provider !== "codex") return null;
+    return this.#withCompletionLock(key, async (lease) => {
+      if (!this.completionTime(value)) return null;
+      await lease.assertOwned();
+      const result = await operation();
+      await lease.assertOwned();
+      if (!this.completionTime(value)) throw new Error("Codex terminal revision changed during journal repair");
+      return result;
+    });
+  }
+
   commit(value) {
     const key = identity(value);
     const expectedTerminalRevision = value.expectedTerminalRevision == null
@@ -360,12 +401,31 @@ export class ProviderTurnTerminalStore {
     const requestedTelegramIntent = value.channels?.telegram?.requested === true
       ? jsonValue(value.channels.telegram)
       : null;
-    return this.#enqueue(() => {
+    const commit = (completionLockHeld = false) => this.#enqueue(() => {
       const database = this.#database();
       try {
         database.exec("BEGIN IMMEDIATE");
         const current = selectTerminal(database, key);
+        if (key.provider === "codex" && current && !completionLockHeld
+          && !terminalCompletionTime(current.payload?.completion?.completedAt, current.payload?.completion?.startedAt)) {
+          // Only a revision with an absent or invalid time can be under
+          // historical repair. Release the SQLite writer before taking its lock.
+          database.exec("ROLLBACK");
+          return COMPLETION_WRITER_REQUIRES_LOCK;
+        }
         const currentOutbox = current ? selectOutbox(database, current) : null;
+        const completion = basePayload.completion;
+        if (key.provider === "codex" && completion && !Array.isArray(completion)
+          && typeof completion === "object") {
+          const incomingTime = terminalCompletionTime(completion.completedAt, completion.startedAt);
+          const previous = selectCompletionTime(database, current);
+          const retainedTime = terminalCompletionTime(previous?.completedAt, completion.startedAt);
+          // A repeat after restart can obtain a fresh observation from the
+          // in-memory registry. Only a new turn or an exact correction owns it.
+          const exactTime = terminalStatusCorrection || !current ? incomingTime : retainedTime;
+          completion.completedAt = exactTime || (completion.completedAt === null ? null : "");
+          if (lastMessage) lastMessage.updatedAt = completion.completedAt;
+        }
         const storedTelegramIntent = ["intent", "uncertain"].includes(
           currentOutbox?.channels?.telegram?.state,
         ) ? currentOutbox.channels.telegram.intent : null;
@@ -531,6 +591,8 @@ export class ProviderTurnTerminalStore {
         database.close();
       }
     }, `${key.provider}\0${key.threadId}\0${key.turnId}`);
+    return commit().then((result) => result === COMPLETION_WRITER_REQUIRES_LOCK
+      ? this.#withCompletionLock(key, () => commit(true)) : result);
   }
 
   get(value) {
@@ -539,6 +601,31 @@ export class ProviderTurnTerminalStore {
       const database = this.#database();
       try { return selectTerminal(database, key); } finally { database.close(); }
     });
+  }
+
+  completionTime(value) {
+    const key = identity(value);
+    const revision = Number(value?.terminalRevision);
+    if (key.provider !== "codex" || !Number.isSafeInteger(revision) || revision < 1) return null;
+    const database = openRuntimeDatabase(this.#dataDir, { readOnly: true });
+    try {
+      // The terminal and previous revision are read under the same SQLite snapshot.
+      database.exec("BEGIN");
+      const terminal = selectTerminal(database, key);
+      if (terminal?.terminalRevision !== revision) return null;
+      const storedTime = selectCompletionTime(database, terminal);
+      return {
+        ...key,
+        terminalRevision: revision,
+        startedAt: terminal.payload?.completion?.startedAt ?? "",
+        runId: terminal.payload?.completion?.runId ?? "",
+        status: terminal.status,
+        completedAt: storedTime?.completedAt ?? "",
+        sourceRevision: storedTime?.revision ?? null,
+      };
+    } finally {
+      database.close();
+    }
   }
 
   precedingProjectionCompletedAt(value) {
@@ -750,7 +837,21 @@ export class ProviderTurnTerminalStore {
     return this.#enqueue(() => {
       const database = this.#database();
       try {
-        if (state === "delivered") database.exec("BEGIN IMMEDIATE");
+        const resolvedCompletedAt = state === "delivered" && key.provider === "codex"
+          ? terminalCompletionTime(value.resolvedCompletedAt) : "";
+        let terminal = null;
+        let indexCompletedAt = "";
+        if (resolvedCompletedAt) {
+          database.exec("BEGIN IMMEDIATE");
+          terminal = selectTerminal(database, key);
+          const completion = terminal?.payload?.completion;
+          indexCompletedAt = terminalCompletionTime(completion?.completedAt, completion?.startedAt)
+            || terminalCompletionTime(resolvedCompletedAt, completion?.startedAt);
+          if (terminal?.terminalRevision !== key.terminalRevision || !indexCompletedAt) {
+            database.exec("ROLLBACK");
+            return null;
+          }
+        }
         const now = new Date().toISOString();
         const result = database.prepare(`
           UPDATE provider_turn_terminal_outbox
@@ -764,9 +865,13 @@ export class ProviderTurnTerminalStore {
           key.provider, key.threadId, key.turnId, key.terminalRevision,
         );
         const outbox = Number(result.changes) === 1 ? selectOutbox(database, key) : null;
-        if (state === "delivered") {
-          if (outbox?.payload?.completion?.completedAt == null && outbox?.payload?.lastMessage?.text) {
-
+        if (resolvedCompletedAt) {
+          if (outbox && terminal.lastMessage) {
+            const lastMessage = { ...terminal.lastMessage, updatedAt: indexCompletedAt };
+            database.prepare(`
+              UPDATE provider_turn_terminals SET last_message_json = ?
+              WHERE provider = ? AND thread_id = ? AND turn_id = ? AND terminal_revision = ?
+            `).run(JSON.stringify(lastMessage), key.provider, key.threadId, key.turnId, key.terminalRevision);
           }
           database.exec("COMMIT");
         }

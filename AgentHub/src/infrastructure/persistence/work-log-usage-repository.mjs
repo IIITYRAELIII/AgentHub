@@ -209,8 +209,8 @@ export class WorkLogUsageRepository {
     return this.#database.turnProjectionStatus(identity);
   }
 
-  upsertRecords(records) {
-    return this.applyExternalMutation(() => this.#write(() => this.#database.upsertRecords(records)));
+  upsertRecords(records, options) {
+    return this.applyExternalMutation(() => this.#write(() => this.#database.upsertRecords(records, options)));
   }
 
   async deleteRecord(identity) {

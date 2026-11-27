@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -16,10 +18,18 @@ import { ProviderTurnTerminalStore } from "../../src/infrastructure/persistence/
 import { JournalDatabase } from "../../src/infrastructure/persistence/journal-database.mjs";
 import { WorkLogUsageRepository } from "../../src/infrastructure/persistence/work-log-usage-repository.mjs";
 import { WorkLogUsageSyncWorkerStore } from "../../src/runtime/work-log-usage-sync-worker-client.mjs";
+import { ProviderTurnTelemetryStore } from "../../src/infrastructure/persistence/provider-turn-telemetry-store.mjs";
+import { TurnEndNotificationRegistry } from "../../src/application/turn-end-notifications.mjs";
+import { CodexRunFinalizer } from "../../src/providers/codex/codex-run-finalizer.mjs";
+import { recoverCompletionFromDatabase } from "../../turn-completion-recovery.mjs";
+import { durationStartForRecord } from "../../src/domain/turn-duration-recovery.mjs";
 
-async function fixture(t, count = 3) {
+async function fixture(t, count = 3, cleanup = null) {
   const root = await mkdtemp(path.join(os.tmpdir(), "agent-hub-delivery-batch-"));
-  t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  t.after(async () => {
+    await cleanup?.();
+    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
   const terminal = new TerminalTurnCommitService({ store: new ProviderTurnTerminalStore({ dataDir: root }) });
   const completions = Array.from({ length: count }, (_, i) => ({
     provider: "codex", projectRoot: root, threadId: "thread", turnId: `turn-${i}`,
@@ -56,6 +66,396 @@ async function fixture(t, count = 3) {
   return { root, terminal, completions, service, events, rows };
 }
 
+async function completionRecoveryFixture(t) {
+  let usage, worker, journal, telemetry;
+  const state = await fixture(t, 0, async () => {
+    if (usage) await usage.close();
+    else await worker?.close();
+    await telemetry?.close();
+    journal?.close();
+  });
+  const databaseFile = path.join(state.root, "journal.sqlite");
+  journal = new JournalDatabase(databaseFile);
+  telemetry = new ProviderTurnTelemetryStore({ databaseFile });
+  const runtimeFile = path.join(state.root, "runtime.sqlite");
+  const openOwner = () => {
+    worker = new WorkLogUsageSyncWorkerStore({ databaseFile, deviceId: "device-local" });
+    usage = createWorkLogUsageStore({
+      ledgerFile: path.join(state.root, "retired.json"), databaseFile,
+      defaultProjectRoot: state.root, usageSyncStore: worker,
+      usageSyncDeviceId: "device-local", usageSyncRuntimeHomeIds: { codex: "home-local" },
+      repositoryFactory: (options) => new WorkLogUsageRepository(options),
+      workspaceCatalogStore: {
+        resolveThread: (reference) => ({
+          workspaceId: "workspace", workspaceName: "Workspace",
+          streamId: reference.threadId, streamName: reference.threadId,
+        }),
+        assignUnknownThread: () => null,
+      },
+    });
+    const commits = new TerminalTurnCommitService({
+      store: new ProviderTurnTerminalStore({ dataDir: state.root }),
+      readTerminalTelemetry: (identity) => telemetry.terminalEvidence(identity),
+    });
+    const runJournal = new RunJournalService({
+      usageStore: usage, defaultProjectRoot: state.root, projectionProjectRoots: [state.root],
+      findProject: (root) => root === state.root ? { path: root } : null,
+    });
+    Object.assign(state.service, {
+      terminalCommits: commits,
+      projectTurn: (...args) => runJournal.projectTurn(...args),
+      ensureTurnUsageFact: (...args) => runJournal.ensureTurnUsageFact(...args),
+      readTurnProjection: (...args) => runJournal.turnProjectionStatus(...args),
+      flushTurnProjections: (...args) => runJournal.flushTurnProjections(...args),
+      recoverTurnCompletion: (...args) => runJournal.recoverTurnCompletion(...args),
+      finalizeRunDelivery: async () => assert.fail("repair must not send Telegram"),
+    });
+    return { commits, usage, worker, runJournal };
+  };
+  const readIndex = () => {
+    const db = new DatabaseSync(databaseFile, { readOnly: true });
+    try {
+      return db.prepare(`SELECT turn_id AS turnId, date, workspace_id AS workspaceId,
+        stream_id AS streamId, completed_at_ms AS completedAtMs FROM journal_turn_index ORDER BY turn_id`).all();
+    } finally { db.close(); }
+  };
+  const dropLegacyTime = ({ provider, threadId, turnId, terminalRevision }) => {
+    const db = new DatabaseSync(runtimeFile);
+    try {
+      for (const table of ["provider_turn_terminals", "provider_turn_terminal_outbox"]) {
+        assert.equal(db.prepare(`UPDATE ${table}
+          SET payload_json = json_remove(payload_json, '$.completion.completedAt')
+          WHERE provider = ? AND thread_id = ? AND turn_id = ? AND terminal_revision = ?`)
+          .run(provider, threadId, turnId, terminalRevision).changes, 1);
+      }
+    } finally { db.close(); }
+  };
+  return { ...state, journal, telemetry, openOwner, readIndex, dropLegacyTime };
+}
+
+const historicalCompletion = {
+  provider: "codex", threadId: "evidence-thread", turnId: "older",
+  status: "completed", finalAnswer: "Original final", model: "gpt-6-astra",
+  usage: { inputTokens: 1000, outputTokens: 100 }, usageReported: true, resolveAccount: false,
+  startedAt: "2026-11-19T09:25:06.232Z", completedAt: "2026-11-19T10:25:10.714Z",
+};
+
+test("repeated real Codex finalization retains the exact durable time after delivery and registry restart", async (t) => {
+  const state = await completionRecoveryFixture(t);
+  const owner = state.openOwner();
+  const { service } = state;
+  let notifications = new TurnEndNotificationRegistry();
+  let clock = new Date(historicalCompletion.completedAt);
+  const launch = () => new CodexRunFinalizer({
+    turnStarts: new Map(), notifications, resolveTerminalAttachments: async () => [],
+    discardContextCompaction: async () => false, refreshTaskDiff: async () => {},
+    runTitle: () => "Fixture", currentChatId: () => null, defaultNotificationChatId: () => null,
+    commitTerminal: (...args) => service.commit(...args),
+    deliverTerminal: async (item) => {
+      await service.deliverOutbox(item);
+      notifications.markDelivered(item);
+    },
+    markRunCompleted: async () => {}, completeRun: async () => {},
+  });
+  const run = {
+    ...historicalCompletion, id: "run-1", projectRoot: state.root, telegramDeliveryRequested: false,
+  };
+  const finish = (finalizer, answer) => finalizer.finalize(run, {
+    answer, tracker: { usage: historicalCompletion.usage, reported: true, model: historicalCompletion.model },
+  });
+  t.mock.timers.enable({ apis: ["Date"], now: clock });
+  try {
+    const finalizer = launch();
+    await finish(finalizer, "First final");
+    assert.equal(notifications.get(run), null);
+    clock = new Date("2026-11-26T10:45:00Z");
+    t.mock.timers.setTime(clock.getTime());
+    await finish(finalizer, "Enriched final");
+    assert.equal((await owner.commits.store.get(run)).payload.completion.completedAt, historicalCompletion.completedAt);
+    // The in-memory registry after restart can return a new observation for this old identity.
+    notifications = new TurnEndNotificationRegistry();
+    const restarted = launch();
+    await finish(restarted, "New final metadata");
+    await finish(restarted, "New final metadata");
+    const latest = await owner.commits.store.get(run);
+    assert.equal(latest.terminalRevision, 3);
+    assert.equal(latest.lastMessage.updatedAt, historicalCompletion.completedAt);
+    assert.equal(latest.payload.completion.completedAt, historicalCompletion.completedAt);
+    assert.deepEqual(state.readIndex().map((row) => row.completedAtMs), [Date.parse(historicalCompletion.completedAt)]);
+    assert.equal((await owner.worker.events()).length, 1);
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("legacy missing time is repaired from the exact earlier revision across pending recovery and acknowledged rebuild", async (t) => {
+  const state = await completionRecoveryFixture(t);
+  let owner = state.openOwner();
+  const target = { ...historicalCompletion, projectRoot: state.root };
+  const pending = { ...target, turnId: "pending", finalAnswer: "Pending final" };
+  const independent = { ...target, threadId: "parallel-thread", turnId: "parallel",
+    finalAnswer: "Independent long turn", completedAt: "2026-11-19T10:55:00.000Z" };
+  const nowDay = { ...target, turnId: "control", finalAnswer: "Correct current day",
+    startedAt: "2026-11-26T10:01:00.000Z", completedAt: "2026-11-26T10:02:00.000Z" };
+  const erroneousAt = "2026-11-26T10:41:37.878Z";
+  const oldRuntimeEvidence = async (completion) => {
+    const first = await owner.commits.commit(completion);
+    await owner.commits.acknowledge(await owner.commits.claim(first.outbox));
+    const later = await owner.commits.commit({ ...completion, finalAnswer: completion.finalAnswer + " enriched" });
+    state.dropLegacyTime(later.outbox);
+    await state.telemetry.upsert({ ...completion, finalPhase: "completed",
+      completedAtMs: Date.parse(completion.completedAt) + 11 });
+    return later.outbox;
+  };
+  const acknowledged = await oldRuntimeEvidence(target);
+  await owner.commits.acknowledge(await owner.commits.claim(acknowledged));
+  const pendingOutbox = await oldRuntimeEvidence(pending);
+  await state.service.deliverOutbox((await owner.commits.commit(independent)).outbox);
+  await state.service.deliverOutbox((await owner.commits.commit(nowDay)).outbox);
+  await owner.usage.recordAutomaticAndProject({ ...target, completedAt: erroneousAt,
+    accountKey: "chatgpt:historical", accountAttribution: "exact", deferProjection: true });
+  const prior = { ...(await state.journal.getRecord(target)), observedAt: erroneousAt };
+  await state.journal.upsertRecords([prior]);
+  await owner.runJournal.ensureTurnUsageFact(target);
+  await owner.runJournal.flushTurnProjections([target]);
+  const beforeFact = (await owner.worker.events()).find((entry) => entry.completedAt === erroneousAt);
+  assert.ok(beforeFact);
+  assert.equal(state.readIndex().find((row) => row.turnId === target.turnId).completedAtMs, Date.parse(erroneousAt));
+
+  await owner.usage.close();
+  owner = state.openOwner();
+  await state.service.retryPendingProjections({ recoverProjecting: true });
+  assert.equal((await owner.usage.getTurn(pending)).completedAt, pending.completedAt);
+  assert.equal(state.rows().find((row) => row.turn_id === pending.turnId
+    && row.terminal_revision === pendingOutbox.terminalRevision).state, "delivered");
+  const pinned = { expectedCompletedAt: erroneousAt };
+  const request = { ...pinned, threadId: target.threadId, turnId: target.turnId,
+    terminalRevision: acknowledged.terminalRevision, runtimeDataDir: state.root,
+    databaseFile: path.join(state.root, "journal.sqlite") };
+  assert.equal((await state.service.recoverJournalCompletion({ ...acknowledged, terminalRevision: 1 }, pinned)).eligible, false);
+  const cli = fileURLToPath(new URL("../../turn-completion-recovery.mjs", import.meta.url));
+  const command = [cli, state.root, request.databaseFile, request.threadId, request.turnId,
+    String(request.terminalRevision), request.expectedCompletedAt];
+  const preview = JSON.parse(execFileSync(process.execPath, command, { encoding: "utf8" }));
+  assert.deepEqual(preview, await state.service.recoverJournalCompletion(acknowledged, pinned));
+  assert.throws(() => execFileSync(process.execPath, [...command, "--apply"], { stdio: "pipe" }),
+    /Apply requires the configured turn-end delivery owner/u);
+  await assert.rejects(recoverCompletionFromDatabase({ ...request, apply: true }), /configured.*owner/u);
+  assert.deepEqual(preview.recovery, {
+    originalCompletedAt: erroneousAt, completedAt: target.completedAt, terminalRevision: 2,
+    sourceRevision: 1, providerCompletedAt: "2026-11-19T10:25:10.725Z",
+  });
+  assert.equal(preview.applied, false);
+  assert.deepEqual(await state.journal.getRecord(target), prior);
+
+  const historyOptions = { range: "all", now: Date.parse("2026-11-27T12:00:00Z") };
+  const beforeHistory = await owner.usage.usageHistory(historyOptions);
+  const beforeRepairEffects = state.events.length;
+  const beforeRows = state.rows();
+  owner.runJournal.flushTurnProjections = async () => { throw new Error("interrupted after write"); };
+  await assert.rejects(state.service.recoverJournalCompletion(acknowledged, { ...pinned, apply: true }),
+    /interrupted after write/u);
+  await owner.usage.close();
+  owner = state.openOwner();
+  const retry = await recoverCompletionFromDatabase({ ...request, apply: true, turnEndDelivery: state.service });
+  assert.equal(retry.unchanged, true);
+  assert.equal(retry.projectionPending, false);
+  assert.deepEqual(state.rows(), beforeRows);
+  assert.equal(state.events.length, beforeRepairEffects);
+  assert.deepEqual(await state.journal.getRecord(target), {
+    ...prior, completedAt: target.completedAt, completionRecovery: preview.recovery,
+  });
+  const indexed = state.readIndex();
+  assert.equal(indexed.length, 4);
+  assert.ok(indexed.every((row) => row.workspaceId === "workspace"));
+  assert.equal(indexed.find((row) => row.turnId === target.turnId).streamId, target.threadId);
+  const expectedDate = new Date(target.completedAt).toLocaleDateString("ru-RU");
+  assert.equal(indexed.find((row) => row.turnId === target.turnId).date, expectedDate);
+  assert.equal(indexed.filter((row) => row.date === expectedDate).length, 3);
+  assert.equal(indexed.filter((row) => row.date === new Date(erroneousAt).toLocaleDateString("ru-RU")).length, 1);
+  const facts = await owner.worker.events();
+  assert.equal(facts.length, 4);
+  const repairedFact = facts.find((entry) => entry.eventId === beforeFact.eventId);
+  assert.equal(repairedFact.completedAt, target.completedAt);
+  assert.deepEqual(repairedFact.usage, beforeFact.usage);
+  const history = await owner.usage.usageHistory(historyOptions);
+  assert.ok(history.totalDurationSeconds >= 10_800 && history.totalDurationSeconds < 20_000,
+    "valid long and overlapping turns remain counted");
+  assert.equal(history.totalCredits, beforeHistory.totalCredits, "all four turns retain their original token usage");
+  const creditsOn = (history, date) => history.points.filter((point) => (
+    new Date(point.at).toLocaleDateString("ru-RU") === date
+  )).reduce((sum, point) => sum + point.credits, 0);
+  const erroneousDate = new Date(erroneousAt).toLocaleDateString("ru-RU");
+  assert.ok(creditsOn(history, expectedDate) > creditsOn(beforeHistory, expectedDate));
+  assert.ok(creditsOn(history, erroneousDate) < creditsOn(beforeHistory, erroneousDate));
+  const later = "2026-11-19T10:25:42.000Z";
+  const correction = await state.service.correctFromExactProviderTerminal(acknowledged,
+    { status: "aborted", completedAt: later, finalAnswer: "Confirmed corrected status" });
+  assert.equal(correction.corrected, true);
+  assert.equal((await owner.usage.getTurn(target)).completedAt, later);
+  assert.equal((await state.service.recoverJournalCompletion(acknowledged, { ...pinned, apply: true })).eligible, false);
+});
+
+test("exact telemetry backfills missing completion while an unproven time remains undated and separately counted", async (t) => {
+  const state = await completionRecoveryFixture(t);
+  const owner = state.openOwner();
+  const known = { ...historicalCompletion, projectRoot: state.root, runId: "known-run",
+    turnId: "known-from-telemetry", completedAt: "" };
+  const unknown = { ...known, runId: "right-run", turnId: "unknown" };
+  const verifiedAt = historicalCompletion.completedAt;
+  await state.telemetry.upsert({ ...known, finalPhase: "completed", completedAtMs: Date.parse(verifiedAt) });
+  await state.telemetry.upsert({ ...unknown, runId: "some-other-run",
+    finalPhase: "completed", completedAtMs: Date.parse(verifiedAt) });
+  await owner.commits.commit(known);
+  await owner.commits.commit(unknown);
+  await state.service.retryPendingProjections();
+  assert.ok(state.rows().every((row) => row.state === "delivered"));
+  assert.equal((await owner.runJournal.turnProjectionStatus(unknown)).current, true);
+  assert.equal((await owner.usage.getTurn(known)).completedAt, verifiedAt);
+  assert.equal((await owner.usage.getTurn(unknown)).completedAt, "");
+  assert.deepEqual(state.readIndex().map((row) => row.turnId), [known.turnId]);
+  assert.equal((await owner.worker.events()).length, 1);
+  const history = await owner.usage.usageHistory({ range: "all", now: Date.parse("2026-11-27T12:00:00Z") });
+  assert.equal(history.undatedUsage.turnCount, 1);
+  assert.equal(history.undatedUsage.credits, history.totalCredits);
+  assert.ok(history.totalCredits > 0);
+});
+
+
+test("historical completion repair refuses a superseded terminal revision before changing its journal or usage fact", async (t) => {
+  const state = await completionRecoveryFixture(t);
+  const owner = state.openOwner();
+  const target = { ...historicalCompletion, projectRoot: state.root };
+  const wrong = "2026-11-26T10:41:37.878Z";
+  const later = "2026-11-19T10:28:00.000Z";
+  const first = await owner.commits.commit(target);
+  await owner.commits.acknowledge(await owner.commits.claim(first.outbox));
+  const second = await owner.commits.commit({ ...target, finalAnswer: "Missing legacy date" });
+  await owner.commits.acknowledge(await owner.commits.claim(second.outbox));
+  state.dropLegacyTime(second.outbox);
+  await owner.usage.recordAutomaticAndProject({ ...target, completedAt: wrong, deferProjection: true });
+  const previous = { ...(await state.journal.getRecord(target)), observedAt: wrong };
+  await state.journal.upsertRecords([previous]);
+  await owner.runJournal.ensureTurnUsageFact(target);
+  await owner.runJournal.flushTurnProjections([target]);
+  const expectedFacts = await owner.worker.events();
+
+  const pinned = gate();
+  const resume = gate();
+  const readEvidence = owner.commits.completionTimeEvidence.bind(owner.commits);
+  owner.commits.completionTimeEvidence = async (identity, options) => {
+    const evidence = await readEvidence(identity, options);
+    if (options?.verifyTelemetry) {
+      pinned.resolve(evidence);
+      await resume.promise;
+    }
+    return evidence;
+  };
+  const apply = state.service.recoverJournalCompletion(second.outbox, { expectedCompletedAt: wrong, apply: true });
+  const peer = new TerminalTurnCommitService({ store: new ProviderTurnTerminalStore({ dataDir: state.root }) });
+  try {
+    assert.equal((await within(pinned.promise, "repair did not pin rev2")).terminalRevision, 2);
+    const correction = await peer.correctFromExactProviderTerminal(target, {
+      status: "aborted", completedAt: later, finalAnswer: "New authoritative terminal",
+    });
+    assert.equal(correction.corrected, true);
+    assert.equal(correction.terminal.terminalRevision, 3);
+  } finally {
+    resume.resolve();
+  }
+  assert.deepEqual(await apply, { eligible: false, applied: false, reason: "stale-terminal-revision" });
+  assert.deepEqual(await state.journal.getRecord(target), previous);
+  assert.deepEqual(await owner.worker.events(), expectedFacts);
+  await state.service.retryPendingProjections();
+  assert.equal((await state.journal.getRecord(target)).completedAt, later);
+  assert.equal((await owner.worker.events()).length, 1);
+});
+
+test("a later exact completion correction retains HUB-417 start proof and enforces chronology", async (t) => {
+  const state = await completionRecoveryFixture(t);
+  const owner = state.openOwner();
+  const staleStart = "2026-11-16T10:00:00.000Z";
+  const provenStart = "2026-11-19T10:23:00.000Z";
+  const laterEnd = "2026-11-19T10:28:00.000Z";
+  const wrong = "2026-11-26T10:41:37.878Z";
+  const target = { ...historicalCompletion, projectRoot: state.root, turnId: "combined-recovery",
+    runId: "combined-run", startedAt: staleStart };
+  const predecessor = { ...target, turnId: "predecessor", runId: "predecessor-run",
+    threadId: target.threadId, completedAt: "2026-11-16T10:30:00.000Z" };
+  const first = await owner.commits.commit(target);
+  await owner.commits.acknowledge(await owner.commits.claim(first.outbox));
+  const second = await owner.commits.commit({ ...target, finalAnswer: "Missing legacy date" });
+  await owner.commits.acknowledge(await owner.commits.claim(second.outbox));
+  state.dropLegacyTime(second.outbox);
+  await owner.usage.recordAutomaticAndProject({ ...predecessor, deferProjection: true });
+  await owner.usage.recordAutomaticAndProject({ ...target, completedAt: wrong, deferProjection: true });
+  const stored = await state.journal.getRecord(target);
+  await state.journal.upsertRecords([{ ...stored, observedAt: wrong }]);
+  const telemetry = { ...target, requestedAtMs: Date.parse(provenStart) - 2000,
+    acceptedAtMs: Date.parse(provenStart) - 1000, turnStartedAtMs: Date.parse(provenStart),
+    completedAtMs: Date.parse(target.completedAt), finalPhase: "completed" };
+  await state.telemetry.upsert(telemetry);
+  const start = await owner.usage.recoverTurnDuration(target,
+    { predecessorTurnId: predecessor.turnId, telemetry }, { apply: true });
+  assert.equal(start.recovery.startedAt, provenStart);
+  assert.equal((await state.service.recoverJournalCompletion(second.outbox, {
+    expectedCompletedAt: wrong, apply: true,
+  })).applied, true);
+  assert.equal(durationStartForRecord(await state.journal.getRecord(target)), provenStart);
+  const correction = await state.service.correctFromExactProviderTerminal(target, {
+    status: "aborted", completedAt: laterEnd, finalAnswer: "Later exact finish",
+  });
+  assert.equal(correction.corrected, true);
+  const after = await state.journal.getRecord(target);
+  assert.equal(after.startedAt, staleStart);
+  assert.deepEqual(after.durationRecovery, start.recovery);
+  assert.equal(after.completionRecovery.originalCompletedAt, wrong);
+  assert.equal(after.completedAt, laterEnd);
+  assert.equal(durationStartForRecord(after), provenStart);
+  assert.equal(durationStartForRecord({ ...after, completedAt: "2026-11-19T10:22:00.000Z" }), "");
+  assert.equal(durationStartForRecord({ ...after, runId: "foreign-run" }), staleStart);
+  for (const turnTimeMode of ["start", "middle", "end"]) {
+    const history = await owner.usage.usageHistory({
+      range: "24h", turnTimeMode, now: Date.parse("2026-11-19T12:00:00Z"),
+    });
+    assert.equal(history.totalDurationSeconds, 300);
+  }
+});
+
+test("recovered telemetry time is durable without changing the raw completion", async (t) => {
+  const state = await completionRecoveryFixture(t);
+  const owner = state.openOwner();
+  state.service.rememberLastMessage = (...args) => owner.runJournal.rememberLastMessage(...args);
+  const first = { ...historicalCompletion, projectRoot: state.root, runId: "telemetry-exact-run",
+    turnId: "telemetry-dated-unread", completedAt: "" };
+  const expectedAt = historicalCompletion.completedAt;
+  await state.telemetry.upsert({ ...first, finalPhase: "completed", completedAtMs: Date.parse(expectedAt) });
+  const raw = await owner.commits.commit(first);
+  assert.equal((await state.service.deliverOutbox(raw.outbox)).projection, true);
+  assert.equal((await state.journal.getRecord(first)).completedAt, expectedAt);
+  assert.equal((await owner.commits.store.get(first)).payload.completion.completedAt, "");
+  assert.equal(state.rows().find((row) => row.turn_id === first.turnId).state, "delivered");
+
+  const reopened = new ProviderTurnTerminalStore({ dataDir: state.root });
+  const restored = await reopened.get(first);
+  assert.equal(restored.lastMessage.updatedAt, expectedAt);
+  assert.equal(restored.payload.completion.completedAt, "");
+  const correctedAt = "2026-11-19T10:29:00.000Z";
+
+  const superseded = { ...first, turnId: "superseded-ready", runId: "superseded-run" };
+  await state.telemetry.upsert({ ...superseded, finalPhase: "completed", completedAtMs: Date.parse(expectedAt) });
+  const pending = await owner.commits.commit(superseded);
+  const claim = await owner.commits.claim(pending.outbox);
+  const correction = await owner.commits.correctFromExactProviderTerminal(superseded, {
+    status: "aborted", completedAt: correctedAt, finalAnswer: "New exact terminal",
+  });
+  assert.equal(correction.corrected, true);
+  assert.equal(await owner.commits.acknowledge({ ...claim, resolvedCompletedAt: expectedAt }), null);
+  const current = await reopened.get(superseded);
+  assert.equal(current.terminalRevision, 2);
+  assert.equal(current.lastMessage.updatedAt, correctedAt);
+});
+
 test("pending legacy completions use bounded shared projections and ACK only after each flush", async (t) => {
   const state = await fixture(t, 18);
   await state.service.retryPending();
@@ -81,11 +481,11 @@ function gate() {
   return {promise,resolve};
 }
 
-async function within(promise, description) {
+async function within(promise, description, timeoutMs = 1_500) {
   let timer;
   try {
     return await Promise.race([promise,new Promise((_,reject)=>{
-      timer=setTimeout(()=>reject(new Error(description)),1500);
+      timer=setTimeout(()=>reject(new Error(description)),timeoutMs);
     })]);
   } finally {clearTimeout(timer);}
 }
@@ -479,18 +879,18 @@ test("cold recovery settles a sparse terminal page without rewriting already-cur
   const health = createRuntimeHealth(), noop = async () => {};
   const startup = new AgentHubStartupCoordinator({ telegramEnabled: true, health,
     startMiniApp: noop, startDesktopControl: noop, startRuntimeCommand: noop, startHubMcp: noop,
-    sanitizeRollouts: noop, initializeProvider: noop, providerIsRunning: () => true,
+    sanitizeRollouts: noop, initializeProvider: noop, providerIsRunning: () => true, backfillProviderMetadata: noop,
     retryTerminalProjections: (options) => state.service.retryPendingProjections({ ...options, recoverProjecting: true }),
     retryNotifications: (options) => state.service.retryPendingTelegram(options), restoreBackgroundJobs: noop, registerTelegramCommands: noop,
     hasPendingRestart: () => true, finalizeRestart: noop, markReady: noop, startTimers: noop,
-    readyMessage: () => "", pollTelegram: noop, waitForever: noop, log() {}, logError() {},
+    readyMessage: () => "", pollTelegram: noop, waitForever: noop, log() {}, logError(...args) { t.diagnostic(JSON.stringify(args)); },
     startupTraceId, commandTrace: trace.service,
   });
   const started = performance.now();
   const start = startup.start();
   try {
     await start;
-    await within(saving.promise, "background delivery did not reach its persistence fence");
+    await within(saving.promise, "background delivery did not reach its persistence fence", 10_000);
     assert.equal(health.snapshot().ready, true);
     assert.equal(state.rows().filter((row) => row.state === "delivered").length, 0);
   } finally { saveGate.resolve(); await start; await startup.waitForBackgroundWork(); }

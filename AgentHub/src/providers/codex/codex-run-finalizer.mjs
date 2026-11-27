@@ -1,5 +1,5 @@
 import { emptyTokenUsage, formatTurnTokenUsage } from "../../domain/token-usage.mjs";
-import { turnEndKey } from "../../application/turn-end-notifications.mjs";
+import { normalizedCompletion, turnEndKey } from "../../application/turn-end-notifications.mjs";
 import { conciseTurnTitle } from "../../application/turn-title.mjs";
 
 function exactRunChangedFiles(run) {
@@ -148,7 +148,10 @@ export class CodexRunFinalizer {
       toolMetricsKnown: tracker.toolMetricsKnown === true || run.toolMetricsKnown === true,
     };
     const completion = this.notifications.recordCompletion(completionInput)
-      ?? exactTerminalCompletion(existingCompletion, completionInput);
+      ?? normalizedCompletion({
+        ...exactTerminalCompletion(existingCompletion, completionInput),
+        completedAt: existingCompletion?.completedAt ?? "",
+      });
     const visibleAnswer = String(completion.finalAnswer ?? answer ?? "").trim();
     const resolvedTracker = {
       usage: completion.usage,
@@ -160,7 +163,7 @@ export class CodexRunFinalizer {
     };
     const shouldDeliver = deliver ?? (run.telegramDeliveryRequested !== false);
     const message = [visibleAnswer, this.formatUsage(resolvedTracker)].filter(Boolean).join("\n\n");
-    const telegramRequested = shouldDeliver && Number.isSafeInteger(completion.chatId);
+    const telegramRequested = shouldDeliver && Number.isSafeInteger(completion.chatId) && completion.chatId !== 0;
     let committed;
     try {
       committed = await this.commitTerminal(completion, {

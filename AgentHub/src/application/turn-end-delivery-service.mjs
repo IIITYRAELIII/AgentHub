@@ -2,6 +2,7 @@ import { turnEndKey } from "./turn-end-notifications.mjs";
 import { conciseTurnTitle } from "./turn-title.mjs";
 import { normalizeServiceTier } from "../domain/token-usage.mjs";
 import { journalAccountingCoversTerminal } from "./work-log-usage-projection.mjs";
+import { terminalCompletionTime } from "../domain/turn-completion-time.mjs";
 
 const DEFAULT_PROJECTION_RETRY_BASE_MS = 250;
 const DEFAULT_PROJECTION_RETRY_MAX_MS = 30_000;
@@ -106,6 +107,7 @@ export class TurnEndDeliveryService {
     flushTurnProjections = null,
     ensureTurnUsageFact = null,
     readTurnProjection = null,
+    recoverTurnCompletion = null,
     finalizeRunDelivery = null,
     rememberLastMessage,
     rememberSeenTurn,
@@ -130,6 +132,7 @@ export class TurnEndDeliveryService {
     this.flushTurnProjections = flushTurnProjections;
     this.ensureTurnUsageFact = ensureTurnUsageFact;
     this.readTurnProjection = readTurnProjection;
+    this.recoverTurnCompletion = recoverTurnCompletion;
     this.finalizeRunDelivery = finalizeRunDelivery;
     this.rememberLastMessage = rememberLastMessage;
     this.rememberSeenTurn = rememberSeenTurn;
@@ -282,12 +285,30 @@ export class TurnEndDeliveryService {
     return { ...result, delivered: true };
   }
 
+  async recoverJournalCompletion(identity, { expectedCompletedAt, apply = false } = {}) {
+    if (!this.recoverTurnCompletion || identity?.provider !== "codex"
+      || !terminalCompletionTime(expectedCompletedAt)) return { eligible: false, applied: false };
+    const evidence = await this.terminalCommits?.completionTimeEvidence(identity, { verifyTelemetry: true });
+    if (!evidence?.completedAt || evidence.sourceRevision === evidence.terminalRevision) {
+      return { eligible: false, applied: false };
+    }
+    if (apply !== true) return this.recoverTurnCompletion(evidence, { expectedCompletedAt });
+    const result = await this.terminalCommits.withCurrentCompletionRevision(evidence,
+      () => this.recoverTurnCompletion(evidence, { expectedCompletedAt, apply: true }));
+    return result ?? { eligible: false, applied: false, reason: "stale-terminal-revision" };
+  }
+
   async #projectionInputs(item) {
     const terminalRevision = item.terminalRevision;
     const rawCompletion = item.payload?.completion ?? {};
-    const recoveredCompletedAt = rawCompletion.completedAt == null && terminalRevision > 1
+    const missingCodexTime = item.provider === "codex"
+      && !terminalCompletionTime(rawCompletion.completedAt, rawCompletion.startedAt);
+    let recoveredCompletedAt = rawCompletion.completedAt == null && terminalRevision > 1
       ? await this.terminalCommits.precedingProjectionCompletedAt?.(item)
       : null;
+    if (!recoveredCompletedAt && missingCodexTime) {
+      recoveredCompletedAt = (await this.terminalCommits.completionTimeEvidence?.(item))?.completedAt;
+    }
     const completion = {
       ...rawCompletion,
       ...(recoveredCompletedAt ? { completedAt: recoveredCompletedAt, resolveAccount: false } : {}),
@@ -420,8 +441,10 @@ export class TurnEndDeliveryService {
           this.rememberCompletion(completion, notificationBody);
           this.legacy.markProjected(completion);
           await measure("terminal-state-save", completion, () => this.saveState());
-          const acknowledged = await measure("terminal-outbox-ack", claimed, () => this.terminalCommits.acknowledge(claimed));
-          if (waitForProjection && !acknowledged) return false;
+          const ackIdentity = recoveredCompletedAt ? { ...claimed, resolvedCompletedAt: recoveredCompletedAt } : claimed;
+          const acknowledged = await measure("terminal-outbox-ack", claimed,
+            () => this.terminalCommits.acknowledge(ackIdentity));
+          if ((waitForProjection || recoveredCompletedAt) && !acknowledged) return false;
           const commandId = String(history.clientUserMessageId ?? completion.clientUserMessageId ?? "").trim();
           if (!projectionOnly) {
             this.commandTrace?.recordBestEffort?.({

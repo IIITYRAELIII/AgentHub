@@ -229,6 +229,25 @@ terminal.
   rules used for a journal write. Recovery persists the exact terminal
   history and checks its current revision before saving and acknowledging the
   outbox. Terminal payloads retain their original time and usage evidence.
+- Ordinary Codex terminal revisions retain the completion time of the same
+  exact provider, thread and turn, including when the in-memory completion is
+  gone. Recovery of an older outbox revision with a missing time reads the
+  latest valid prior revision of that identity, then exact provider terminal
+  telemetry. A verified later status correction still owns its own time.
+  Observation, retry and commit clocks are separate from completion time.
+- The configured `TurnEndDeliveryService.recoverJournalCompletion` supports a
+  read-only preview and an explicit addressable apply for a legacy Codex
+  terminal revision with missing time. The caller pins the current terminal
+  revision and the exact erroneous journal timestamp. The standalone
+  `turn-completion-recovery.mjs` command supports only read-only preview.
+  Apply uses the configured owner through `recoverCompletionFromDatabase`.
+  A turn-local interprocess lock protects the pinned revision through mutation
+  and readback. Writers changing a legacy revision with a missing timestamp
+  share the lock, and ordinary valid first or repeat commits keep their existing
+  SQLite path. The journal owner preserves the original timestamp and updates the same
+  local usage fact and rebuilds the affected day indexes. Retries can finish
+  the projection after an interrupted apply. The operation does not reopen
+  the outbox or replay provider, history, command or Telegram effects.
 - Transient SQLite busy/locked and journal-revision conflicts receive one
   runtime-scoped, bounded single-flight retry with capped backoff. Conflict
   recovery re-reads the exact projection before another write. A retry of an
