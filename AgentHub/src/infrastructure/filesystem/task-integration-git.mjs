@@ -128,15 +128,14 @@ async function dirtyState(root) {
 }
 
 async function primarySnapshot(projectRoot) {
-  const root = await repositoryRoot(projectRoot);
-  const [revisions, commonDir, worktrees, dirty] = await Promise.all([
+  const { root, commonDir } = await measureTaskOperation("release:primary-root", () => repositoryDirectories(projectRoot), { detail: true });
+  const [revisions, worktrees, dirty] = await Promise.all([
     // --not marks main independently of HEAD, including when main is absent.
     // Only OIDs/ref names are batched: rev-parse does not quote path outputs.
-    runGit(["rev-parse", "--revs-only", "HEAD^{commit}", "--not",
-      "refs/heads/main^{commit}", "--not", "--symbolic-full-name", "HEAD"], { cwd: root }),
-    gitCommonDir(root),
-    runGit(["worktree", "list", "--porcelain"], { cwd: root }),
-    dirtyState(root),
+    measureTaskOperation("release:primary-revisions", () => runGit(["rev-parse", "--revs-only", "HEAD^{commit}", "--not",
+      "refs/heads/main^{commit}", "--not", "--symbolic-full-name", "HEAD"], { cwd: root }), { detail: true }),
+    measureTaskOperation("release:primary-worktrees", () => runGit(["worktree", "list", "--porcelain"], { cwd: root }), { detail: true }),
+    measureTaskOperation("release:primary-dirty", () => dirtyState(root), { detail: true }),
   ]);
   const fields = revisions.split("\n");
   const headCommit = fields.shift();
@@ -199,6 +198,18 @@ async function gitCommonDir(projectRoot) {
   return canonicalPath(path.resolve(await runGit([
     "rev-parse", "--path-format=absolute", "--git-common-dir",
   ], { cwd: path.resolve(projectRoot) })));
+}
+
+async function repositoryDirectories(projectRoot) {
+  const directories = String(await runGit(["rev-parse", "--path-format=absolute", "--show-toplevel",
+    "--git-common-dir"], { cwd: path.resolve(projectRoot) })).split(/\r?\n/u);
+  if (directories.length === 2 && directories.every(directory => path.isAbsolute(directory))) {
+    const [root, commonDir] = directories.map(canonicalPath);
+    return { root, commonDir };
+  }
+  // Git paths on some platforms can contain a newline.
+  const root = await repositoryRoot(projectRoot);
+  return { root, commonDir: await gitCommonDir(root) };
 }
 
 async function fileExists(file) {
@@ -683,11 +694,14 @@ export class TaskIntegrationGitService {
           inputs: required, identityHash, reuseCompleteImport: true });
         await objects.assertConsumer({ repository: layout.releaseRoot, inputs: required, identityHash, storage });
         objectStorage = { inputs: required, identityHash, storage };
-        await runGit(["update-ref", "refs/heads/main", primary.mainCommit, "0".repeat(40)], { cwd: layout.releaseRoot });
+        await runGit(["update-ref", "--stdin"], {
+          cwd: layout.releaseRoot,
+          input: `create refs/heads/main ${primary.mainCommit}\ncreate refs/remotes/workspace/main ${primary.mainCommit}\n`,
+        });
         await runGit(["symbolic-ref", "HEAD", "refs/heads/main"], { cwd: layout.releaseRoot });
         await runGit(["remote", "add", "workspace", sourceRoot], { cwd: layout.releaseRoot });
       }
-      await runGit(["config", "core.longpaths", "true"], { cwd: layout.releaseRoot });
+      if (this.#validationBundle) await runGit(["config", "core.longpaths", "true"], { cwd: layout.releaseRoot });
       if (this.#isolationContext) {
         for (const [key, value] of [["core.hooksPath", path.join(this.dataDir, "empty-hooks")],
           ["core.fsmonitor", "false"], ["gc.auto", "0"], ["maintenance.auto", "false"]]) {
@@ -707,14 +721,11 @@ export class TaskIntegrationGitService {
       if (await runGit(["rev-parse", "HEAD^{commit}"], { cwd: layout.releaseRoot }) !== primary.mainCommit) {
         throw new Error("Initial release checkout does not match the agreed main");
       }
-      if (!this.#validationBundle) {
-        await runGit(["update-ref", "refs/remotes/workspace/main", primary.mainCommit, "0".repeat(40)], { cwd: layout.releaseRoot });
-      }
     }
 
-    const releaseRoot = await repositoryRoot(layout.releaseRoot);
+    const { root: releaseRoot, commonDir: releaseGitCommonDir } = await repositoryDirectories(layout.releaseRoot);
     if (!samePath(releaseRoot, layout.releaseRoot)) throw new Error("managed release clone root is not canonical");
-    const releaseCommonDir = await gitCommonDir(releaseRoot);
+    const releaseCommonDir = releaseGitCommonDir;
     if (samePath(releaseCommonDir, primary.commonDir)) {
       throw new Error("release repository is a linked worktree of the registered primary Workspace");
     }
@@ -1631,6 +1642,8 @@ export class TaskIntegrationGitService {
           baseProvenance: provenance ?? null, historyAuthority: historyAuthority ?? null },
         readLegacyReuseBinding,
         deliveredHead: checkpoint?.preReleaseHead ?? null,
+        deferEmptyPrefixDiscovery: Boolean(awaitOperationId && !checkpoint && !forwardPreparation
+          && !preparationGuard && !nativeAwaitRecovery),
         gitAt: (cwd, args, options = {}) => runGit(args, { ...options, cwd, timeoutMs: null }),
         readJson, writeJson: writeJsonAtomic,
         provisionNativeObjects: input => preparationObjectStore().provision({ ...input, reusableSource: clone.objectStorage ?? null,

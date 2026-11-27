@@ -920,6 +920,7 @@ export async function mergeSelectedResults({
   deliveredHead = null,
   reuseContext = null,
   readLegacyReuseBinding = null,
+  deferEmptyPrefixDiscovery = false,
   provisionNativeObjects = null, verifyNativeObjects = null,
   nativeResolutionReview = null, verifyManualReview = null,
 }) {
@@ -938,7 +939,10 @@ export async function mergeSelectedResults({
   };
   assertCurrentInputs();
   await publishedVirtualReplay({ git: (args, options) => gitAt(sourceRoot, args, options), identity, baseCommit, tasks });
-  const candidates = await nativeReuseCandidates({ root, identity, context: reuse, readLegacyBinding: readLegacyReuseBinding });
+  let candidates;
+  const readCandidates = async () => candidates ??= await nativeReuseCandidates({ root, identity,
+    context: reuse, readLegacyBinding: readLegacyReuseBinding });
+  if (!deferEmptyPrefixDiscovery) await readCandidates();
   let state = await readJson(stateFile);
   if (nativeResolutionReview && (!state || identity.policy !== "manual-main-dev-sync-v1")) {
     throw failure("Native compatibility requires an issued manual capture", "RELEASE_NATIVE_REVIEW_REQUIRED");
@@ -1038,9 +1042,9 @@ export async function mergeSelectedResults({
 
   let currentPrefixProof = null;
   let adoptedPrefixProof = null;
-  if (reuse && state.reuseContext && taskGitIdentityHash(state.reuseContext) === taskGitIdentityHash(reuse)
+  if ((!deferEmptyPrefixDiscovery || deliveredHead) && reuse && state.reuseContext && taskGitIdentityHash(state.reuseContext) === taskGitIdentityHash(reuse)
       && state.next === 0 && !state.merging && !state.conflict && !state.reuseIntent) {
-    const prefix = await verifiedNativePrefix({ root, repository, candidates, tasks, baseCommit, gitAt, beforeTransport,
+    const prefix = await verifiedNativePrefix({ root, repository, candidates: await readCandidates(), tasks, baseCommit, gitAt, beforeTransport,
       verify: (before, result, target, step) => verifyStep(before, result, target,
         { storedBinding: step?.resolution?.binding ?? step?.reviewedResolution?.binding }) });
     if (prefix) {
@@ -1156,7 +1160,7 @@ export async function mergeSelectedResults({
         let retained = state.conflict.retainedResolution;
         if (!retained && await maybe(git, ["rev-parse", "--verify", "MERGE_HEAD"]) === task.resultCommit) {
           await requireUntouchedConflict(git, state.head, task.resultCommit, state.conflict);
-          retained = await retainedNativeConflict({ root, repository, candidates, state, task, identity, gitAt, beforeTransport,
+          retained = await retainedNativeConflict({ root, repository, candidates: await readCandidates(), state, task, identity, gitAt, beforeTransport,
             preservedRootPath: keepChangelog ? ROOT_CHANGELOG : null,
             verify: (before, result, target, step) => verifyStep(before, result, target,
               { storedBinding: step?.resolution?.binding ?? step?.reviewedResolution?.binding, ownedResolution: true }) });
@@ -1237,7 +1241,7 @@ export async function mergeSelectedResults({
     if (conflict) {
       state.conflict = conflict;
       await writeJson(stateFile, state);
-      if (reuse && candidates.length) continue;
+      if (reuse && (await readCandidates()).length) continue;
       throw failure(`Resolve the native Git merge for Task ${task.taskId} in ${repository}`,
         "RELEASE_NATIVE_MERGE_CONFLICT", { conflictRoot: repository, conflicts: conflict.paths });
     }

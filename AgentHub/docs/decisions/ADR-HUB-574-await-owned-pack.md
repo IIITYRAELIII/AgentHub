@@ -21,6 +21,11 @@ The changed-file projection can be reused during that invocation once the
 live result, base, branch and adoption evidence match. Checkout readback uses
 Git's porcelain status to check HEAD and worktree state in the same command.
 The index tree is still checked at each promotion boundary.
+Without an accepted checkpoint, ordinary Await searches old conflict captures
+only if Git encounters a conflict. The existing verifier still determines
+whether an old resolution can be used. The trace separates primary root,
+revisions, worktrees and dirty state, as well as reuse enumeration and journal
+reads.
 Manual and original-operation recovery continue to use their existing ordering.
 Measure the durable outcome through the HTTP MCP endpoint against both an empty
 and a populated PreRelease. Report queue wait, time to receipt and the
