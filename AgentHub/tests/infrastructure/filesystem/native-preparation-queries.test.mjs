@@ -106,7 +106,7 @@ test("history uses one metadata diff and retains equal-base object validation an
     tasks: [{ taskId: "missing", baseCommit: missing, resultCommit: missing }] }), /main-based result/u);
 });
 
-test("native absorption accepts only the exact published parent of the returned source Test", async t => {
+test("native preparation accepts merged Task commits without reading former handoff receipts", async t => {
   const f = await fixture(t);
   const tree = await f.git(["rev-parse", `${f.result}^{tree}`]);
   const commit = (name, ...parents) => f.git(["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
@@ -170,19 +170,12 @@ test("native absorption accepts only the exact published parent of the returned 
   await check(forward, forward, advancedAuthority, f.base);
   await check(forward, forward, historyAuthority, f.base, { preserve: true });
   await check(forward, forward, advancedAuthority, f.base, { preserve: true });
-  await assert.rejects(check(forward, forward, advancedAuthority, f.base, { testOutcomeHash: "0".repeat(64) }),
-    /immutable prior outcome changed/u);
-  await assert.rejects(check(devMerge, devMerge, advancedAuthority, f.base), /explicit historical migration/u);
+  await check(forward, forward, advancedAuthority, f.base, { testOutcomeHash: "0".repeat(64) });
   await writeFile(retained, JSON.stringify({ ...record, target: devOnly }));
-  await assert.rejects(check(forward, forward, advancedAuthority, f.base), /explicit historical migration/u);
+  await check(forward, null);
   await writeFile(retained, JSON.stringify(record));
-  await assert.rejects(check(forward, null), /explicit historical migration/u);
-  await assert.rejects(check(forward, f.result), /explicit historical migration/u);
-  await assert.rejects(check(forward, foreign), /prior result is not retained/u);
-  await assert.rejects(check(forward, forward, { bases: [published, devOnly], metadataBases: [published] }),
-    /explicit historical migration/u);
-  for (const refused of [devMerge, foreignMerge, octopus]) {
-    await assert.rejects(check(refused), /explicit historical migration/u);
+  for (const merged of [devMerge, foreignMerge, octopus]) {
+    await check(merged);
   }
 
   const localAppData = path.join(f.root, ".git", "fixture-local");
@@ -227,7 +220,10 @@ test("native absorption accepts only the exact published parent of the returned 
   assert.equal(proof.status, "validated");
   assert.equal(proof.baseCommit, advanced);
   assert.deepEqual(proof.mergedTaskIds, [task.taskId]);
-  await assert.rejects(service.validateCandidate(combinedRequest(second)), /unselected merge side/u);
+  const ordinary = await service.validateCandidate({ ...request, planRevision: "task-with-two-merges",
+    frozenTasks: [{ ...task, resultCommit: both, taskRevision: 6 }] });
+  assert.equal(ordinary.status, "validated");
+  assert.deepEqual(ordinary.mergedTaskIds, [task.taskId]);
   const combinedProof = await service.validateCandidate(combinedRequest({ ...second, absorptionHistory: first }));
   assert.equal(combinedProof.status, "validated");
   assert.deepEqual(combinedProof.mergedTaskIds, [task.taskId]);
@@ -329,4 +325,83 @@ test("installed source uses one binary-safe object batch and still refuses chang
   assert.equal((await assertInstalledLocalSourceBaseline(request)).runtimeFiles, 64);
   assert.deepEqual(await readFile(path.join(release, "runtime-manifest.json")), manifest);
   assert.deepEqual(await readFile(pointer), pointerBytes);
+});
+
+test("historical Test preserves its verified published package version across a later publication", async t => {
+  const f = await fixture(t);
+  const name = ["-c", "user.name=Test", "-c", "user.email=test@example.invalid"];
+  await f.git(["checkout", "--detach", f.base]);
+  await f.save("nested/package.json", JSON.stringify({version:"2.1.0",name:"fixture"}));
+  const priorPublished = await f.commit();
+  await f.save("nested/package.json", JSON.stringify({version:"2.2.0",name:"fixture"}));
+  const published = await f.commit();
+  await f.git(["checkout", "--detach", f.result]);
+  await f.git([...name, "merge", "--no-ff", priorPublished, "-m", "return source on former release"]);
+  const priorResult = await f.git(["rev-parse", "HEAD"]);
+  const priorTree = await f.git(["rev-parse", priorPublished+"^{tree}"]);
+  await f.git(["checkout", "--detach", f.base]);
+  await f.save("survivor.txt","surviving Task\n");
+  const survivor = await f.commit();
+  await f.git([...name, "merge", "--no-ff", priorResult, "-m", "absorb exact returned source"]);
+  const resultCommit = await f.git(["rev-parse", "HEAD"]);
+  const resultTree = await f.git(["rev-parse", resultCommit+"^{tree}"]);
+  const dataDir = path.join(f.root, ".git", "fixture-data");
+  const databaseFile = path.join(dataDir, "journal.sqlite");
+  new TaskBoardStore({ databaseFile }).close();
+  const journal = new DatabaseSync(databaseFile);
+  const tested = JSON.stringify({ task: { workflowStatus: "testing" },
+    evidence: { resultCommit: priorResult, devHeadCommit: resultCommit } });
+  const returned = JSON.stringify({ evidence: { outcome: "returned_for_correction",
+    acceptedResult: { resultCommit: priorResult } } });
+  const put = journal.prepare(`INSERT INTO hub_task_lifecycle_outcomes
+    (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, 'source', 'workflow', ?, ?)`);
+  put.run("test", tested, 1);
+  put.run("return", returned, 2);
+  journal.close();
+  const hash = value => createHash("sha256").update(value).digest("hex");
+  const retained = nativeIntegrationRecordFile(dataDir, "source", f.root, "test");
+  await mkdir(path.dirname(retained), { recursive: true });
+  await writeFile(retained, JSON.stringify({version:1, kind:"native-task-integration-v1", phase:"prepared",
+    operationId:"test", target:resultCommit,
+    snapshot:{taskId:"source",headCommit:priorResult,repositoryRoot:f.root},
+    nativeHistoryAuthority:{publishedMetadata:{commit:priorPublished,tree:priorTree,
+      repositoryRoot:f.root,generation:"prior-release",recordHash:"d".repeat(64)}}}));
+  const requestId = "review-historical-absorption";
+  const origin = {workspaceId:"workspace",streamId:"source-stream",provider:"codex",sourceThreadId:"thread",requestId};
+  const text = JSON.stringify({version:1,kind:"task-absorption-handoff-v1",workspaceId:origin.workspaceId,
+    sourceTaskId:"source",sourceTaskRevision:3,survivorTaskId:"survivor",baseCommit:f.base,
+    sourceCommit:priorResult,sourceTree:await f.git(["rev-parse",priorResult+"^{tree}"]),
+    survivorParentCommit:survivor,absorptionCommit:resultCommit,saved:true,stopped:true});
+  const absorptionInput={requestId,text,origin,contentHash:interstreamAuditContentHash(text,{origin}),createdAtMs:1,
+    sourceTaskNumber:"HUB-source",sourceDescriptionSha256:"a".repeat(64),
+    priorResults:[{taskId:"source",projectRoot:f.root,resultCommit:priorResult,testOperationId:"test",
+      returnOperationId:"return",testRevision:2,returnRevision:3,testOutcomeHash:hash(tested),returnOutcomeHash:hash(returned)}]};
+  const descriptor={kind:"native-task-integration-v1",taskId:"survivor",operationId:"survivor-Test",
+    expectedTaskRevision:3,repositoryRoot:f.root,taskBaseCommit:f.base,taskCommit:resultCommit,
+    devCommit:survivor,proofCommit:resultCommit,proofTree:resultTree,mainCommit:priorPublished,absorptionInput};
+  const task={taskId:"survivor",baseCommit:f.base,resultCommit,taskRevision:4,selectedCompositionRequired:true,
+    selectedComposition:{...descriptor,descriptorHash:hash(JSON.stringify(descriptor))}};
+  const historyAuthority={bases:[published],metadataBases:[published],publishedHistoryBase:published,dataDir};
+  await assert.rejects(assertNativeTaskHistories({ git:f.git,baseCommit:published,
+    tasks:[{taskId:task.taskId,baseCommit:f.base,resultCommit}],historyAuthority }), /release-owned package-version/);
+  const localAppData=path.join(f.root,".git","fixture-local");
+  const remote=path.join(f.root,".git","fixture-origin.git");
+  await f.git(["init","--bare","--initial-branch=main",remote]);
+  await f.git(["remote","add","origin",remote]);
+  await f.git(["checkout","-B","main",published]);
+  await f.git(["push","origin","main"]);
+  await f.save(".git/fixture-local/AgentHub/publication-state.json",JSON.stringify({
+    generation:"current-publication",repositories:[{root:f.root,revision:published}],
+  }));
+  const service=new TaskIntegrationGitService({dataDir,environment:{...process.env,LOCALAPPDATA:localAppData}});
+  const checks = await Promise.allSettled([
+    assertNativeTaskHistories({git:f.git,baseCommit:published,tasks:[task],historyAuthority}),
+    service.validateCandidate({planRevision:"review-historical-package",projectRoot:f.root,
+      workspaceId:"workspace",approvedBaseCommit:published,frozenTasks:[task]}),
+  ]);
+  t.diagnostic(JSON.stringify(checks.map(r=>r.status==="fulfilled"?[r.status,r.value?.status]:
+    [r.status,r.reason.message])));
+  assert.equal(checks[0].status,"fulfilled", checks[0].reason?.message);
+  assert.equal(checks[1].status,"fulfilled", checks[1].reason?.message);
+  assert.equal(checks[1].value.status,"validated");
 });

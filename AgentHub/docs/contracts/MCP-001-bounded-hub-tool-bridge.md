@@ -757,8 +757,9 @@ publication/remote, materialization and original-ID receipt rules apply.
 Preview refusals and legacy UNKNOWN settlement retain their existing owners;
 this classification does not itself prove that an old operation had no effect.
 
-For exact saved/stopped Progress absorption (REL-001, ADR-0105), the same tools
-accept optional `selected_absorption_handoff: {requestId,text}`. The text is
+Ordinary branch merges are part of the final Task commit tested in dev and
+accepted into PreRelease. Existing explicit legacy absorption operations
+(REL-001, ADR-0105) accept optional `selected_absorption_handoff: {requestId,text}`. The text is
 the exact JSON body of a successful authenticated source-executor
 `hub_stream_message_send` receipt targeted to the survivor executor:
 `version=1`, `kind=task-absorption-handoff-v1`, `workspaceId`,
