@@ -69,6 +69,29 @@ export function normalizedSelectedAbsorption(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+// A correction repeats the latest handoff. A fresh absorption extends the
+// prior committed Test, so older handoffs remain independently addressable.
+export function originalNativeAbsorption(proof) {
+  const previous = proof?.absorptionHistory;
+  return previous && JSON.stringify(previous.absorptionInput) === JSON.stringify(proof.absorptionInput)
+    ? previous : proof;
+}
+
+export function nativeAbsorptionInputs(proof) {
+  const bySource = new Map();
+  for (let current = proof; current; current = current.absorptionHistory) {
+    const input = current.absorptionInput;
+    if (!input) continue;
+    const { declaration } = selectedAbsorptionHandoff({ requestId: input.requestId, text: input.text });
+    const existing = bySource.get(declaration.sourceTaskId);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(input)) {
+      throw selectedCompositionRequiredError("native absorption source has competing handoffs");
+    }
+    bySource.set(declaration.sourceTaskId, input);
+  }
+  return [...bySource.values()];
+}
+
 export function assertSelectedAbsorptionTasks(value, source, survivor) {
   const input = normalizedSelectedAbsorption(value);
   if (!input) throw selectedCompositionRequiredError("absorption binding missing");
@@ -127,15 +150,13 @@ export function normalizedSelectedComposition(value) {
       throw selectedCompositionRequiredError("native Test absorbed identity changed");
     }
     if (proof.absorptionHistory) {
-      if (proof.absorptionHistory.absorptionHistory || proof.absorptionHistory.kind !== "native-task-integration-v1") {
-        throw selectedCompositionRequiredError("native absorbed history must reference its original Test");
-      }
-      const original = normalizedSelectedComposition(proof.absorptionHistory);
-      if (original.taskId !== proof.taskId || original.repositoryRoot !== proof.repositoryRoot
-          || original.taskBaseCommit !== proof.taskBaseCommit
-          || JSON.stringify(original.absorptionInput) !== JSON.stringify(proof.absorptionInput)) {
+      const previous = normalizedSelectedComposition(proof.absorptionHistory);
+      if (previous.kind !== "native-task-integration-v1" || previous.taskId !== proof.taskId
+          || previous.repositoryRoot !== proof.repositoryRoot || previous.taskBaseCommit !== proof.taskBaseCommit
+          || previous.operationId === proof.operationId || originalNativeAbsorption(previous) !== previous) {
         throw selectedCompositionRequiredError("native absorbed history identity changed");
       }
+      nativeAbsorptionInputs(proof);
     }
     return proof;
   }

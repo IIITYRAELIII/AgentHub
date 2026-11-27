@@ -199,10 +199,27 @@ test("native absorption accepts only the exact published parent of the returned 
     expectedTaskRevision: 3, repositoryRoot: f.root, taskBaseCommit: f.base, taskCommit: task.resultCommit,
     devCommit: task.resultCommit, proofCommit: task.resultCommit, proofTree: tree, mainCommit: advanced,
     absorptionInput };
+  const seal = proof => ({ ...proof, descriptorHash: hash(JSON.stringify(proof)) });
+  const first = seal(descriptor);
+  const secondSource = await commit("other saved source", advanced);
+  const both = await commit("survivor absorbs other source", task.resultCommit, secondSource);
+  const secondRequestId = "other-source-handoff";
+  const secondOrigin = { ...origin, requestId: secondRequestId, streamId: "other-stream" };
+  const secondText = JSON.stringify({ ...JSON.parse(absorptionInput.text), sourceTaskId: "other-source",
+    sourceCommit: secondSource, preservedSourceHead: undefined,
+    survivorParentCommit: task.resultCommit, absorptionCommit: both });
+  const secondInput = { requestId: secondRequestId, text: secondText, origin: secondOrigin,
+    contentHash: interstreamAuditContentHash(secondText, { origin: secondOrigin }),
+    createdAtMs: 2, sourceTaskNumber: "HUB-other", sourceDescriptionSha256: "b".repeat(64) };
+  const second = { ...descriptor, expectedTaskRevision: 5, operationId: "survivor-second-Test",
+    taskCommit: both, devCommit: both, proofCommit: both, absorptionInput: secondInput };
   const service = new TaskIntegrationGitService({ dataDir, environment: { ...process.env, LOCALAPPDATA: localAppData } });
   const request = { planRevision: "fresh-absorption-closure", projectRoot: f.root, workspaceId: "workspace",
     approvedBaseCommit: advanced, frozenTasks: [{ ...task, taskRevision: 4, selectedCompositionRequired: true,
-      selectedComposition: { ...descriptor, descriptorHash: hash(JSON.stringify(descriptor)) } }] };
+      selectedComposition: first }] };
+  const combinedRequest = proof => ({ ...request, planRevision: "both-absorbed-sources",
+    frozenTasks: [{ ...task, resultCommit: both, taskRevision: 6, selectedCompositionRequired: true,
+      selectedComposition: seal(proof) }] });
   const journalBefore = await readFile(databaseFile);
   const captureBefore = await readFile(retained);
   const refsBefore = await f.git(["show-ref"]);
@@ -210,6 +227,10 @@ test("native absorption accepts only the exact published parent of the returned 
   assert.equal(proof.status, "validated");
   assert.equal(proof.baseCommit, advanced);
   assert.deepEqual(proof.mergedTaskIds, [task.taskId]);
+  await assert.rejects(service.validateCandidate(combinedRequest(second)), /unselected merge side/u);
+  const combinedProof = await service.validateCandidate(combinedRequest({ ...second, absorptionHistory: first }));
+  assert.equal(combinedProof.status, "validated");
+  assert.deepEqual(combinedProof.mergedTaskIds, [task.taskId]);
   await assert.rejects(readFile(service.releaseRepositoriesRoot), { code: "ENOENT" });
   assert.deepEqual(await readFile(databaseFile), journalBefore);
   assert.deepEqual(await readFile(retained), captureBefore);
