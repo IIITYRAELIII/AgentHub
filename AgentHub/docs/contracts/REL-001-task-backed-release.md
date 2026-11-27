@@ -305,29 +305,18 @@ publication policy from canceled work remains outside this mechanism. See
 
 ## Native content and conflict preservation
 
-Task composition includes only the exact selected results and their supported
-dependency/absorption authority. Foreign/unselected merge sides remain refused.
+Task composition includes the exact selected result commits. A source branch
+may contain ordinary merges from one or more Task branches. The final commit
+is the input to both Test and Await. Neither operation requires a separate
+handoff, per-parent approval, return receipt or intermediate Test.
 An ordinary Task merge into dev or PreRelease keeps the destination tree's
 root `CHANGELOG.md`. The selected source commit and its parents stay intact;
 the root changelog contributes no Task content or conflict. Release preparation
 and synchronization from published main keep their existing authority over it.
 See [ADR-HUB-562](../decisions/ADR-HUB-562-release-changelog-ownership.md).
-Native absorption may retain a two-parent source merge when it is the exact
-returned source Test and its second parent is the published commit captured
-by that original Test. This commit must still be an ancestor of the currently
-verified publication. When the exact handoff binds a preserved
-source HEAD, the same Git owner verifies the selected source on that HEAD's
-first-parent history at Test and combined closure. Late commits remain in
-the source branch and worktree. See ADR-HUB-448 on the published parent of a
-returned Test.
-
-Successive native Tests may absorb different sources into the same survivor.
-Each adds one authenticated handoff and retains the previous exact Test
-outcome. Await and release preparation verify every recorded merge and its
-ordered parents. Combined closure verifies the handoff for the requested
-source against the survivor's latest exact Test. A foreign merge side or a
-competing handoff for the same source fails verification. See
-[ADR-HUB-571](../decisions/ADR-HUB-571-multiple-native-absorptions.md).
+Existing lifecycle receipts remain available to recover the exact older
+operations they originally recorded. New Task-to-Task merges are normal Git
+history. See [ADR-HUB-573](../decisions/ADR-HUB-573-task-commit-with-merges.md).
 Every actual ordered merge parent, automatic tree, resolution binding and
 selected result is checked. Normal issued resolution continuation stays within
 the original native owner namespace and finite lock ownership; unresolved

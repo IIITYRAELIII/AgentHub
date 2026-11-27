@@ -901,11 +901,10 @@ export class TaskLifecycleService {
         || !ordinaryTestSources.has(task.workflowStatus)
       )) return needsAwaitOwnership;
       const refs = (task.gitReferences ?? []).filter(ref => samePath(ref.projectRoot, projectRoot || this.#projectRoot(task)));
-      const prior = releaseWorkflow && status === "testing" && refs.length === 1
+      const prior = handoff && refs.length === 1
         ? this.taskBoard.selectedCompositionForRelease({ taskId, projectRoot: refs[0].projectRoot,
           resultCommit: refs[0].resultCommit })?.selectedComposition : null;
       const history = prior?.kind === "native-task-integration-v1" ? originalNativeAbsorption(prior) : null;
-      if (ordinaryTestWorkspaceId != null && history) return needsAwaitOwnership;
       return this.#updateWorkflowStatusWithLease({
         taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
         admissionReceipt, manualDelivery,

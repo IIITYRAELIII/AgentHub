@@ -355,8 +355,8 @@ test("native composition rejects substituted receipts, changed snapshot and post
   await assertNativeTaskHistories({ git: f.port, baseCommit: f.source, tasks: f.tasks, historyAuthority: authority });
   await save(f.task.projectRoot, "CHANGELOG.md", "Task invented notes\n");
   const notes = await commit(f.task.projectRoot, "invalid task notes");
-  await assert.rejects(assertNativeTaskHistories({ git: f.port, baseCommit: f.source,
-    tasks: [{ ...f.tasks[0], resultCommit: notes }], historyAuthority: authority }), /unselected merge side/);
+  await assertNativeTaskHistories({ git: f.port, baseCommit: f.source,
+    tasks: [{ ...f.tasks[0], resultCommit: notes }], historyAuthority: authority });
   await assert.rejects(verify(), /identity changed/);
   // New ordinary adoption belongs to the new exact snapshot, never the old receipt.
   await git(f.task.projectRoot, ["checkout", f.result, "--", "CHANGELOG.md"]);
@@ -379,7 +379,7 @@ test("native composition rejects substituted receipts, changed snapshot and post
   assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
 });
 
-test("an exact adoption ignores root notes and still refuses version changes and foreign merge sides", async t => {
+test("an exact adoption ignores root notes, accepts Task merges and refuses version changes", async t => {
   const f = await fixture(t);
   const verify = async label => {
     const resultCommit = await git(f.task.projectRoot, ["rev-parse", "HEAD"]);
@@ -410,7 +410,7 @@ test("an exact adoption ignores root notes and still refuses version changes and
   await save(other, "AgentHub/unselected.mjs", "export const unselected = true;\n");
   const foreign = await commit(other, "unselected Task result");
   await git(f.task.projectRoot, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "merge", "--no-ff", "--no-edit", foreign]);
-  await assert.rejects((await verify("foreign"))(), /unselected merge side/);
+  await (await verify("foreign"))();
   assert.equal(await git(f.primary, ["rev-parse", "main"]), f.main);
 });
 

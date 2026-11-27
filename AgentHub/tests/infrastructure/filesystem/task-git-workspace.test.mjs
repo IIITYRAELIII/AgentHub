@@ -334,6 +334,34 @@ async function withdrawalFixture(context, { dependent = false } = {}) {
   return { root, service, a, b, firstA, firstB, tasks, withdraw, publish(value) { publication = value; } };
 }
 
+test("ordinary Test integrates the final Task commit after two Git merges", async (t) => {
+  const root = await repository(t);
+  const dataDir = path.join(root, "..", `\${path.basename(root)}-merged-tasks`);
+  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  const owner = new TaskGitWorkspaceService({ dataDir });
+  const target = await owner.prepare({ taskId: "18181818-1818-4818-8818-181818181818", taskNumber: "HUB-18", projectRoot: root });
+  for (const [taskId, taskNumber, file] of [
+    ["19191919-1919-4919-8919-191919191919", "HUB-19", "first.txt"],
+    ["20202020-2020-4020-8020-202020202020", "HUB-20", "second.txt"],
+  ]) {
+    const source = await owner.prepare({ taskId, taskNumber, projectRoot: root });
+    await writeFile(path.join(source.projectRoot, file), file);
+    await git(source.projectRoot, "add", file);
+    await git(source.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", file);
+    await git(target.projectRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+      "merge", "--no-ff", source.branch, "-m", file);
+  }
+  const head = await git(target.projectRoot, "rev-parse", "HEAD");
+  const result = await owner.snapshotAndMerge({ taskId: target.taskId, taskNumber: "HUB-18",
+    projectRoot: target.projectRoot, operationId: "test-final-merged-task" });
+  assert.equal(result.integration.integrated, true);
+  assert.equal(result.snapshot.headCommit, head);
+  const dev = await owner.prepareDev(root);
+  assert.equal(await readFile(path.join(dev.projectRoot, "first.txt"), "utf8"), "first.txt");
+  assert.equal(await readFile(path.join(dev.projectRoot, "second.txt"), "utf8"), "second.txt");
+  await git(root, "merge-base", "--is-ancestor", head, "dev");
+});
+
 test("withdrawal removes only its Task and ordinary Test reintegrates its full result", async (context) => {
   const { root, service, a, b, firstA, firstB, withdraw } = await withdrawalFixture(context);
   await writeFile(path.join(a.projectRoot, "unfinished.txt"), "keep my edits\n", "utf8");
