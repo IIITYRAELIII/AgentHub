@@ -134,8 +134,10 @@ test("two native consumers own one exact pack each and retain independent metada
   const b = (await objectFiles(path.join(secondRepo, ".git/objects"))).filter(x => x.name.startsWith("pack/"));
   assert.equal(await gitAt(firstRepo, ["show", "-s", "--format=%P", first.head]), f.base + " " + f.result);
   assert.equal(await gitAt(secondRepo, ["show", "-s", "--format=%P", second.head]), f.base + " " + f.result);
-  assert.equal(a.length, 2);
-  assert.equal(b.length, 2);
+  for (const files of [a, b]) {
+    assert.equal(files.filter(file => file.name.endsWith(".pack")).length, 1);
+    assert.equal(files.filter(file => file.name.endsWith(".idx")).length, 1);
+  }
   assert.ok(a.every(x => x.nlink === 1) && b.every(x => x.nlink === 1));
   const firstIndex = new Set(a.map(x => x.dev + ":" + x.ino));
   assert.ok(b.every(x => !firstIndex.has(x.dev + ":" + x.ino)));
@@ -333,8 +335,10 @@ test("native missing-object encoding shares delta history and preserves archive 
   const one = path.join(f.root, "encoding-one/repository"), two = path.join(f.root, "encoding-two/repository");
   const a = (await objectFiles(path.join(one, ".git/objects"))).filter(x => x.name.startsWith("pack/"));
   const b = (await objectFiles(path.join(two, ".git/objects"))).filter(x => x.name.startsWith("pack/"));
-  assert.equal(a.length, 2);
-  assert.equal(b.length, 2);
+  for (const files of [a, b]) {
+    assert.equal(files.filter(file => file.name.endsWith(".pack")).length, 1);
+    assert.equal(files.filter(file => file.name.endsWith(".idx")).length, 1);
+  }
   const firstPacks = new Set(a.map(x => x.dev + ":" + x.ino));
   assert.ok(b.every(x => !firstPacks.has(x.dev + ":" + x.ino)));
   assert.notEqual((await lstat(path.join(one, ".git/index"))).ino, (await lstat(path.join(two, ".git/index"))).ino);
