@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { TaskCleanupConfirmationRejectedError, taskCleanupIsConfirmed } from "../domain/task-cleanup-confirmation.mjs";
 import { selectedCompositionFields, selectedAbsorptionHandoff, normalizedSelectedAbsorption,
-  assertSelectedAbsorptionTasks } from "../domain/task-selected-composition.mjs";
+  assertSelectedAbsorptionTasks, originalNativeAbsorption } from "../domain/task-selected-composition.mjs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
@@ -901,17 +901,17 @@ export class TaskLifecycleService {
         || !ordinaryTestSources.has(task.workflowStatus)
       )) return needsAwaitOwnership;
       const refs = (task.gitReferences ?? []).filter(ref => samePath(ref.projectRoot, projectRoot || this.#projectRoot(task)));
-      const prior = !handoff && releaseWorkflow && status === "testing" && refs.length === 1
+      const prior = releaseWorkflow && status === "testing" && refs.length === 1
         ? this.taskBoard.selectedCompositionForRelease({ taskId, projectRoot: refs[0].projectRoot,
           resultCommit: refs[0].resultCommit })?.selectedComposition : null;
-      const history = prior?.kind === "native-task-integration-v1" ? prior.absorptionHistory ?? prior : null;
+      const history = prior?.kind === "native-task-integration-v1" ? originalNativeAbsorption(prior) : null;
       if (ordinaryTestWorkspaceId != null && history) return needsAwaitOwnership;
       return this.#updateWorkflowStatusWithLease({
         taskId, status, operationId, binding, projectRoot, expectedRevision, expectedWorkflowStatus,
         admissionReceipt, manualDelivery,
-        operationEvidence: handoff ? { ...(operationEvidence ?? {}), nativeAbsorptionInput:
-          this.#selectedAbsorptionBinding(task, handoffInput, operationId) }
-          : history ? { ...(operationEvidence ?? {}), nativeAbsorptionHistory: history } : operationEvidence,
+        operationEvidence: handoff || history ? { ...(operationEvidence ?? {}),
+          ...(handoff ? { nativeAbsorptionInput: this.#selectedAbsorptionBinding(task, handoffInput, operationId) } : {}),
+          ...(history ? { nativeAbsorptionHistory: history } : {}) } : operationEvidence,
       }, { releaseWorkflow, lease, ordinaryTest: ordinaryTestWorkspaceId != null });
     };
     return handoff
@@ -975,17 +975,20 @@ export class TaskLifecycleService {
           { record, lease, recovery: initialNativeTestRecovery });
       } : null;
       await validateInitialNativeTest?.();
-      const validateAbsorption = nativeAbsorptionHistory ? () => {
-        const original = this.taskBoard.selectedCompositionForRelease({ taskId: task.id,
-          projectRoot: nativeAbsorptionHistory.repositoryRoot, resultCommit: nativeAbsorptionHistory.taskCommit });
-        if (JSON.stringify(original?.selectedComposition) !== JSON.stringify(nativeAbsorptionHistory)) {
-          throw new Error("Native absorption accepted history changed");
+      const validateAbsorption = nativeAbsorptionHistory || nativeAbsorptionInput ? () => {
+        if (nativeAbsorptionHistory) {
+          const original = this.taskBoard.selectedCompositionForRelease({ taskId: task.id,
+            projectRoot: nativeAbsorptionHistory.repositoryRoot, resultCommit: nativeAbsorptionHistory.taskCommit });
+          if (JSON.stringify(original?.selectedComposition) !== JSON.stringify(nativeAbsorptionHistory)) {
+            throw new Error("Native absorption accepted history changed");
+          }
         }
-      } : nativeAbsorptionInput ? () => {
-        const fresh = this.#selectedAbsorptionBinding(this.#task(task.id),
-          { requestId: nativeAbsorptionInput.requestId, text: nativeAbsorptionInput.text }, operationId);
-        if (JSON.stringify(fresh) !== JSON.stringify(nativeAbsorptionInput)) {
-          throw new Error("Native absorption original handoff changed");
+        if (nativeAbsorptionInput) {
+          const fresh = this.#selectedAbsorptionBinding(this.#task(task.id),
+            { requestId: nativeAbsorptionInput.requestId, text: nativeAbsorptionInput.text }, operationId);
+          if (JSON.stringify(fresh) !== JSON.stringify(nativeAbsorptionInput)) {
+            throw new Error("Native absorption original handoff changed");
+          }
         }
       } : null;
       validateAbsorption?.();

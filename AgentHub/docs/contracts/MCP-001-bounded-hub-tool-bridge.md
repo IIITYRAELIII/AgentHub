@@ -776,6 +776,10 @@ exact body, current Task/transfer/source state and bounded ordered Git histories
 No new ledger, handoff writer, composer or completion interface is introduced.
 Both Tasks are reserved through the existing lifecycle intent and recovery
 locks; the same proof is persisted and compared at terminal CAS.
+To absorb another source, submit a subsequent ordinary Test with its own
+handoff. A successful Test retains the already committed native absorption
+history. When closing a source against the survivor, the same completion
+command selects that source's handoff from the exact tested history.
 
 For a Task based on accepted local main that diverges from an already published
 repository history, the historical receipt may contain the `selected_*` argument family

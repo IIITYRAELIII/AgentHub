@@ -33,7 +33,7 @@ import { normalizedTaskGitReferences, taskBranchName, normalizedInitialNativeTes
 import { normalizedTaskSquashTransfer } from "../../domain/task-squash-transfer.mjs";
 import { normalizedTaskSquashCutover } from "../../domain/task-squash-cutover.mjs";
 import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError,
-  normalizedSelectedAbsorption, selectedAbsorptionHandoff, assertSelectedAbsorptionTasks } from "../../domain/task-selected-composition.mjs";
+  normalizedSelectedAbsorption, selectedAbsorptionHandoff, assertSelectedAbsorptionTasks, originalNativeAbsorption } from "../../domain/task-selected-composition.mjs";
 import { normalizedTaskNumber, normalizedWorkspaceTaskPrefix, taskNumberParts } from "../../domain/task-number.mjs";
 import { taskProjectRoot } from "../../domain/task-project-root.mjs";
 import {
@@ -2819,7 +2819,7 @@ export class TaskBoardStore {
   #assertNativeAbsorptionHistory(database, history, taskId) {
     const proof = selectedCompositionFields({ taskId, resultCommit: history?.taskCommit,
       selectedComposition: history }).selectedComposition;
-    if (proof?.kind !== "native-task-integration-v1" || proof.absorptionHistory) {
+    if (proof?.kind !== "native-task-integration-v1" || originalNativeAbsorption(proof) !== proof) {
       throw selectedCompositionRequiredError("native accepted absorption root missing");
     }
     const row = database.prepare(`SELECT result_json FROM hub_task_lifecycle_outcomes
@@ -2833,6 +2833,8 @@ export class TaskBoardStore {
           && sameResolvedPath(ref.projectRoot, proof.repositoryRoot))) {
       throw selectedCompositionRequiredError("native accepted absorption outcome changed");
     }
+    this.#assertAbsorptionPriorOutcomes(database, proof.absorptionInput);
+    if (proof.absorptionHistory) this.#assertNativeAbsorptionHistory(database, proof.absorptionHistory, taskId);
     return proof;
   }
 
@@ -2995,7 +2997,7 @@ export class TaskBoardStore {
           : null;
         const absorptionInput = evidence?.nativeAbsorptionInput ?? evidence?.selectedComposition?.absorptionInput;
         if (evidence?.nativeAbsorptionHistory) {
-          if (absorptionInput || normalizedKind !== "workflow" || target !== "testing") {
+          if (evidence?.selectedComposition || normalizedKind !== "workflow" || target !== "testing") {
             throw selectedCompositionRequiredError("native accepted history requires ordinary Test");
           }
           this.#assertNativeAbsorptionHistory(database, evidence.nativeAbsorptionHistory, taskId);
@@ -3345,6 +3347,9 @@ export class TaskBoardStore {
           selectedCompositionRequired: true, selectedComposition: evidence.selectedComposition });
         if (fields.selectedComposition.kind === "native-task-integration-v1") {
           this.#assertAbsorptionPriorOutcomes(database, fields.selectedComposition.absorptionInput);
+          if (fields.selectedComposition.absorptionHistory) {
+            this.#assertNativeAbsorptionHistory(database, fields.selectedComposition.absorptionHistory, taskId);
+          }
         }
         if (evidence.resultCommit !== resultCommit
             || !sameResolvedPath(fields.selectedComposition.repositoryRoot, projectRoot)
@@ -3426,12 +3431,12 @@ export class TaskBoardStore {
               || evidence.response?.gitWorkspace?.branch !== initialNativeTest.identity.sourceBranch
               || evidence.response?.gitIntegration?.integrated !== true) throw new Error("Initial native Test terminal binding changed");
         }
-        const pendingSelected = JSON.parse(transition.evidence_json ?? "{}")?.selectedComposition;
-        const pendingNativeInput = JSON.parse(transition.evidence_json ?? "{}")?.nativeAbsorptionInput;
-        const pendingNativeHistory = JSON.parse(transition.evidence_json ?? "{}")?.nativeAbsorptionHistory;
+        const pendingSelected = originalEvidence.selectedComposition;
+        const pendingNativeInput = originalEvidence.nativeAbsorptionInput;
+        const pendingNativeHistory = originalEvidence.nativeAbsorptionHistory;
         if (pendingNativeHistory) {
           this.#assertNativeAbsorptionHistory(database, pendingNativeHistory, transition.task_id);
-          if (pendingNativeInput || JSON.stringify(evidence?.nativeAbsorptionHistory) !== JSON.stringify(pendingNativeHistory)) {
+          if (JSON.stringify(evidence?.nativeAbsorptionHistory) !== JSON.stringify(pendingNativeHistory)) {
             throw selectedCompositionRequiredError("native accepted history changed before terminal");
           }
           if (evidence?.selectedComposition) {
@@ -3440,6 +3445,7 @@ export class TaskBoardStore {
             if (descriptor.kind !== "native-task-integration-v1" || descriptor.operationId !== operation
                 || descriptor.expectedTaskRevision !== Number(transition.expected_task_revision)
                 || descriptor.proofCommit !== evidence.devHeadCommit
+                || JSON.stringify(descriptor.absorptionInput) !== JSON.stringify(pendingNativeInput ?? pendingNativeHistory.absorptionInput)
                 || JSON.stringify(descriptor.absorptionHistory) !== JSON.stringify(pendingNativeHistory)) {
               throw selectedCompositionRequiredError("native corrected terminal lost accepted history");
             }
@@ -3447,7 +3453,7 @@ export class TaskBoardStore {
             const reused = this.#selectedCompositionForRelease(database, { taskId: transition.task_id,
               projectRoot: pendingNativeHistory.repositoryRoot, resultCommit: evidence?.resultCommit })?.selectedComposition;
             if (reused?.kind !== "native-task-integration-v1"
-                || JSON.stringify(reused.absorptionHistory ?? reused) !== JSON.stringify(pendingNativeHistory)
+                || JSON.stringify(originalNativeAbsorption(reused)) !== JSON.stringify(pendingNativeHistory)
                 || evidence?.response?.gitIntegration?.alreadyIntegrated !== true) {
               throw selectedCompositionRequiredError("native reuse has no exact original Test result");
             }
@@ -3460,6 +3466,7 @@ export class TaskBoardStore {
           if (descriptor.kind !== "native-task-integration-v1" || descriptor.operationId !== operation
               || descriptor.expectedTaskRevision !== Number(transition.expected_task_revision)
               || descriptor.proofCommit !== evidence?.devHeadCommit
+              || JSON.stringify(descriptor.absorptionHistory ?? null) !== JSON.stringify(pendingNativeHistory ?? null)
               || JSON.stringify(descriptor.absorptionInput) !== JSON.stringify(pendingNativeInput)
               || JSON.stringify(evidence?.nativeAbsorptionInput) !== JSON.stringify(pendingNativeInput)) {
             throw selectedCompositionRequiredError("native absorbed terminal differs from original admission");

@@ -6,7 +6,7 @@ import { sourceBlobs } from "./local-source-baseline.mjs";
 import { normalizedTaskId, taskGitIdentityHash, taskRepositoryKey } from "../../domain/task-git-reference.mjs";
 import { canonicalPath } from "./config.mjs";
 import { TaskBoardStore } from "../persistence/task-board-store.mjs";
-import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff }
+import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff, nativeAbsorptionInputs }
   from "../../domain/task-selected-composition.mjs";
 import { nativeReuseContext, nativeReuseCandidates, verifiedNativePrefix, retainedNativeConflict } from "./native-merge-reuse.mjs";
 import { measureTaskOperation } from "../process/task-operation-timing.mjs";
@@ -214,9 +214,11 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
     ])).split(/\r?\n/u).filter(Boolean).map(row => row.split(" "));
     for (const [commit] of rows) owned.add(commit);
     const selected = selectedCompositionFields(task);
-    const absorbed = selected.selectedComposition?.absorptionInput ?? task.nativeAbsorptionInput;
-    let absorption = null;
-    if (absorbed) {
+    const absorptions = [];
+    const descriptor = selected.selectedComposition ?? {
+      absorptionInput: task.nativeAbsorptionInput, absorptionHistory: task.nativeAbsorptionHistory,
+    };
+    for (const absorbed of nativeAbsorptionInputs(descriptor)) {
       const binding = normalizedSelectedAbsorption(absorbed);
       const d = selectedAbsorptionHandoff({ requestId: binding.requestId, text: binding.text }).declaration;
       const published = historyAuthority?.publishedHistoryBase;
@@ -228,13 +230,13 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       const publishedParent = published && returnedMerge
         && await returnedTestPublishedParent({ git, dataDir: historyAuthority.dataDir, prior,
           side: returnedMerge[2], published }) ? returnedMerge[2] : null;
-      absorption = { binding, d, prior, sourceRows, publishedParent,
-        historical: publishedParent !== published ? publishedParent : null };
+      absorptions.push({ binding, d, prior, sourceRows, publishedParent,
+        historical: publishedParent !== published ? publishedParent : null });
     }
     const adopted = (historyAuthority?.adoptions ?? []).filter(a => a.taskId === task.taskId
       && a.resultCommit === task.resultCommit);
     const metadataBases = [...new Set([taskBase, ...(historyAuthority?.metadataBases ?? []),
-      ...(absorption?.historical ? [absorption.historical] : []),
+      ...absorptions.map(item => item.historical).filter(Boolean),
       ...adopted.map(a => a.adoptedCommit)])];
     const changedMetadata = String(await git([
       "diff", "--name-only", "--no-renames", "-z", taskBase, task.resultCommit,
@@ -243,7 +245,7 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
     ], { rawOutput: true })).split("\0").filter(Boolean);
     const notes = changedMetadata.filter(file => file !== ROOT_CHANGELOG && matchesMetadata(file, ["CHANGELOG.md"]));
     const packages = changedMetadata.filter(file => matchesMetadata(file, ["package.json", "package-lock.json"]));
-    histories.push({ task, rows, metadataBases, notes, packages, absorption });
+    histories.push({ task, rows, metadataBases, notes, packages, absorptions });
     if (notes.length || packages.length) {
       for (const commit of [task.resultCommit, ...metadataBases]) {
         if (!requests.has(commit)) requests.set(commit, new Set());
@@ -300,12 +302,12 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       }
     }
   }
-  for (const { task, rows, absorption } of histories) {
+  for (const { task, rows, absorptions } of histories) {
     // Fresh admission is supplied only by TaskLifecycle under both Task leases.
     // Release preparation uses the sealed descriptor from the committed Test.
-    let authorizedSide = null;
-    if (absorption) {
-      const { binding, d, prior, sourceRows, publishedParent } = absorption;
+    const authorizedSides = new Map();
+    let laterParent = null;
+    for (const { binding, d, prior, sourceRows, publishedParent } of absorptions) {
       for (const prior of binding.priorResults ?? []) {
         const parent = prior.taskId === d.sourceTaskId ? d.sourceCommit : d.survivorParentCommit;
         if (await maybe(git, ["merge-base", "--is-ancestor", d.baseCommit, prior.resultCommit]) === null
@@ -315,7 +317,8 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       }
       if (d.survivorTaskId !== task.taskId
           || d.baseCommit !== (task.baseCommit || baseCommit)
-          || await maybe(git, ["merge-base", "--is-ancestor", d.absorptionCommit, task.resultCommit]) === null
+          || !await contains(d.absorptionCommit, laterParent ?? task.resultCommit)
+          || authorizedSides.has(d.absorptionCommit)
           || String(await git(["show", "-s", "--format=%P", d.absorptionCommit]))
             !== `${d.survivorParentCommit} ${d.sourceCommit}`
           || String(await git(["rev-parse", `${d.sourceCommit}^{tree}`])) !== d.sourceTree) {
@@ -328,7 +331,8 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
           || await maybe(git, ["merge-base", "--is-ancestor", d.baseCommit, d.sourceCommit]) === null) {
         throw failure(`Task ${task.taskId} absorbed source requires explicit historical migration`);
       }
-      authorizedSide = { commit: d.absorptionCommit, source: d.sourceCommit };
+      authorizedSides.set(d.absorptionCommit, d.sourceCommit);
+      laterParent = d.survivorParentCommit;
     }
     for (const [commit, ...parents] of rows) {
       if (parents.length > 2 || !parents.length) throw failure(`Task ${task.taskId} has unsupported result history`);
@@ -339,7 +343,7 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
         for (const b of trustedBases) {
           if (await maybe(git, ["merge-base", "--is-ancestor", side, b]) !== null) { contained = true; break; }
         }
-        if (!owned.has(side) && !(authorizedSide?.commit === commit && authorizedSide.source === side)
+        if (!owned.has(side) && authorizedSides.get(commit) !== side
             && !contained) {
           throw failure(`Task ${task.taskId} contains an unselected merge side; migrate it explicitly`,
             "RELEASE_NATIVE_HISTORY_REQUIRED", { taskId: task.taskId, sideCommit: side });

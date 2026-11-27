@@ -15,7 +15,7 @@ import process from "node:process";
 import { normalizePublishedResolution } from "./selected-composition-proof.mjs";
 import { verifyCleanupPreservation } from "./cleanup-preservation.mjs";
 import { selectedCompositionFields, selectedCompositionIdentity, selectedCompositionRequiredError,
-  normalizedSelectedAbsorption, selectedAbsorptionHandoff } from "../../domain/task-selected-composition.mjs";
+  normalizedSelectedAbsorption, selectedAbsorptionHandoff, nativeAbsorptionInputs } from "../../domain/task-selected-composition.mjs";
 import { readSelectedCheckoutAuthority, verifySelectedCompositionFiles, verifySelectedCompositionRecord }
   from "./selected-composition-materializer.mjs";
 import { canonicalPath } from "./config.mjs";
@@ -4765,8 +4765,8 @@ export class TaskGitWorkspaceService {
       baseCommit: dev.mainCommit,
       historyAuthority,
       tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit, resultCommit: snapshot.headCommit,
-        ...(nativeAbsorptionInput || nativeAbsorptionHistory
-          ? { nativeAbsorptionInput: nativeAbsorptionInput ?? nativeAbsorptionHistory.absorptionInput } : {}) }],
+        ...(nativeAbsorptionInput ? { nativeAbsorptionInput } : {}),
+        ...(nativeAbsorptionHistory ? { nativeAbsorptionHistory } : {}) }],
     });
     return { version: 1, kind: "native-task-integration-v1", operationId, phase: "prepared",
       snapshot, devRoot: dev.projectRoot, before: dev.headCommit, mainCommit: dev.mainCommit,
@@ -4849,8 +4849,8 @@ export class TaskGitWorkspaceService {
           const historyAuthority = await this.#nativeHistoryAuthority(snapshot, dev, ownedLease, record.nativeHistoryAuthority);
           await assertNativeTaskHistories({ git: (args, options = {}) => git(args, snapshot.repositoryRoot, options),
             baseCommit: record.mainCommit, tasks: [{ taskId: snapshot.taskId, baseCommit: snapshot.baseCommit,
-              resultCommit: snapshot.headCommit, ...(nativeAbsorptionInput || nativeAbsorptionHistory
-                ? { nativeAbsorptionInput: nativeAbsorptionInput ?? nativeAbsorptionHistory.absorptionInput } : {}) }],
+              resultCommit: snapshot.headCommit, ...(nativeAbsorptionInput ? { nativeAbsorptionInput } : {}),
+              ...(nativeAbsorptionHistory ? { nativeAbsorptionHistory } : {}) }],
             historyAuthority });
         }
         if (initialNativeTest) await validateInitialNativeTest({ record });
@@ -6521,9 +6521,11 @@ export class TaskGitWorkspaceService {
             throw selectedCompositionRequiredError("combined native absorption result changed");
           }
           await this.#nativeSelectedCompositionForResult(proof, devLease);
-          const input = normalizedSelectedAbsorption(proof.absorptionInput);
-          const d = selectedAbsorptionHandoff({ requestId: input.requestId, text: input.text }).declaration;
-          if (d.sourceTaskId !== source.id || d.sourceTaskRevision !== source.revision) {
+          const input = nativeAbsorptionInputs(proof).find(binding => (
+            selectedAbsorptionHandoff({ requestId: binding.requestId, text: binding.text }).declaration.sourceTaskId === source.id
+          ));
+          if (!input || selectedAbsorptionHandoff({ requestId: input.requestId, text: input.text })
+            .declaration.sourceTaskRevision !== source.revision) {
             throw selectedCompositionRequiredError("combined native absorbed source changed");
           }
           const selection = await this.#assertSelectedAbsorptionGit(input, repoRoot, devLease);

@@ -487,6 +487,7 @@
       "document": "REL-001-task-backed-release.md",
       "paths": [
         "docs/decisions/ADR-HUB-562-release-changelog-ownership.md",
+        "docs/decisions/ADR-HUB-571-multiple-native-absorptions.md",
         "docs/decisions/ADR-HUB-254-github-account.md",
         "docs/decisions/ADR-HUB-511-github-token-refresh.md",
         "src/application/github-account-service.mjs",
@@ -761,6 +762,7 @@
       "title": "Bounded Agent Hub tool bridge",
       "document": "MCP-001-bounded-hub-tool-bridge.md",
       "paths": [
+        "docs/decisions/ADR-HUB-571-multiple-native-absorptions.md",
         "desktop-control.mjs",
         "src/infrastructure/process/desktop-control.mjs",
         "src/interfaces/mcp/hub-mcp-server.mjs",
