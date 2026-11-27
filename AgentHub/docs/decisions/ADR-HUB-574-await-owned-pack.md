@@ -32,7 +32,9 @@ outcome binds the accepted manifest, Git head and tree, Workspace and
 publication/history authority. When that exact completed checkpoint remains
 the ordered prefix of the new selection, the native owner transports its
 accepted head and merges the remaining results. The final selected-content
-check and promotion gates still run. Old receipts, ambiguous earlier state
+check and promotion gates still run. Git negotiates against the receiver's
+exact already provisioned input commits, including in a detached stage
+without refs. Old receipts, ambiguous earlier state
 and resolved conflicts use the existing verifier. Reopening a persisted reuse
 intent also retains its original Git readback.
 Manual and original-operation recovery continue to use their existing ordering.

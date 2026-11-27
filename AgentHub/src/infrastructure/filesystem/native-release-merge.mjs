@@ -1049,7 +1049,11 @@ export async function mergeSelectedResults({
     if (accepted) {
       await beforeTransport({ sourceIdentityHash: accepted.sourceIdentityHash,
         sourceJournalHash: accepted.sourceJournalHash, commit: accepted.head });
-      await git(["-c", "fetch.unpackLimit=1", "fetch", "--no-tags", "--no-write-fetch-head", sourceRoot, accepted.head]);
+      const ownedInputs = [...new Set([baseCommit, ...accepted.merges.map(step => step.resultCommit)])];
+      // Fresh staging is detached and has no refs advertising these objects.
+      // Tell Git exactly which already-provisioned inputs it can omit.
+      await git(["-c", "fetch.unpackLimit=1", "fetch", "--no-tags", "--no-write-fetch-head",
+        ...ownedInputs.map(input => `--negotiation-tip=${input}`), sourceRoot, accepted.head]);
     }
     const prefix = accepted ?? await verifiedNativePrefix({ root, repository, candidates: await readCandidates(), tasks, baseCommit, gitAt, beforeTransport,
       verify: (before, result, target, step) => verifyStep(before, result, target,

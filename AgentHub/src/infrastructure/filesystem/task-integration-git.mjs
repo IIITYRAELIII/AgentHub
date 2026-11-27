@@ -1587,10 +1587,10 @@ export class TaskIntegrationGitService {
       }));
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
-      const proofAuthority = taskGitIdentityHash({ repositoryRoot: initial.root, primaryGitCommonDir: initial.commonDir,
-        baseProvenance: provenance, historyAuthority });
       const canWitness = typeof readAcceptedAwaitOutcome === "function" && awaitOperationId && commitPrepared
         && !nativeAwaitRecovery && !forwardPreparation && !preparationGuard && !localSource;
+      const proofAuthority = canWitness ? taskGitIdentityHash({ repositoryRoot: initial.root,
+        primaryGitCommonDir: initial.commonDir, baseProvenance: provenance, historyAuthority }) : null;
       const readAcceptedPrefix = canWitness && checkpoint?.phase === "prepared" ? () =>
         measureTaskOperation("native:accepted-prefix", async () => {
           const bytes = await awaitEvidenceBytes(path.join(layout.root, "native-preparation.json"), { optional: true });
@@ -1612,7 +1612,10 @@ export class TaskIntegrationGitService {
           if (sha256(manifestBytes) !== expected.manifestHash) throw new Error("Accepted Await manifest changed");
           const old = JSON.parse(manifestBytes);
           const oldTasks = normalizedFrozenTasks(old.tasks);
+          // Keep Windows Git argv bounded. Larger prefixes use the existing
+          // bundle producer, which sends prerequisite OIDs over stdin.
           if (!oldTasks.length || oldTasks.length >= tasks.length || old.baseCommit !== baseCommit
+              || process.platform === "win32" && oldTasks.length > 256
               || old.workspaceId !== workspaceId || old.planRevision !== expected.planRevision
               || old.compositionPolicy !== NATIVE_RELEASE_POLICY
               || stableManifest(oldTasks) !== stableManifest(tasks.slice(0, oldTasks.length))
