@@ -1137,9 +1137,13 @@ test("manual standalone authority refuses foreign markers/remotes, stale trackin
 
 test("manual standalone sync merges disjoint object stores through existing isolated owner and preserves primary and later dev", async t => {
   const f = await fixture(t), dataDir = path.join(f.root, "data");
+  const deliveryReads = [];
   const service = new TaskGitWorkspaceService({ dataDir, runtimeRoot: f.runtimeRoot, recordTiming: () => {},
     readPublication: async () => { throw Error("No fabricated publication history"); },
-    readManualDelivery: args => readManualTaskDelivery({ ...args, ...f.ports }) });
+    readManualDelivery: args => {
+      deliveryReads.push(args.identityOnly === true);
+      return readManualTaskDelivery({ ...args, ...f.ports });
+    } });
   const dev = await service.prepareDev(f.repo);
   await writeFile(path.join(dev.projectRoot, "AgentHub/app.mjs"), "export const version = 'later-dev';\n");
   await writeFile(path.join(dev.projectRoot, "later.txt"), "retain Task work\n");
@@ -1152,11 +1156,13 @@ test("manual standalone sync merges disjoint object stores through existing isol
     operationId: "standalone-main-to-dev", workspaceId: "workspace", expectedDevCommit: devCommit, delivery: published.delivery } };
   const conflict = await service.synchronizeMainIntoDev(args);
   assert.equal(conflict.status, "review_required"); assert.equal(await f.git(["rev-parse", "dev"]), devCommit);
+  assert.deepEqual(deliveryReads.splice(0), [false]);
   await writeFile(path.join(conflict.nativeConflictRoot, "AgentHub/app.mjs"),
     "export const version = 'published-standalone';\nexport const later = 'later-dev';\n");
   const resolved = await f.commit(conflict.nativeConflictRoot);
   const result = await service.synchronizeMainIntoDev(args);
   assert.equal(result.integrated, true); assert.equal(result.headCommit, resolved); assert.equal(result.repositoryRoot, f.repo);
+  assert.deepEqual(deliveryReads.splice(0), [false, false, true, true]);
   await runTaskGitCommand(["merge-base", "--is-ancestor", devCommit, resolved], { cwd: dev.projectRoot });
   await runTaskGitCommand(["merge-base", "--is-ancestor", published.revision, resolved], { cwd: dev.projectRoot });
   assert.equal(await readFile(path.join(dev.projectRoot, "later.txt"), "utf8"), "retain Task work\n");
@@ -1165,6 +1171,7 @@ test("manual standalone sync merges disjoint object stores through existing isol
   assert.equal(await f.git(["rev-parse", "origin/main"]), f.base);
   assert.equal(sha(await readFile(path.join(f.repo, ".git/index"))), indexBefore);
   assert.equal((await service.synchronizeMainIntoDev(args)).headCommit, resolved);
+  assert.deepEqual(deliveryReads, [false, false, true]);
 });
 
 test("batch Complete archives independently, preserves work and returns each original receipt", async t => {

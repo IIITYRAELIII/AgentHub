@@ -67,7 +67,7 @@ export async function readManualPublishedRepository({ dataDir, repositoryRoot, r
 
 // This reads actual installation and Git state. It never writes publication history.
 export async function readManualTaskDelivery({ runtimeRoot, input, git, resultCommits = [],
-  hostSourceRoot = null,
+  hostSourceRoot = null, identityOnly = false,
   verifyInstalled = verifyInstalledRuntime, status = runtimeStatus,
   readEndpoint = readDesktopControlEndpoint, probe = callDesktopControl } = {}) {
   if (!runtimeRoot || !input || Object.keys(input).some(k => !["revision", "releaseId", "manifestSha256"].includes(k))
@@ -106,6 +106,16 @@ export async function readManualTaskDelivery({ runtimeRoot, input, git, resultCo
       instanceId: health.process.instanceId ?? null };
   };
   const running = await inspect();
+  const finish = async () => {
+    if (!(await readFile(manifestPath)).equals(manifestRaw) || !(await readFile(pointerPath)).equals(pointerRaw)
+        || JSON.stringify(await inspect()) !== JSON.stringify(running)) throw Error("Manual delivery changed during verification");
+    return { kind: "verified-manual-task-delivery-v1", runtimeRoot: path.resolve(runtimeRoot),
+      ...input, pointerSha256: sha(pointerRaw), running, resultCommits: [...resultCommits] };
+  };
+  if (identityOnly) {
+    if (resultCommits.length) throw Error("Manual Task result containment requires full delivery verification");
+    return finish();
+  }
   if (!await verifyInstalled({ runtimeRoot, releaseId: input.releaseId, releaseRoot })) {
     throw Error("Manual delivery installed runtime verification failed");
   }
@@ -150,8 +160,5 @@ export async function readManualTaskDelivery({ runtimeRoot, input, git, resultCo
     if (!/^[a-f0-9]{40}$/u.test(result ?? "")) throw Error("Exact Task result is required");
     await git(["merge-base", "--is-ancestor", result, input.revision]);
   }
-  if (!(await readFile(manifestPath)).equals(manifestRaw) || !(await readFile(pointerPath)).equals(pointerRaw)
-      || JSON.stringify(await inspect()) !== JSON.stringify(running)) throw Error("Manual delivery changed during verification");
-  return { kind: "verified-manual-task-delivery-v1", runtimeRoot: path.resolve(runtimeRoot),
-    ...input, pointerSha256: sha(pointerRaw), running, resultCommits: [...resultCommits] };
+  return finish();
 }

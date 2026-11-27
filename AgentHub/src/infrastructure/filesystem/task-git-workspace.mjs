@@ -2945,16 +2945,16 @@ export class TaskGitWorkspaceService {
       const currentLocalMain = await localMainCommit(repoRoot);
       if (manualSync) {
         if (publishedSync || validatePublishedSync) throw Error("Manual sync authority differs");
-        const read = async () => {
+        const read = async (identityOnly = false) => {
           await releaseLease.assertOwned();
-          return this.#readManualDeliveryOwned(repoRoot, manualSync.delivery, [], lease);
+          return this.#readManualDeliveryOwned(repoRoot, manualSync.delivery, [], lease, { identityOnly });
         };
         const delivery = await read();
         if (delivery.revision !== expectedMainCommit) throw Error("Manual sync revision differs from installed delivery");
         const sync = mathRoot => this.#synchronizePublishedMainOwned({ repoRoot, mathRoot, expectedMainCommit, currentLocalMain,
           publishedSync: manualSync, manualDelivery: delivery, lease, nativeResolutionReview,
-          validatePublishedSync: async () => {
-            if (JSON.stringify(await read()) !== JSON.stringify(delivery)) throw Error("Manual sync delivery changed");
+          validatePublishedSync: async (identityOnly = false) => {
+            if (JSON.stringify(await read(identityOnly)) !== JSON.stringify(delivery)) throw Error("Manual sync delivery changed");
           } });
         if (samePath(delivery.publishedRepository.root, repoRoot)) return sync(repoRoot);
         const objects = this.createNativeObjectStore({ sourceRoot: repoRoot, lease });
@@ -3050,7 +3050,7 @@ export class TaskGitWorkspaceService {
     if (!priorBlock) await this.#assertRecoverableDev(repoRoot, devRoot, { lease });
     const fence = async () => {
       await lease.assertOwned();
-      await validatePublishedSync();
+      if (!manualDelivery) await validatePublishedSync();
       const retainedReview = manualDelivery && (await readJson(path.join(root, "merge.json")))?.manualCompatibilityReview;
       if (retainedReview) {
         if (!manualDelivery || retainedReview.binding?.identityHash !== taskGitIdentityHash(identity)
@@ -3079,6 +3079,9 @@ export class TaskGitWorkspaceService {
         verifyManualReview: (review, binding) => this.measureOperation("native:review-receipt", () =>
           verifyManualDevResolutionReview({ dataDir: this.dataDir, review, binding })),
         fence,
+        // Verify installed content before effects; ref CAS and readback check mutable identity.
+        beforeCheckout: manualDelivery ? () => validatePublishedSync() : null,
+        beforeRefUpdate: manualDelivery ? () => validatePublishedSync(true) : null,
         gitAt: (cwd, args, options = {}) => this.#runOwned(args, { ...options, cwd, lease,
           guardRepositoryRoot: repoRoot, timeoutMs: 300_000 }),
         beforeDelivery: async () => {
@@ -3092,6 +3095,7 @@ export class TaskGitWorkspaceService {
         },
         afterDelivery: async () => {
           await fence();
+          if (manualDelivery) await validatePublishedSync(true);
           const block = await readJson(blockFile);
           if (block?.publishedDevSync !== identityHash) throw new Error("Published sync recovery owner changed");
           await unlink(blockFile);
@@ -6974,8 +6978,8 @@ export class TaskGitWorkspaceService {
     return state;
   }
 
-  async #readManualDeliveryOwned(repoRoot, input, resultCommits, lease) {
-    return this.measureOperation("manual-delivery-proof", async () => {
+  async #readManualDeliveryOwned(repoRoot, input, resultCommits, lease, { identityOnly = false } = {}) {
+    return this.measureOperation(identityOnly ? "manual-delivery-identity" : "manual-delivery-proof", async () => {
       // One process-tree guard owns one child at a time. The reader can request
       // independent facts together; drain this invocation's children on refusal.
       let gitTail = Promise.resolve();
@@ -6991,6 +6995,7 @@ export class TaskGitWorkspaceService {
         await lease.assertOwned();
         const publishedRepository = await inspect();
         const delivery = await this.readManualDelivery({ runtimeRoot: this.runtimeRoot, input, resultCommits,
+          ...(identityOnly ? { identityOnly } : {}),
           ...(!samePath(publishedRepository.root, repoRoot) ? { hostSourceRoot: path.join(publishedRepository.root, "AgentHub") } : {}),
           git: (args, options) => gitAt(publishedRepository.root, args, options) });
         if (JSON.stringify(await inspect()) !== JSON.stringify(publishedRepository)) {
