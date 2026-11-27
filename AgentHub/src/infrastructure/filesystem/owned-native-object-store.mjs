@@ -119,9 +119,9 @@ async function immutableLink(source, destination, assertCurrent = null) {
   return after;
 }
 
-// Same maintenance-operation owner as retention. No alternate/object borrowing,
-// capture registry or writable shared Git metadata. Only immutable object files
-// are linked; HEAD/index/config/refs/worktree always belong to each capture.
+// Same maintenance-operation owner as retention. Durable consumers have their
+// own objects, HEAD, index, config, refs and worktree. Archive restoration may
+// still restore immutable object links.
 export class OwnedNativeObjectStore {
   constructor({ dataDir, gitAt, store = new MaintenanceOperationStore({ dataDir }),
     withLease = fn => withInterprocessLocks([path.join(dataDir, "native-git-objects")], fn),
@@ -424,6 +424,21 @@ export class OwnedNativeObjectStore {
     });
   }
 
+  async #packConsumer(repository, objects) {
+    const git = path.join(repository, ".git");
+    const pack = path.join(git, "objects", "pack");
+    const directories = [repository, git, path.dirname(pack), pack];
+    const before = await readGroup(directories, directory => plain(directory, true).then(physical));
+    await measureTaskOperation("native:object-consumer-pack", async () => {
+      // Let Git assemble the exact admitted closure using its indexed pool.
+      // The consumer owns one pack, and never depends on a pool path or its refs.
+      await this.#git(this.repository, ["pack-objects", "--quiet", "--window=0",
+        "--delta-base-offset", path.join(pack, "pack")], { input: objects.join("\n") + "\n" });
+      const after = await readGroup(directories, directory => plain(directory, true).then(physical));
+      if (!equal(before, after)) throw fail("Native object consumer changed while Git was packing");
+    }, { objects: objects.length });
+  }
+
   async provision({ sourceRoot, repository, inputs, identityHash }) {
     if (!/^[a-f0-9]{64}$/u.test(identityHash)) throw fail("Exact native consumer identity required");
     return this.withLease(async () => {
@@ -442,13 +457,12 @@ export class OwnedNativeObjectStore {
             || digest(objects.join("\n") + "\n") !== imported.metadata.objectStorage.closureSha256) {
           throw fail("Consumer input closure differs from its owned import");
         }
-        const required = new Set(objects);
         await this.#git(path.dirname(repository), ["init", "--object-format=sha1", "--template=" + path.join(this.root, "empty-hooks"), repository]);
         // upload-pack drops the client's -c settings: persist the same Windows
         // path policy before this independent consumer can serve its objects.
         if (process.platform === "win32") await this.#git(repository, ["config", "core.longpaths", "true"]);
         await this.#git(repository, ["config", "gc.auto", "0"]);
-        await this.#linkObjects(repository, required);
+        await this.#packConsumer(repository, objects);
         await measureTaskOperation("native:object-connectivity", async () => {
           if (!await hasExactGitCommitObjects((args, options) => this.#git(repository, args, options), inputs)) {
             throw fail("Object consumer is missing an exact input commit");

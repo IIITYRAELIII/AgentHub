@@ -1208,6 +1208,13 @@ measures these producer effects, not reclaimed production GB or provider latency
 Existing repository/pool and exact dependency-key locks serialize only their own
 resources; an unknown process tree retains its original lifetime fence.
 
+For a fresh durable Test or Await consumer, the existing owner sends the exact
+imported object closure to one native `git pack-objects` call. The
+`native:object-consumer-pack` span measures that command. This path creates
+an independent pack/index pair without JS-side pack inventories, per-object
+hardlinks or lease assertions per link. Durable consumer and Git connectivity
+boundaries remain in their existing owners. See ADR-HUB-568.
+
 ## Cold history selection dependency
 
 The existing `history-page-paint` measurement joins cold selection intent,
