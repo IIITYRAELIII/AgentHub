@@ -790,6 +790,26 @@
     return String(confirmation ?? "") === String(workspace?.name ?? "");
   }
 
+  // Both navigation surfaces use the same grouping input and section owner.
+  function workspaceCatalogGroups(workspaces, tasks, { includeEmpty = true, filter = "" } = {}) {
+    const groups = new Map();
+    for (const task of tasks ?? []) {
+      const id = String(task?.workspaceId ?? "").trim();
+      if (!id) continue;
+      if (!groups.has(id)) groups.set(id, { id,
+        name: task.workspaceName || task.title || "Без названия",
+        kind: task.workspaceKind ?? "user", folderName: task.workspaceSettings?.catalogFolder ?? "", tasks: [] });
+      groups.get(id).tasks.push(task);
+    }
+    if (includeEmpty) for (const workspace of workspaces ?? []) {
+      if (!groups.has(workspace.id) && (!filter || workspace.name.toLowerCase().includes(filter))) {
+        groups.set(workspace.id, { id: workspace.id, name: workspace.name,
+          kind: workspace.kind ?? "user", folderName: workspace.settings?.catalogFolder ?? "", tasks: [] });
+      }
+    }
+    return [...groups.values()];
+  }
+
   function workspaceSections(groups, {
     nowMs = Date.now(),
     activeLimit = WORKSPACE_ACTIVE_LIMIT,
@@ -1664,6 +1684,7 @@
     isExactActiveUserTurn,
     orderWorkspaceGroups,
     workspaceSections,
+    workspaceCatalogGroups,
     workspaceFolderOpen,
     workspaceFolderNames,
     workspaceFolderMutation,

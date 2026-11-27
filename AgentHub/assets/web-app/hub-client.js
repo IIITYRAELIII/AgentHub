@@ -2997,6 +2997,11 @@ function applySnapshotContent(snapshot, { materialized = false } = {}) {
       selectedStreamId,
       provider: snapshot.settings?.provider ?? "codex",
       conversations: snapshot.tasks ?? [],
+      workspaceNavigation: tasks.map(task => ({ id: task.id, workspaceId: task.workspaceId,
+        workspaceName: task.workspaceName, workspaceKind: task.workspaceKind,
+        workspaceSettings: { catalogFolder: task.workspaceSettings?.catalogFolder },
+        title: task.title, lastActivity: task.lastActivity, running: task.running })),
+      folderNames: agentHub.workspaceFolderCatalogNames(),
       deferredInputs: snapshot.deferredInputs ?? [],
     });
     agentHub.setTasks(tasks);

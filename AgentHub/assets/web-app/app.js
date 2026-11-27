@@ -2491,6 +2491,7 @@ function createWorkspaceFolder(requestedName) {
   state.workspaceFolderNames.add(folderName);
   persistWorkspaceFolders();
   renderTasks();
+  window.AgentHubTaskBoard?.setWorkspaceFolderCatalog(workspaceFolderCatalogNames());
   showToast(`Папка «${folderName}» создана`);
   return true;
 }
@@ -2510,6 +2511,7 @@ function renameWorkspaceFolderCatalog(fromFolderName, toFolderName) {
   }
   persistCollapsedWorkspaceFolders();
   renderTasks();
+  window.AgentHubTaskBoard?.setWorkspaceFolderCatalog(workspaceFolderCatalogNames());
   return true;
 }
 
@@ -3883,26 +3885,10 @@ function renderTasksContent() {
   const hasWorkspace = workspaceTasks.length > 0
     || (surface === "mobile" && !vscodeMode && state.workspaces.length > 0);
   if (hasWorkspace) {
-    const groups = new Map();
-    for (const task of workspaceTasks) {
-      const key = workspaceKey(task);
-      if (!groups.has(key)) groups.set(key, {
-        id: key,
-        name: task.workspaceName || task.title || "Без названия",
-        kind: task.workspaceKind ?? "user",
-        folderName: task.workspaceSettings?.catalogFolder ?? "",
-        tasks: [],
-      });
-      groups.get(key).tasks.push(task);
-    }
-    if (surface === "mobile" && !vscodeMode) {
-      for (const workspace of state.workspaces) {
-        if (!groups.has(workspace.id) && (!filter || workspace.name.toLowerCase().includes(filter))) {
-          groups.set(workspace.id, { id: workspace.id, name: workspace.name,
-            kind: workspace.kind ?? "user", folderName: workspace.settings?.catalogFolder ?? "", tasks: [] });
-        }
-      }
-    }
+    const catalogGroups = window.AgentHubStreamTabs.workspaceCatalogGroups(state.workspaces, workspaceTasks, {
+      includeEmpty: surface === "mobile" && !vscodeMode, filter,
+    });
+    const groups = new Map(catalogGroups.map(group => [group.id, group]));
     visibleCount = groups.size + unassignedTasks.length;
     /* Поиск ищет по всему списку сразу, поэтому при фильтре деление на ленту
        и каталог только мешает: показываем плоский результат. */
@@ -5494,6 +5480,11 @@ async function renameWorkspaceFolder(folderName) {
   if (!plan) return;
   if (plan.duplicateFolderName) {
     showToast(`Папка «${plan.duplicateFolderName}» уже существует`);
+    return;
+  }
+  if (plan.workspaceIds.length === 0) {
+    renameWorkspaceFolderCatalog(plan.fromFolderName, plan.toFolderName);
+    showToast(`Папка «${plan.fromFolderName}» переименована в «${plan.toFolderName}»`);
     return;
   }
   emit("workspace:folder-rename", plan);
@@ -12185,6 +12176,7 @@ const AgentHub = {
     mobileDialogs?.sync();
   },
   renameWorkspaceFolderCatalog,
+  workspaceFolderCatalogNames,
   openDialogSettings,
   /** Точечное обновление задачи (статус, время, непрочитанное). */
   patchTask(id, patch) {

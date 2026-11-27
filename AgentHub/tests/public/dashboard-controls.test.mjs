@@ -5,7 +5,8 @@ import test from 'node:test';
 import { launchBrowser, openFixture, snapshot } from './composer-production.fixture.mjs';
 
 async function choose(page, selector, value) {
-  if (selector === '[data-task-board-scope-select]' && page.viewportSize().width >= 960) {
+  if (selector === '[data-task-board-scope-trigger]') {
+    if (page.viewportSize().width < 960) await page.locator(selector).click();
     await page.locator('[data-task-board-scopes] [data-board-scope="' + value + '"]').click();
     return;
   }
@@ -82,11 +83,11 @@ for (const width of [1600, 390]) test(`board filters and list work at ${width}px
     assert.equal(await cards.count(), 35);
     await choose(page, '[data-task-board-status-filter]', 'testing');
     assert.equal(await cards.count(), 17);
-    await choose(page, '[data-task-board-scope-select]', 'backlog');
+    await choose(page, '[data-task-board-scope-trigger]', 'backlog');
     assert.equal(await cards.count(), 0);
     await choose(page, '[data-task-board-status-filter]', 'all');
     assert.equal(await cards.count(), 1);
-    await choose(page, '[data-task-board-scope-select]', 'workspace:workspace-1');
+    await choose(page, '[data-task-board-scope-trigger]', 'workspace:workspace-1');
     assert.equal(await cards.count(), 34);
     await board.getByRole('button', { name: 'Создать', exact: true }).click();
     assert.equal(await board.locator('.task-board-inline-create textarea').isVisible(), true);
