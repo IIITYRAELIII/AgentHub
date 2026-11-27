@@ -361,7 +361,7 @@ export class TurnEndDeliveryService {
             && projection.record.completedAt !== recoveredCompletedAt;
           // For a sparse terminal the journal proof alone does not cover the exact
           // history revision, even if its display and accounting are already current.
-          if (!journalCurrent || rawCompletion.completedAt == null || preservesReportedUsage(projection?.record, completion)) {
+          if (!journalCurrent || !rawCompletion.completedAt || preservesReportedUsage(projection?.record, completion)) {
             await measure("terminal-history-persist", claimed,
               () => this.#persistTerminalHistory(history, completion, notificationBody));
             // The exact final is already durable and readable by task-history.
