@@ -3,6 +3,10 @@ import { mkdir, readFile } from "node:fs/promises";
 import { createSelectedGitBundle, hasExactGitCommitObjects } from "./selected-git-bundle.mjs";
 import { createHash } from "node:crypto";
 import { sourceBlobs } from "./local-source-baseline.mjs";
+import { canonicalPath } from "./config.mjs";
+import { TaskBoardStore } from "../persistence/task-board-store.mjs";
+import { selectedCompositionFields, normalizedSelectedAbsorption, selectedAbsorptionHandoff, nativeAbsorptionInputs }
+  from "../../domain/task-selected-composition.mjs";
 import { normalizedTaskId, taskGitIdentityHash, taskRepositoryKey } from "../../domain/task-git-reference.mjs";
 import { nativeReuseContext, nativeReuseCandidates, verifiedNativePrefix, retainedNativeConflict } from "./native-merge-reuse.mjs";
 import { measureTaskOperation } from "../process/task-operation-timing.mjs";
@@ -160,7 +164,71 @@ export function nativeIntegrationRecordFile(dataDir, taskId, repoRoot, operation
     taskRepositoryKey(repoRoot), `${createHash("sha256").update(operation).digest("hex")}.json`);
 }
 
-export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null }) {
+async function returnedTestPublishedParent({ git, dataDir, prior, side, published, evidence }) {
+  if (!dataDir || !/^[a-f0-9]{40}$/u.test(side)) return false;
+  const file = nativeIntegrationRecordFile(dataDir, prior.taskId, prior.projectRoot, prior.testOperationId);
+  const bytes = await readFile(file, "utf8").catch(error => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  const record = bytes && JSON.parse(bytes);
+  const metadata = record?.nativeHistoryAuthority?.publishedMetadata;
+  if (record?.version !== 1 || record.kind !== "native-task-integration-v1" || record.phase === "failed"
+      || record.operationId !== prior.testOperationId || record.snapshot?.taskId !== prior.taskId
+      || record.snapshot?.headCommit !== prior.resultCommit
+      || canonicalPath(record.snapshot?.repositoryRoot ?? "") !== canonicalPath(prior.projectRoot)
+      || metadata?.commit !== side || !metadata.generation || !/^[a-f0-9]{64}$/u.test(metadata.recordHash ?? "")
+      || canonicalPath(metadata.repositoryRoot ?? "") !== canonicalPath(prior.projectRoot)
+      || await git(["rev-parse", `${side}^{tree}`]) !== metadata.tree) return false;
+  if (await maybe(git, ["merge-base", "--is-ancestor", side, published]) === null) return false;
+  const matchesReceipt = () => {
+    const store = new TaskBoardStore({ databaseFile: path.join(dataDir, "journal.sqlite"), readOnly: true });
+    try { return record.target === store.absorptionPriorTestDevCommit(prior); }
+    finally { store.close(); }
+  };
+  if (!matchesReceipt()) return false;
+  evidence?.push(async () => {
+    if (await readFile(file, "utf8") !== bytes || !matchesReceipt()) {
+      throw failure("Original absorbed Test evidence changed");
+    }
+  });
+  return true;
+}
+
+// Historical Test receipts can authorize inherited release metadata. Ordinary
+// merge parents have no such receipt and stay on the exact-commit path.
+async function legacyPublishedMetadataBases({ git, task, taskBase, baseCommit, authority, contains, evidence }) {
+  const published = authority?.publishedHistoryBase;
+  if (!published || !authority.dataDir || !(task.selectedComposition || task.nativeAbsorptionInput || task.nativeAbsorptionHistory)) {
+    return [];
+  }
+  const descriptor = selectedCompositionFields(task).selectedComposition ?? {
+    absorptionInput: task.nativeAbsorptionInput, absorptionHistory: task.nativeAbsorptionHistory,
+  };
+  const commits = [];
+  for (const absorbed of nativeAbsorptionInputs(descriptor)) {
+    const binding = normalizedSelectedAbsorption(absorbed);
+    const { declaration: source } = selectedAbsorptionHandoff({ requestId: binding.requestId, text: binding.text });
+    const prior = binding.priorResults?.find(result => result.taskId === source.sourceTaskId);
+    if (!prior || source.survivorTaskId !== task.taskId || source.baseCommit !== taskBase
+        || !await contains(source.absorptionCommit, task.resultCommit)
+        || String(await git(["show", "-s", "--format=%P", source.absorptionCommit]))
+          !== source.survivorParentCommit + " " + source.sourceCommit) continue;
+    const boundary = published === baseCommit ? [] : ["^" + published];
+    const parents = String(await git(["rev-list", "--first-parent", "--parents",
+      source.sourceCommit, "^" + baseCommit, ...boundary])).split(/\r?\n/u)
+      .map(row => row.split(" ")).find(row => row.length === 3 && row[0] === prior.resultCommit);
+    const side = parents?.[2];
+    if (side && side !== published
+        && await returnedTestPublishedParent({ git, dataDir: authority.dataDir, prior, side, published, evidence })) {
+      commits.push(side);
+    }
+  }
+  return commits;
+}
+
+export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null, onVerified = null }) {
+  const evidence = onVerified ? [] : null;
   const histories = [];
   const ancestry = new Map();
   const contains = async (ancestor, descendant) => {
@@ -181,8 +249,6 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
     // merges use regular Git parents and carry no separate workflow receipt.
     const adopted = (historyAuthority?.adoptions ?? []).filter(a => a.taskId === task.taskId
       && a.resultCommit === task.resultCommit);
-    const metadataBases = [...new Set([taskBase, ...(historyAuthority?.metadataBases ?? []),
-      ...adopted.map(a => a.adoptedCommit)])];
     const changedMetadata = String(await git([
       "diff", "--name-only", "--no-renames", "-z", taskBase, task.resultCommit,
       "--", "CHANGELOG.md", ":(glob)**/CHANGELOG.md", "package.json", "package-lock.json",
@@ -190,6 +256,11 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
     ], { rawOutput: true })).split("\0").filter(Boolean);
     const notes = changedMetadata.filter(file => file !== ROOT_CHANGELOG && matchesMetadata(file, ["CHANGELOG.md"]));
     const packages = changedMetadata.filter(file => matchesMetadata(file, ["package.json", "package-lock.json"]));
+    const legacyBases = notes.length || packages.length
+      ? await legacyPublishedMetadataBases({ git, task, taskBase, baseCommit, authority: historyAuthority, contains, evidence })
+      : [];
+    const metadataBases = [...new Set([taskBase, ...(historyAuthority?.metadataBases ?? []),
+      ...adopted.map(a => a.adoptedCommit), ...legacyBases])];
     histories.push({ task, metadataBases, notes, packages });
     if (notes.length || packages.length) {
       for (const commit of [task.resultCommit, ...metadataBases]) {
@@ -247,6 +318,9 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       }
     }
   }
+  if (evidence?.length) onVerified(async () => {
+    for (const recheck of evidence) await recheck();
+  });
 }
 
 async function entries(git, args) {

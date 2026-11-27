@@ -1554,8 +1554,10 @@ export class TaskIntegrationGitService {
       const historyAuthority = await this.#nativeHistoryAuthority({ ...historyRequest, verifiedLocalSource });
       if (historyAuthority?.publishedMetadata) historyRequest.expectedPublishedMetadata = historyAuthority.publishedMetadata;
       const historyGit = (args, options) => git(["--no-replace-objects", ...args], options);
+      let assertLegacyMetadataCurrent;
       await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({
         git: historyGit, baseCommit, tasks, historyAuthority,
+        onVerified: recheck => { assertLegacyMetadataCurrent = recheck; },
       }));
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
@@ -1732,6 +1734,7 @@ export class TaskIntegrationGitService {
         if (await durablePublishedRevision(this.#environment, initial.root) !== published) {
           throw new Error("Publication authority changed during native release preparation");
         }
+        if (assertLegacyMetadataCurrent) await assertLegacyMetadataCurrent();
         if (verifiedLocalSource) await assertLocalSourceCurrent();
         else {
           const currentAuthority = await this.#nativeHistoryAuthority({ ...historyRequest, primary: current });
