@@ -406,6 +406,18 @@ export class TaskIntegrationService {
       }
       for (const request of localSourceChecks) await this.releaseGitWorkspaces.assertDerivedInstalledSourceCurrent(request);
     };
+    const validateAcceptanceInputs = async () => {
+      if (!acceptingTask || nativeAwaitRecovery || prospectiveOnly || explicitApprovals
+          || localSourceChecks.length || selectedRepositories.length !== 1) {
+        await validatePlan();
+        await validateBases();
+        return;
+      }
+      // These owners read distinct authorities. Join both reads before any
+      // Git promotion or Task CAS, keeping plan refusal priority.
+      const checks = await Promise.allSettled([validatePlan(), validateBases()]);
+      for (const check of checks) if (check.status === "rejected") throw check.reason;
+    };
     const result = () => ({
       workspaceId: String(workspaceId), planRevision: plan.revision,
       taskIds: [...new Set(plan.ready.map((entry) => String(entry.taskId)))].sort(),
@@ -416,8 +428,7 @@ export class TaskIntegrationService {
     // one Task status CAS succeed. All callers hold the Workspace Await lock.
     const prepare = async (index) => {
       if (index === selectedRepositories.length) {
-        await validatePlan();
-        await validateBases();
+        await validateAcceptanceInputs();
         if (commitPrepared) committedResult = await commitPrepared(result());
         return;
       }
@@ -495,7 +506,7 @@ export class TaskIntegrationService {
           planRevision: plan.revision, workspaceId, projectRoot: repository.projectRoot,
           frozenTasks: evidence.tasks, approvedBaseCommit,
           ...(baseProvenance ? { baseProvenance } : {}),
-          validateBeforeCommit: async () => { await validatePlan(); await validateBases(); },
+          validateBeforeCommit: validateAcceptanceInputs,
         }));
         await prepare(index + 1);
         return;
@@ -513,7 +524,7 @@ export class TaskIntegrationService {
         ...(admitAwaitPromotion ? { admitAwaitPromotion } : {}),
 
         validateBeforeCommit: async () => {
-          await validatePlan(); await validateBases();
+          await validateAcceptanceInputs();
           await validateAwaitOriginal?.();
         },
         ...((acceptingTask && !prospectiveOnly) ? { commitPrepared: async (prepared) => {

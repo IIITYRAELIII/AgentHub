@@ -680,7 +680,7 @@ export class TaskIntegrationGitService {
         const identityHash = taskGitIdentityHash({ kind: "release-input-clone-v1", repository: layout.releaseRoot,
           sourceRoot, inputs: required });
         const storage = await objects.provision({ sourceRoot, repository: layout.releaseRoot,
-          inputs: required, identityHash });
+          inputs: required, identityHash, reuseCompleteImport: true });
         await objects.assertConsumer({ repository: layout.releaseRoot, inputs: required, identityHash, storage });
         objectStorage = { inputs: required, identityHash, storage };
         await runGit(["update-ref", "refs/heads/main", primary.mainCommit, "0".repeat(40)], { cwd: layout.releaseRoot });

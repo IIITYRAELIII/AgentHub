@@ -5366,9 +5366,10 @@ export class TaskGitWorkspaceService {
       await runGit(["rev-parse", "--verify", `${baseRefs[0]}^{commit}`], { cwd: repoRoot });
       throw new Error("Task base reference is unavailable");
     }
-    const acceptedCommit = await runGit(["rev-parse", "--verify", `${String(resultCommit)}^{commit}`], { cwd: repoRoot });
     const branchCommit = (!custody && await resolveRef(branchRef))
       || await runGit(["rev-parse", "--verify", `${branchRef}^{commit}`], { cwd: custody?.namespace.root ?? repoRoot });
+    const acceptedCommit = resultCommit === branchCommit && !custody ? branchCommit
+      : await runGit(["rev-parse", "--verify", `${String(resultCommit)}^{commit}`], { cwd: repoRoot });
     if (custody && await runGit(["rev-parse", `${this.#custodyResultRef(id, taskRepositoryKey(repoRoot))}^{commit}`], { cwd: repoRoot }) !== acceptedCommit) {
       throw new Error("Task result is not the current custody result authority");
     }
@@ -5398,15 +5399,20 @@ export class TaskGitWorkspaceService {
     const repoRoot = await repositoryRoot(projectRoot);
     const published = exactCommitId(publishedBaseCommit, "published release base");
     return this.#withClearDevLock(repoRoot, lease, async (ownedLease) => {
-      await this.#runOwned(["cat-file", "-e", `${published}^{commit}`], { cwd: repoRoot, lease: ownedLease });
-      const localMain = await localMainCommit(repoRoot);
-      // local main is the agreed branch baseline. Publication and observation
-      // remain separate authorities and do not silently choose another base.
-      // Read the mutable receipt namespace once per fresh base check. The
-      // existing verifier still checks every selected receipt and its live refs.
-      const currentRefs = tasks.length ? String(await this.#runOwned([
-        "for-each-ref", "--format=%(refname)%00%(objectname)", TASK_UPSTREAM_ADOPTION_REF_PREFIX,
-      ], { cwd: repoRoot, lease: ownedLease })).split(/\r?\n/u).filter(Boolean) : [];
+      const mainRef = "refs/heads/main";
+      const rows = String(await this.#runOwned(["for-each-ref",
+        "--format=%(refname)%00%(objectname)%00%(objecttype)", mainRef,
+        ...(tasks.length ? [TASK_UPSTREAM_ADOPTION_REF_PREFIX] : []),
+      ], { cwd: repoRoot, lease: ownedLease })).split(/\r?\n/u).filter(Boolean).map(row => row.split("\0"));
+      const main = rows.find(([ref]) => ref === mainRef);
+      const localMain = main?.[2] === "commit" ? main[1] : await localMainCommit(repoRoot);
+      // Main can prove existence of the publication object only when the
+      // two independent authorities name the exact same commit.
+      if (localMain !== published) {
+        await this.#runOwned(["cat-file", "-e", `${published}^{commit}`], { cwd: repoRoot, lease: ownedLease });
+      }
+      const currentRefs = rows.filter(([ref]) => ref.startsWith(TASK_UPSTREAM_ADOPTION_REF_PREFIX))
+        .map(([ref, object]) => `${ref}\0${object}`);
       const adoptions = [];
       for (const task of [...tasks].sort((a, b) => String(a.taskId).localeCompare(String(b.taskId)))) {
         const verified = await this.#recordedUpstreamAdoptionForSnapshot({ taskId: task.taskId,

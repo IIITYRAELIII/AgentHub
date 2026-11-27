@@ -194,6 +194,52 @@ test("a later distinct selection imports only missing objects and preserves the 
   await gitAt(path.join(f.root, "two/repository"), ["fsck", "--full"]);
 });
 
+test("a release consumer copies the exact owned prefix and packs only newly selected objects", async t => {
+  const packSizes = [];
+  const f = await fixture(t, {
+    async gitAt(cwd, args, options) {
+      if (args.includes("pack-objects") && !args.includes("--stdout")) {
+        packSizes.push(options.input.trim().split("\n").length);
+      }
+      return gitAt(cwd, args, options);
+    },
+  });
+  const inputs = [f.base, f.result];
+  const donor = path.join(f.root, "donor");
+  const identityHash = "a".repeat(64);
+  const storage = await f.objects.provision({ sourceRoot: f.source, repository: donor, inputs, identityHash });
+  const cold = path.join(f.root, "cold");
+  await f.objects.provision({ sourceRoot: f.source, repository: cold, inputs, identityHash: "d".repeat(64),
+    reuseCompleteImport: true });
+  assert.equal(packSizes.length, 1, "the completed exact intake already holds the full cold pack");
+  const reusableSource = { inputs, identityHash, storage };
+  const exact = path.join(f.root, "exact");
+  await f.objects.provision({ sourceRoot: donor, repository: exact, inputs, identityHash: "b".repeat(64), reusableSource });
+  assert.equal(packSizes.length, 1, "an exact prefix requires no pack encoding");
+  await writeFile(path.join(f.source, "later.txt"), "later selection\n");
+  await gitAt(f.source, ["add", "."]);
+  await gitAt(f.source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "later"]);
+  const later = await gitAt(f.source, ["rev-parse", "HEAD"]);
+  await gitAt(donor, ["fetch", f.source, later]);
+  const incremental = path.join(f.root, "incremental");
+  const selected = [...inputs, later];
+  await f.objects.provision({ sourceRoot: donor, repository: incremental, inputs: selected,
+    identityHash: "c".repeat(64), reusableSource });
+  assert.deepEqual(packSizes.slice(1), [3], "only the new commit, tree and blob enter the delta pack");
+  const packs = root => objectFiles(path.join(root, ".git", "objects"));
+  const [donorFiles, incrementalFiles] = await Promise.all([packs(donor), packs(incremental)]);
+  const shared = donorFiles.filter(file => /\.(?:idx|pack)$/u.test(file.name));
+  assert.ok(shared.length >= 2);
+  const copied = shared.filter(file => incrementalFiles.some(copy => copy.name === file.name));
+  assert.equal(copied.length, 2, "only the admitted pack and index were copied");
+  for (const file of copied) {
+    const copy = incrementalFiles.find(item => item.name === file.name);
+    assert.equal(copy.bytes, file.bytes);
+    assert.notEqual(copy.ino, file.ino);
+  }
+  await gitAt(incremental, ["fsck", "--full", ...selected]);
+});
+
 test("an interrupted import keeps and completes its SAME original after canonical UNKNOWN recovery", async t => {
   let injected = false, originalId;
   const f = await fixture(t, { afterCheckpoint: async (phase, row) => {
