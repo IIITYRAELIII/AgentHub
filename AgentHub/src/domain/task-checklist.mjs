@@ -54,7 +54,7 @@ export function normalizedReleaseReference(value) {
 
 // The canonical Done outcome owns the historical publication evidence. Compare
 // current source separately; a later installation need not keep its old PID.
-export function manualDeliveryReferenceSourceBinding(proof) {
+export function manualDeliveryReferenceSourceBinding(proof, { allowPublicationOnly = false } = {}) {
   if (!proof?.taskId || !Array.isArray(proof.gitReferences) || proof.gitReferences.length
       || proof.dirty !== false || !proof.workspaces?.length || !proof.manualDelivery?.length) {
     throw Error("Manual release reference has no exact owned-source delivery evidence");
@@ -67,8 +67,10 @@ export function manualDeliveryReferenceSourceBinding(proof) {
   }).sort((a, b) => a.projectRoot.localeCompare(b.projectRoot));
   const deliveries = proof.manualDelivery.map(item => {
     const d = item.delivery;
+    const acceptedKind = d?.kind === "verified-manual-task-delivery-v1"
+      || (allowPublicationOnly && d?.kind === "verified-manual-cleanup-publication-v1");
     if (item.sourceKind !== "owned-managed-source-without-test-ref" || !item.repositoryRoot
-        || d?.kind !== "verified-manual-task-delivery-v1" || !/^[a-f0-9]{40}$/u.test(d.revision ?? "")
+        || !acceptedKind || !/^[a-f0-9]{40}$/u.test(d.revision ?? "")
         || !d.releaseId || !/^[a-f0-9]{64}$/u.test(d.manifestSha256 ?? "") || !d.resultCommits?.length) {
       throw Error("Manual release reference delivery is incomplete");
     }

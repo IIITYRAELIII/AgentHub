@@ -15,7 +15,7 @@ const sha = value => createHash("sha256").update(value).digest("hex");
 
 // Discover the existing clone marker, never a caller-supplied replacement root.
 // The primary remains the registered Task/dev repository and is read-only here.
-export async function readManualPublishedRepository({ dataDir, repositoryRoot, revision, gitAt }) {
+export async function readManualPublishedRepository({ dataDir, repositoryRoot, revision, gitAt, verifyOrigin = true }) {
   const primaryRoot = path.resolve(repositoryRoot);
   const managedRoot = path.join(dataDir, "release-repositories");
   const root = path.join(managedRoot, taskRepositoryKey(primaryRoot), "repository");
@@ -51,12 +51,12 @@ export async function readManualPublishedRepository({ dataDir, repositoryRoot, r
     gitAt(root, ["rev-parse", "HEAD^{commit}"]), gitAt(root, ["symbolic-ref", "HEAD"]),
     gitAt(root, ["rev-parse", "refs/heads/main^{commit}"]),
     gitAt(root, ["rev-parse", "refs/remotes/origin/main^{commit}"]),
-    gitAt(root, ["ls-remote", "--exit-code", "origin", "refs/heads/main"]),
+    verifyOrigin ? gitAt(root, ["ls-remote", "--exit-code", "origin", "refs/heads/main"]) : null,
     gitAt(root, ["--no-optional-locks", "status", "--porcelain=v1", "--untracked-files=all"]),
     gitAt(primaryRoot, ["rev-parse", "refs/heads/main^{commit}"]),
   ]);
   if (head !== revision || main !== revision || origin !== revision || branch !== "refs/heads/main" || dirty
-      || actualRemote !== `${revision}\trefs/heads/main`) throw Error("Manual published main/origin/current remote differs");
+      || verifyOrigin && actualRemote !== `${revision}\trefs/heads/main`) throw Error("Manual published main/origin/current remote differs");
   if (directory !== await physical(root) || commonDirectory !== await physical(releaseCommon)) {
     throw Error("Manual published repository directory changed during verification");
   }

@@ -382,9 +382,10 @@ export function manualDeliveryReleaseReferenceEvidence(database, { taskId, refer
       ORDER BY o.completed_at_ms DESC, o.operation_id LIMIT 1`).all(taskId, task.workspace_id);
     if (rows.length) {
       const completed = JSON.parse(rows[0].result_json), cleanup = completed.evidence.cleanup.manualCleanup;
-      const pins = value => manualDeliveryReferenceSourceBinding(value).workspaces;
+      const acceptedPins = manualDeliveryReferenceSourceBinding(proof).workspaces;
+      const cleanupPins = manualDeliveryReferenceSourceBinding(cleanup.source, { allowPublicationOnly: true }).workspaces;
       if (cleanup.taskId !== taskId || completed.result?.id !== taskId || completed.result.status !== "done"
-          || JSON.stringify(pins(cleanup.source)) !== JSON.stringify(pins(proof))) {
+          || JSON.stringify(cleanupPins) !== JSON.stringify(acceptedPins)) {
         throw Error("Manual release reference completed cleanup differs from the accepted source");
       }
       return { ...proof, completedCleanup: cleanup };
