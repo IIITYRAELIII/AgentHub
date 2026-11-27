@@ -81,10 +81,10 @@ consulting an old publication generation. Exact runtime/manifest/source,
 main/origin and Task-result containment are mandatory. Workflow Done precedes
 closing. Ready requires the existing authenticated live desktop control owner,
 matching PID/release and a stable endpoint, not a retained Ready lock alone.
-Manual main-to-dev synchronization verifies the installed source at admission
-and before changing the dev checkout. Ref promotion and terminal readback
-recheck the mutable publication and live runtime identity. Other Git steps
-retain their ordinary ownership and directory checks.
+Manual main-to-dev synchronization verifies the installed source at admission,
+before changing the dev checkout, before ref promotion and at terminal readback.
+Immediately before each effect it also checks the current dev state. Intermediate
+Git steps retain their ordinary ownership and directory checks.
 Preview/confirmation uses existing Task CAS. Complete removes only the listed
 clean managed branches/worktrees after exact published result/current HEAD
 verification, then archives the card. Every present worktree must independently

@@ -54,15 +54,23 @@ export async function synchronizePublishedDev({ root, sourceRoot, devRoot, devBr
   await git(["fetch", "--no-tags", "--no-write-fetch-head", composition.root, composition.head]);
   await fence();
   let state = await inspect(composition.head);
-  await beforeCheckout?.();
+  if (state.head !== composition.head && beforeCheckout) {
+    await beforeCheckout();
+    await fence();
+    state = await inspect(composition.head);
+  }
   try {
     if (state.head !== composition.head) {
       await git(["checkout", "--detach", "--no-overwrite-ignore", composition.head]);
     }
     await fence();
     state = await inspect(composition.head);
+    if (state.ref !== composition.head && beforeRefUpdate) {
+      await beforeRefUpdate();
+      await fence();
+      state = await inspect(composition.head);
+    }
     if (state.ref !== composition.head) {
-      await beforeRefUpdate?.();
       await git(["update-ref", `refs/heads/${devBranch}`, composition.head, identity.devCommit]);
     }
     await fence();
