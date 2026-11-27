@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
-import fs from "node:fs/promises";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -98,31 +96,29 @@ test("v2 pack membership agrees with Git for ordinary and extended indexes", asy
   assert.match(await gitAt(f.source, ["show-index"], { input: legacy }), new RegExp(f.result, "u"));
 });
 
-test("v2 pack selection stops before aliasing after the owner changes", async t => {
-  const ownerLost = new Error("fixture owner changed during index selection");
-  let selectionRead = false;
-  const f = await fixture(t, { assertCurrent: async () => { if (selectionRead) throw ownerLost; } });
-  const consumerPack = path.join(f.root, "one/repository/.git/objects/pack");
-  const poolPack = path.join(f.objects.repository, "objects/pack");
-  const originalRead = fs.readFile;
-  fs.readFile = async (file, ...args) => {
-    const value = await originalRead(file, ...args);
-    if (typeof file === "string" && path.dirname(file) === poolPack && file.endsWith(".idx")
-        && await lstat(consumerPack).then(stat => stat.isDirectory(), () => false)) selectionRead = true;
-    return value;
-  };
-  syncBuiltinESMExports();
-  try {
-    await assert.rejects(compose(f, "one"), error => error === ownerLost);
-    assert.equal(selectionRead, true);
-    assert.deepEqual(await readdir(consumerPack), []);
-  } finally {
-    fs.readFile = originalRead;
-    syncBuiltinESMExports();
-  }
+test("a fresh consumer stops before its native pack when ownership changes", async t => {
+  const ownerLost = new Error("fixture owner changed after consumer configuration");
+  let ready = false, startedPacks = 0;
+  let consumer;
+  const f = await fixture(t, {
+    assertCurrent: async () => { if (ready) throw ownerLost; },
+    async gitAt(cwd, args, options) {
+      if (args.includes("pack-objects") && args.some(arg => arg === path.join(consumer, ".git", "objects", "pack", "pack"))) {
+        startedPacks += 1;
+      }
+      const result = await gitAt(cwd, args, options);
+      if (cwd === consumer && args.includes("config") && args.includes("gc.auto")) ready = true;
+      return result;
+    },
+  });
+  consumer = path.join(f.root, "one", "repository");
+  await assert.rejects(compose(f, "one"), error => error === ownerLost);
+  assert.equal(ready, true);
+  assert.equal(startedPacks, 0);
+  assert.deepEqual(await readdir(path.join(consumer, ".git", "objects", "pack")), []);
 });
 
-test("two real native checks share immutable history once with independent metadata and survive pool removal/consumer GC", async t => {
+test("two native consumers own one exact pack each and retain independent metadata and history", async t => {
   let showIndexCalls = 0;
   const f = await fixture(t, { gitAt(cwd, args, options) {
     if (args.includes("show-index")) showIndexCalls += 1;
@@ -138,16 +134,13 @@ test("two real native checks share immutable history once with independent metad
   const b = (await objectFiles(path.join(secondRepo, ".git/objects"))).filter(x => x.name.startsWith("pack/"));
   assert.equal(await gitAt(firstRepo, ["show", "-s", "--format=%P", first.head]), f.base + " " + f.result);
   assert.equal(await gitAt(secondRepo, ["show", "-s", "--format=%P", second.head]), f.base + " " + f.result);
-  assert.ok(a.length >= 2); assert.deepEqual(a.map(x => [x.name, x.dev, x.ino]), b.map(x => [x.name, x.dev, x.ino]));
-  assert.ok(a.every(x => x.nlink >= 3));
-  if (process.platform === "win32") {
-    const measured = await measureNativeCaptureAllocation([path.join(firstRepo, ".git/objects"),
-      path.join(secondRepo, ".git/objects"), path.join(f.objects.repository, "objects")]);
-    assert.ok(measured.uniqueAllocatedBytes < measured.logicalBytes / 2, JSON.stringify(measured));
-    t.diagnostic("Three object views FileStandardInfo allocation " + JSON.stringify(measured));
+  for (const files of [a, b]) {
+    assert.equal(files.filter(file => file.name.endsWith(".pack")).length, 1);
+    assert.equal(files.filter(file => file.name.endsWith(".idx")).length, 1);
   }
-  const unique = new Map([...a, ...b].map(x => [x.dev + ":" + x.ino, x.bytes]));
-  assert.equal([...unique.values()].reduce((x, y) => x + y, 0), a.reduce((x, y) => x + y.bytes, 0));
+  assert.ok(a.every(x => x.nlink === 1) && b.every(x => x.nlink === 1));
+  const firstIndex = new Set(a.map(x => x.dev + ":" + x.ino));
+  assert.ok(b.every(x => !firstIndex.has(x.dev + ":" + x.ino)));
   assert.ok((await lstat(path.join(firstRepo, ".git/index"))).ino !== (await lstat(path.join(secondRepo, ".git/index"))).ino);
   await gitAt(firstRepo, ["update-ref", "refs/heads/private-one", f.base]);
   await assert.rejects(gitAt(secondRepo, ["rev-parse", "--verify", "refs/heads/private-one"]));
@@ -342,13 +335,16 @@ test("native missing-object encoding shares delta history and preserves archive 
   const one = path.join(f.root, "encoding-one/repository"), two = path.join(f.root, "encoding-two/repository");
   const a = (await objectFiles(path.join(one, ".git/objects"))).filter(x => x.name.startsWith("pack/"));
   const b = (await objectFiles(path.join(two, ".git/objects"))).filter(x => x.name.startsWith("pack/"));
-  assert.deepEqual(a.map(x => [x.name, x.dev, x.ino]), b.map(x => [x.name, x.dev, x.ino]));
-  assert.ok(a.every(x => x.nlink >= 3));
+  for (const files of [a, b]) {
+    assert.equal(files.filter(file => file.name.endsWith(".pack")).length, 1);
+    assert.equal(files.filter(file => file.name.endsWith(".idx")).length, 1);
+  }
+  const firstPacks = new Set(a.map(x => x.dev + ":" + x.ino));
+  assert.ok(b.every(x => !firstPacks.has(x.dev + ":" + x.ino)));
   assert.notEqual((await lstat(path.join(one, ".git/index"))).ino, (await lstat(path.join(two, ".git/index"))).ino);
-  const measured = await measureNativeCaptureAllocation([f.objects.root, path.join(one, ".git/objects"), path.join(two, ".git/objects")]);
-  t.diagnostic("Exact ten-revision encoding allocation " + JSON.stringify(measured));
-  // Ten almost-identical 1MiB revisions must not retain ten independent blob
-  // encodings. This is a physical fixture bound, never a production object cap.
+  const measured = await measureNativeCaptureAllocation([f.objects.root]);
+  t.diagnostic("Exact ten-revision pool encoding allocation " + JSON.stringify(measured));
+  // The existing incremental pool still retains one delta encoding.
   assert.ok(measured.uniqueAllocatedBytes < history.length * 3, JSON.stringify(measured));
   const originalObjects = await gitAt(f.source, ["cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)"]);
   const tag = await gitAt(f.source, ["rev-parse", "refs/tags/original-encoding-tag"]);

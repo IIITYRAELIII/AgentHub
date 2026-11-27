@@ -259,22 +259,24 @@ test("detached Test permits same-repo Claim, rejects stale dev and preserves ter
       assert.equal(stages.length, attempts);
       assert.equal(Number.isFinite(wait?.waitMs), true);
       assert.equal(events.some(event => event.stage === "await-transition"), false);
-      const aliasSpans = events.filter(event => event.stage === "native:object-aliases" && event.phase === "end");
-      assert.equal(aliasSpans.length, attempts);
-      for (const event of aliasSpans) {
+      const packs = events.filter(event => event.stage === "native:object-consumer-pack" && event.phase === "end");
+      assert.equal(packs.length, attempts);
+      for (const event of packs) {
         assert.ok(stages.some(stage => stage.spanId < event.spanId));
         assert.ok(!owned.some(owner => owner.spanId < event.spanId && owner.at > event.at));
       }
       const aliasesOwner = events.find(event => event.stage === "trace-summary").stageAggregates
         .find(group => group.stage === "native:object-alias-owner");
-      assert.ok(aliasesOwner.count > 0);
+      assert.equal(aliasesOwner, undefined);
+      assert.ok(!events.some(event => ["native:object-inventory", "native:object-pack-indexes",
+        "native:object-aliases"].includes(event.stage)));
       assert.equal(board.lifecycleOutcome(request.operationId).result.task.workflowStatus, "testing");
       t.diagnostic(JSON.stringify({ operationId: request.operationId, elapsedMs: elapsed?.durationMs,
         repositoryWaitsMs: events.filter(event => event.stage === "lock-acquired" && event.lockKind === "repository")
           .map(event => event.waitMs),
         repositoryInputsMs: inputs.map(event => event.durationMs), detachedStagesMs: stages.map(event => event.durationMs),
-        repositoryFinalMs: owned.map(event => event.durationMs), aliasesMs: aliasSpans.map(event => event.durationMs),
-        aliasOwnerMs: aliasesOwner.inclusiveMs, aliases: aliasesOwner.count }));
+        repositoryFinalMs: owned.map(event => event.durationMs),
+        consumerPacksMs: packs.map(event => event.durationMs) }));
     }
     releaseFinish.resolve();
     await awaitOwner;

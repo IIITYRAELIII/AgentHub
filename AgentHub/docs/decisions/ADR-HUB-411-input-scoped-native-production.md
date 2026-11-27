@@ -28,6 +28,9 @@ them. Reject malformed/unpaired entries; retain hardlink physical/hash checks,
 independent refs/index/config, no alternates, connectivity and durable receipt.
 The same original operation owns an interrupted consumer; it is not recreated.
 
+ADR-HUB-568 changes the representation for new durable Test and Await
+consumers to a native pack over that same exact imported closure.
+
 There is no pool rewrite, GC, new archive format/ledger, global scan, arbitrary
 product size cap, deletion, relaxed test/selection check or old-receipt migration.
 Completed old consumers/bundles remain byte-for-byte unchanged.
