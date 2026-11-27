@@ -250,6 +250,7 @@ export class TaskIntegrationService {
 
   async prepareAwaitAcceptance({
     workspaceId, acceptingTask, projectRoot, lease = null, operationId, commitPrepared,
+    readAcceptedAwaitOutcome = null,
     nativeAwaitRecovery = null, validateAwaitOriginal = null, admitAwaitPromotion = null,
   } = {}) {
     if (typeof commitPrepared !== "function") throw new TypeError("commitPrepared is required");
@@ -261,7 +262,7 @@ export class TaskIntegrationService {
     try {
       return await this.#prepareAwaitSet({
         workspaceId, acceptingTask, lease, nativeAwaitRecovery, awaitOperationId: operation,
-        validateAwaitOriginal, admitAwaitPromotion,
+        validateAwaitOriginal, admitAwaitPromotion, readAcceptedAwaitOutcome,
         commitPrepared: async (prepared) => {
           const matches = prepared.releaseCandidates.flatMap((candidate) => (
             canonicalRoot(candidate.repositoryRoot) === canonicalRoot(root)
@@ -277,6 +278,7 @@ export class TaskIntegrationService {
             throw new Error("Native Await candidate authority recheck is unavailable");
           }
           return commitPrepared({ ...prepared, task: matches[0],
+            ...(acceptedCandidate?.nativeAwaitProof ? { nativeAwaitProof: acceptedCandidate.nativeAwaitProof } : {}),
             ...(typeof acceptedCandidate?.verifyNativeAwaitAuthority === "function"
               ? { verifyNativeAwaitAuthority: acceptedCandidate.verifyNativeAwaitAuthority } : {}) });
         },
@@ -312,7 +314,7 @@ export class TaskIntegrationService {
     reviewedMainApprovals = null, selectedTaskIds = null,
     prospectiveOnly = false,
     previousSelectedResults = [], nativeAwaitRecovery = null, awaitOperationId = null,
-    validateAwaitOriginal = null, admitAwaitPromotion = null,
+    validateAwaitOriginal = null, admitAwaitPromotion = null, readAcceptedAwaitOutcome = null,
   } = {}) {
     if (validateOnly && commitPrepared) throw new Error("Composition validation cannot commit Task acceptance");
     if (validateOnly) requiredMethod(this.releaseGitWorkspaces, "validateCandidate");
@@ -524,6 +526,8 @@ export class TaskIntegrationService {
         ...(awaitOperationId ? { awaitOperationId } : {}),
         ...(nativeAwaitRecovery ? { nativeAwaitRecovery } : {}),
         ...(admitAwaitPromotion ? { admitAwaitPromotion } : {}),
+        ...(!nativeAwaitRecovery && !localSource && !reviewed && selectedRepositories.length === 1
+          && readAcceptedAwaitOutcome ? { readAcceptedAwaitOutcome } : {}),
 
         validateBeforeCommit: async () => {
           await validateAcceptanceInputs();

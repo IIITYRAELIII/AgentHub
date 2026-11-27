@@ -1297,6 +1297,7 @@ export class TaskIntegrationGitService {
     frozenTasks = [], approvedBaseCommit = null, baseProvenance = null,
     validateBeforeCommit = null, preserveFrozen = false, commitPrepared = null, preparationGuard = null,
     nativeAwaitRecovery = null, forwardPreparation = null, awaitOperationId = null, admitAwaitPromotion = null,
+    readAcceptedAwaitOutcome = null,
   } = {}) {
     this.#assertAvailable("prepareCandidate");
     if (!preparationObjectStore()) {
@@ -1306,7 +1307,7 @@ export class TaskIntegrationGitService {
         withPreparationGitIsolation(this.dataDir, () => this.prepareCandidate({
           planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks, approvedBaseCommit, baseProvenance,
           validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
-          nativeAwaitRecovery, forwardPreparation, awaitOperationId, admitAwaitPromotion }), lease, objects));
+          nativeAwaitRecovery, forwardPreparation, awaitOperationId, admitAwaitPromotion, readAcceptedAwaitOutcome }), lease, objects));
     }
     const isolation = forwardPreparation?.readIsolation?.();
     if (isolation && !this.#isolationContext) return this.#prepareIsolatedCandidate({
@@ -1317,7 +1318,7 @@ export class TaskIntegrationGitService {
     if (authority && !preparationGitIsolationActive()) return withPreparationGitIsolation(authority.isolation.dataDir,
       () => this.prepareCandidate({ planRevision, projectRoot, workspaceId, preflightRequestId, frozenTasks,
         approvedBaseCommit, baseProvenance, validateBeforeCommit, preserveFrozen, commitPrepared, preparationGuard,
-        nativeAwaitRecovery, forwardPreparation, awaitOperationId, admitAwaitPromotion }));
+        nativeAwaitRecovery, forwardPreparation, awaitOperationId, admitAwaitPromotion, readAcceptedAwaitOutcome }));
     if (authority && authority.phase !== "completed" && preflightRequestId !== authority.requestId) {
       throw new Error("Isolated original preparation still owns this candidate");
     }
@@ -1586,6 +1587,54 @@ export class TaskIntegrationGitService {
       }));
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
       const mergeRoot = path.join(layout.root, "native-merges", sha256(stableManifest(identity)).slice(0, 24));
+      const proofAuthority = taskGitIdentityHash({ repositoryRoot: initial.root, primaryGitCommonDir: initial.commonDir,
+        baseProvenance: provenance, historyAuthority });
+      const canWitness = typeof readAcceptedAwaitOutcome === "function" && awaitOperationId && commitPrepared
+        && !nativeAwaitRecovery && !forwardPreparation && !preparationGuard && !localSource;
+      const readAcceptedPrefix = canWitness && checkpoint?.phase === "prepared" ? () =>
+        measureTaskOperation("native:accepted-prefix", async () => {
+          const bytes = await awaitEvidenceBytes(path.join(layout.root, "native-preparation.json"), { optional: true });
+          const previous = bytes && JSON.parse(bytes);
+          if (previous?.phase !== "completed" || !previous.requestId
+              || previous.manifestHash !== checkpoint.manifestHash || previous.target !== checkpoint.preReleaseHead) return null;
+          const outcome = readAcceptedAwaitOutcome(previous.requestId);
+          const proof = outcome?.result?.evidence?.nativeAwaitProof;
+          const expected = { version: 1, operationId: previous.requestId, workspaceId, repositoryRoot: initial.root,
+            planRevision: checkpoint.planRevision, manifestHash: checkpoint.manifestHash,
+            head: previous.target, tree: previous.targetTree, authorityHash: proofAuthority };
+          if (outcome?.result?.task?.workflowStatus !== "awaiting_implementation"
+              || !proof || stableManifest(proof) !== stableManifest(expected)) return null;
+          if (!/^[a-f0-9]{64}$/u.test(expected.manifestHash) || !/^[a-f0-9]{40}$/u.test(expected.tree)) return null;
+          const manifestFile = path.join(clone.evidenceRoot, expected.manifestHash + ".json");
+          if (!samePath(checkpoint.manifestFile, manifestFile)) throw new Error("Accepted Await manifest path changed");
+          await assertPlainIsolationPath(clone.evidenceRoot);
+          const manifestBytes = await awaitEvidenceBytes(manifestFile);
+          if (sha256(manifestBytes) !== expected.manifestHash) throw new Error("Accepted Await manifest changed");
+          const old = JSON.parse(manifestBytes);
+          const oldTasks = normalizedFrozenTasks(old.tasks);
+          if (!oldTasks.length || oldTasks.length >= tasks.length || old.baseCommit !== baseCommit
+              || old.workspaceId !== workspaceId || old.planRevision !== expected.planRevision
+              || old.compositionPolicy !== NATIVE_RELEASE_POLICY
+              || stableManifest(oldTasks) !== stableManifest(tasks.slice(0, oldTasks.length))
+              || !oldTasks.some(task => task.taskId === outcome.taskId
+                && task.resultCommit === outcome.result.evidence.resultCommit)
+              || old.merges?.length !== oldTasks.length || old.merges.at(-1)?.commit !== expected.head
+              || !old.merges.every((step, index) => !step.resolved && !step.reviewedResolution
+                && (!step.resolution || (step.resolution.conflictPaths?.length === 0
+                  && !step.resolution.review && !step.resolution.compatibilityReview
+                  && step.resolution.binding?.tree === step.resolution.binding?.automaticTree))
+                && step.taskId === oldTasks[index].taskId && step.resultCommit === oldTasks[index].resultCommit
+                && /^[a-f0-9]{40}$/u.test(step.commit))) return null;
+          const current = await git(["--no-replace-objects", "rev-parse", "refs/heads/PreRelease^{commit}", "refs/heads/PreRelease^{tree}"]);
+          if (current.split(/\r?\n/u).join(" ") !== expected.head + " " + expected.tree) {
+            throw new Error("Accepted Await PreRelease ref changed");
+          }
+          recordTaskOperationTiming("native:accepted-prefix-size", { count: oldTasks.length });
+          return { head: expected.head, tree: expected.tree, merges: old.merges,
+            sourceIdentityHash: taskGitIdentityHash({ policy: NATIVE_RELEASE_POLICY, workspaceId,
+              planRevision: expected.planRevision, baseCommit, tasks: oldTasks }),
+            sourceJournalHash: sha256(bytes) };
+        }) : null;
       const readLegacyReuseBinding = async () => measureTaskOperation("native:legacy-prepared-verify", async () => {
         if (checkpoint?.phase !== "prepared" || checkpoint.baseCommit !== baseCommit
             || stableManifest(checkpoint.baseProvenance ?? null) !== stableManifest(provenance ?? null)) return null;
@@ -1641,6 +1690,7 @@ export class TaskIntegrationGitService {
         reuseContext: { repositoryRoot: initial.root, primaryGitCommonDir: initial.commonDir,
           baseProvenance: provenance ?? null, historyAuthority: historyAuthority ?? null },
         readLegacyReuseBinding,
+        readAcceptedPrefix,
         deliveredHead: checkpoint?.preReleaseHead ?? null,
         deferEmptyPrefixDiscovery: Boolean(awaitOperationId && !checkpoint && !forwardPreparation
           && !preparationGuard && !nativeAwaitRecovery),
@@ -1890,6 +1940,10 @@ export class TaskIntegrationGitService {
         manifestHash, manifestFile, planRevision: revision, manifest, frozenTasks: tasks,
         mergedTaskIds: tasks.map((task) => task.taskId), reused,
         independentGitCommonDir: !samePath(clone.releaseGitCommonDir, initial.commonDir),
+        ...(canWitness ? { nativeAwaitProof: {
+          version: 1, operationId: awaitOperationId, workspaceId, repositoryRoot: initial.root, planRevision: revision,
+          manifestHash, head: composition.head, tree: composition.tree, authorityHash: proofAuthority,
+        } } : {}),
         releaseGitCommonDir: clone.releaseGitCommonDir, primaryGitCommonDir: initial.commonDir,
         primaryPreserved: true, legacyLinkedHolders: initial.legacyLinkedHolders,
         ...((nativeAwaitRecovery || localSource) ? { verifyNativeAwaitAuthority: async () => {

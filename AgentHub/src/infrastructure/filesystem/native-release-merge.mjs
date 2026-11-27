@@ -920,6 +920,7 @@ export async function mergeSelectedResults({
   deliveredHead = null,
   reuseContext = null,
   readLegacyReuseBinding = null,
+  readAcceptedPrefix = null,
   deferEmptyPrefixDiscovery = false,
   provisionNativeObjects = null, verifyNativeObjects = null,
   nativeResolutionReview = null, verifyManualReview = null,
@@ -942,7 +943,7 @@ export async function mergeSelectedResults({
   let candidates;
   const readCandidates = async () => candidates ??= await nativeReuseCandidates({ root, identity,
     context: reuse, readLegacyBinding: readLegacyReuseBinding });
-  if (!deferEmptyPrefixDiscovery) await readCandidates();
+  if (!deferEmptyPrefixDiscovery && !readAcceptedPrefix) await readCandidates();
   let state = await readJson(stateFile);
   if (nativeResolutionReview && (!state || identity.policy !== "manual-main-dev-sync-v1")) {
     throw failure("Native compatibility requires an issued manual capture", "RELEASE_NATIVE_REVIEW_REQUIRED");
@@ -1044,7 +1045,13 @@ export async function mergeSelectedResults({
   let adoptedPrefixProof = null;
   if ((!deferEmptyPrefixDiscovery || deliveredHead) && reuse && state.reuseContext && taskGitIdentityHash(state.reuseContext) === taskGitIdentityHash(reuse)
       && state.next === 0 && !state.merging && !state.conflict && !state.reuseIntent) {
-    const prefix = await verifiedNativePrefix({ root, repository, candidates: await readCandidates(), tasks, baseCommit, gitAt, beforeTransport,
+    const accepted = await readAcceptedPrefix?.();
+    if (accepted) {
+      await beforeTransport({ sourceIdentityHash: accepted.sourceIdentityHash,
+        sourceJournalHash: accepted.sourceJournalHash, commit: accepted.head });
+      await git(["-c", "fetch.unpackLimit=1", "fetch", "--no-tags", "--no-write-fetch-head", sourceRoot, accepted.head]);
+    }
+    const prefix = accepted ?? await verifiedNativePrefix({ root, repository, candidates: await readCandidates(), tasks, baseCommit, gitAt, beforeTransport,
       verify: (before, result, target, step) => verifyStep(before, result, target,
         { storedBinding: step?.resolution?.binding ?? step?.reviewedResolution?.binding }) });
     if (prefix) {

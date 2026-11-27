@@ -199,6 +199,36 @@ test("Await refuses a missing native runtime import before promotion and accepts
 
 // Await, return and re-acceptance exercise finite Git/SQLite transitions. Await
 // their assertions and cleanup instead of cancelling the scenario by wall time.
+test("ordinary Await reuses an exact accepted prefix and falls back if its durable proof differs", async t => {
+  const timings = [];
+  const f = await fixture(t, { recordTiming: value => timings.push(value) });
+  const accept = async (name, file, operationId) => {
+    const task = await f.testedTask(name, file, name + "\n");
+    const result = await f.lifecycle.updateWorkflowStatus({ taskId: task.id,
+      status: "awaiting_implementation", operationId });
+    assert.equal(result.releaseCandidate.status, "prepared");
+    return { task, proof: f.taskBoard.lifecycleOutcome(operationId).result.evidence.nativeAwaitProof };
+  };
+  const first = await accept("first", "first.txt", "first-accepted");
+  assert.ok(first.proof.manifestHash);
+  const second = await accept("second", "second.txt", "second-accepted");
+  assert.ok(second.proof.manifestHash);
+  assert.equal(timings.find(event => event.operationId === "second-accepted"
+    && event.stage === "native:accepted-prefix-size")?.count, 1);
+  const read = f.taskBoard.lifecycleOutcome.bind(f.taskBoard);
+  f.taskBoard.lifecycleOutcome = id => {
+    const original = read(id);
+    if (id === "second-accepted") original.result.evidence.nativeAwaitProof.manifestHash = "f".repeat(64);
+    return original;
+  };
+  const third = await accept("third", "third.txt", "third-accepted");
+  assert.ok(third.proof.manifestHash);
+  assert.equal(timings.some(event => event.operationId === "third-accepted"
+    && event.stage === "native:accepted-prefix-size"), false);
+  assert.equal(timings.find(event => event.operationId === "third-accepted"
+    && event.stage === "native:prefix-reused")?.count, 2);
+});
+
 test("Await membership prepares the candidate and fences changed agreed-main evidence before acceptance", async (t) => {
   const { root, origin, taskBoard, taskGitWorkspaces, lifecycle, testedTask, primary } = await fixture(t);
   const unaccepted = await testedTask("Unaccepted", "unaccepted.txt", "not accepted\n");

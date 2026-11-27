@@ -15,6 +15,7 @@ const AGGREGATE_STAGES = new Set([...AGGREGATE_AWAITS, "git-child", "owned-comma
   "native:object-closure", "native:object-consumer-pack", "native:object-consumer-copy", "native:object-connectivity",
   "native:release-inputs", "native:merge", "native:prefix-recheck",
   "native:reuse-lookup", "native:reuse-directory", "native:reuse-journal", "native:reuse-legacy-binding",
+  "native:accepted-prefix",
   "release:primary-root", "release:primary-revisions", "release:primary-worktrees", "release:primary-dirty",
   "test-dev-inputs", "test-detached-stage", "test-dev-owned",
   "repository-guards", "release:git-command", "release:git-input", "release:base-evidence",

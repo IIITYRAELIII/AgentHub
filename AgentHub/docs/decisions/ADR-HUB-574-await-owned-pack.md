@@ -26,6 +26,15 @@ only if Git encounters a conflict. The existing verifier still determines
 whether an old resolution can be used. The trace separates primary root,
 revisions, worktrees and dirty state, as well as reuse enumeration and journal
 reads.
+
+For an ordinary, already accepted conflict-free prefix, the original Task
+outcome binds the accepted manifest, Git head and tree, Workspace and
+publication/history authority. When that exact completed checkpoint remains
+the ordered prefix of the new selection, the native owner transports its
+accepted head and merges the remaining results. The final selected-content
+check and promotion gates still run. Old receipts, ambiguous earlier state
+and resolved conflicts use the existing verifier. Reopening a persisted reuse
+intent also retains its original Git readback.
 Manual and original-operation recovery continue to use their existing ordering.
 Measure the durable outcome through the HTTP MCP endpoint against both an empty
 and a populated PreRelease. Report queue wait, time to receipt and the
