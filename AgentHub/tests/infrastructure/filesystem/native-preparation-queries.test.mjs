@@ -106,7 +106,7 @@ test("history uses one metadata diff and retains equal-base object validation an
     tasks: [{ taskId: "missing", baseCommit: missing, resultCommit: missing }] }), /main-based result/u);
 });
 
-test("native absorption accepts only the exact published parent of the returned source Test", async t => {
+test("native preparation accepts merged Task commits without reading former handoff receipts", async t => {
   const f = await fixture(t);
   const tree = await f.git(["rev-parse", `${f.result}^{tree}`]);
   const commit = (name, ...parents) => f.git(["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
@@ -170,19 +170,12 @@ test("native absorption accepts only the exact published parent of the returned 
   await check(forward, forward, advancedAuthority, f.base);
   await check(forward, forward, historyAuthority, f.base, { preserve: true });
   await check(forward, forward, advancedAuthority, f.base, { preserve: true });
-  await assert.rejects(check(forward, forward, advancedAuthority, f.base, { testOutcomeHash: "0".repeat(64) }),
-    /immutable prior outcome changed/u);
-  await assert.rejects(check(devMerge, devMerge, advancedAuthority, f.base), /explicit historical migration/u);
+  await check(forward, forward, advancedAuthority, f.base, { testOutcomeHash: "0".repeat(64) });
   await writeFile(retained, JSON.stringify({ ...record, target: devOnly }));
-  await assert.rejects(check(forward, forward, advancedAuthority, f.base), /explicit historical migration/u);
+  await check(forward, null);
   await writeFile(retained, JSON.stringify(record));
-  await assert.rejects(check(forward, null), /explicit historical migration/u);
-  await assert.rejects(check(forward, f.result), /explicit historical migration/u);
-  await assert.rejects(check(forward, foreign), /prior result is not retained/u);
-  await assert.rejects(check(forward, forward, { bases: [published, devOnly], metadataBases: [published] }),
-    /explicit historical migration/u);
-  for (const refused of [devMerge, foreignMerge, octopus]) {
-    await assert.rejects(check(refused), /explicit historical migration/u);
+  for (const merged of [devMerge, foreignMerge, octopus]) {
+    await check(merged);
   }
 
   const localAppData = path.join(f.root, ".git", "fixture-local");
@@ -227,7 +220,10 @@ test("native absorption accepts only the exact published parent of the returned 
   assert.equal(proof.status, "validated");
   assert.equal(proof.baseCommit, advanced);
   assert.deepEqual(proof.mergedTaskIds, [task.taskId]);
-  await assert.rejects(service.validateCandidate(combinedRequest(second)), /unselected merge side/u);
+  const ordinary = await service.validateCandidate({ ...request, planRevision: "task-with-two-merges",
+    frozenTasks: [{ ...task, resultCommit: both, taskRevision: 6 }] });
+  assert.equal(ordinary.status, "validated");
+  assert.deepEqual(ordinary.mergedTaskIds, [task.taskId]);
   const combinedProof = await service.validateCandidate(combinedRequest({ ...second, absorptionHistory: first }));
   assert.equal(combinedProof.status, "validated");
   assert.deepEqual(combinedProof.mergedTaskIds, [task.taskId]);

@@ -109,25 +109,25 @@ test("installed metadata authority refuses source HEAD drift, dirty capture and 
   await assert.rejects(f.verify({ ...f.provenance, installedManifestSha256: sha(foreignBytes) }), /merge-base/);
 });
 
-test("installed metadata authority does not permit authored notes, changed modes or an unbound legacy revision", async t => {
+test("installed metadata authority ignores root notes and only trusts a bound legacy revision", async t => {
   const f = await fixture(t), verified = await f.verify();
   const history = tasks => assertNativeTaskHistories({ git: f.git, baseCommit: f.sourceBase, tasks,
     historyAuthority: { bases: [f.sourceBase], metadataBases: verified.metadataBases, adoptions: [] } });
   await history(f.tasks);
   await f.save(f.taskRoot, "CHANGELOG.md", "Task invented notes\n");
   const authored = await f.commit(f.taskRoot, "authored notes");
-  await assert.rejects(history([{ ...f.tasks[0], resultCommit: authored }]), /release-owned CHANGELOG/);
+  await history([{ ...f.tasks[0], resultCommit: authored }]);
   await f.gitAt(f.taskRoot, ["checkout", f.installedSource, "--", "CHANGELOG.md"]);
   await f.gitAt(f.taskRoot, ["update-index", "--chmod=+x", "CHANGELOG.md"]);
   await f.gitAt(f.taskRoot, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "wrong mode"]);
-  await assert.rejects(history([{ ...f.tasks[0], resultCommit: await f.gitAt(f.taskRoot, ["rev-parse", "HEAD"]) }]), /release-owned CHANGELOG/);
+  await history([{ ...f.tasks[0], resultCommit: await f.gitAt(f.taskRoot, ["rev-parse", "HEAD"]) }]);
   const legacy = { ...f.manifest }; delete legacy.publicationRevision;
   const bytes = Buffer.from(JSON.stringify(legacy)); await f.save(f.release, "runtime-manifest.json", bytes);
   const checked = await f.verify({ ...f.provenance, installedManifestSha256: sha(bytes) });
   assert.deepEqual(checked.metadataBases, [f.sourceBase]);
-  await assert.rejects(assertNativeTaskHistories({ git: f.git, baseCommit: f.sourceBase, tasks: f.tasks,
-    historyAuthority: { bases: [f.sourceBase], metadataBases: checked.metadataBases, adoptions: [] } }), /release-owned CHANGELOG/);
+  await assertNativeTaskHistories({ git: f.git, baseCommit: f.sourceBase, tasks: f.tasks,
+    historyAuthority: { bases: [f.sourceBase], metadataBases: checked.metadataBases, adoptions: [] } });
   const boxed = Buffer.from(JSON.stringify({ ...f.manifest, publicationRevision: [f.installedSource] }));
   await f.save(f.release, "runtime-manifest.json", boxed);
-  assert.deepEqual((await f.verify({ ...f.provenance, installedManifestSha256: sha(boxed) })).metadataBases, [f.sourceBase]);
+  await assert.rejects(f.verify({ ...f.provenance, installedManifestSha256: sha(boxed) }), /retained installed source identity changed/);
 });

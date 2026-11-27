@@ -796,7 +796,7 @@ export class HubMcpService {
         selected_proof_bundle_path: { type: "string", description: "Immutable selected-composition proof bundle; preview has no live Git or lifecycle effect." },
         selected_proof_bundle_sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
         selected_published_resolution: { type: "object", description: "Historical original reconciliation envelope; new selected materialization admission is closed." },
-        selected_absorption_handoff: { type: "object", description: "Authenticated saved/stopped handoff for ordinary native Test, bound to exact Task CAS and the original receipt." },
+        selected_absorption_handoff: { type: "object", description: "Compatibility field for explicit historical absorption. Ordinary Task branch merges use Test on the final commit." },
         selected_proof_commit: { type: "string", pattern: "^[0-9a-f]{40}$" },
         selected_preview_request_id: { type: "string", description: "Exact original preview request_id on confirmation." },
         expected_selected_preview_hash: { type: "string", pattern: "^[0-9a-f]{64}$", description: "Omit for preview; exact returned hash is required for confirmation." },
