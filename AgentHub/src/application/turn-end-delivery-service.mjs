@@ -39,9 +39,9 @@ function projectionRecordMatches(status, completion, body) {
     && String(record.model ?? "").trim().toLowerCase() === String(completion.model ?? "").trim().toLowerCase()
     && normalizeServiceTier(record.serviceTier) === normalizeServiceTier(completion.serviceTier)
     && String(record.startedAt ?? "") === String(completion.startedAt ?? "")
-    && (completion.completedAt == null
-      ? Number.isFinite(Date.parse(record.completedAt))
-      : String(record.completedAt ?? "") === String(completion.completedAt))
+    && (!completion.completedAt
+      ? !record.completedAt || Number.isFinite(Date.parse(record.completedAt))
+      : record.completedAt === completion.completedAt)
     && String(record.body ?? "").trim() === String(body ?? "").trim();
 }
 
