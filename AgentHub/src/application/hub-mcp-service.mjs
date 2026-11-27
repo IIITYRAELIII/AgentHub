@@ -3526,7 +3526,7 @@ export class HubMcpService {
     if (archiveEvidence?.directClose === true) {
       const captured = archiveEvidence.originalArguments;
       if (originalArchive?.toolName !== "hub_task_complete" || originalArchive.workspaceId !== context.workspaceId
-          || originalArchive.argumentsHash !== args.expected_arguments_hash || !captured
+          || (args.expected_arguments_hash && originalArchive.argumentsHash !== args.expected_arguments_hash) || !captured
           || captured.request_id !== originalArchive.requestId || captured.task_id !== args.task_id
           || argumentsHash(captured) !== originalArchive.argumentsHash
           || (archiveTransition ?? archiveOutcome)?.taskId !== args.task_id

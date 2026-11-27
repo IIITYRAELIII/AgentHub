@@ -7565,8 +7565,8 @@ export class TaskGitWorkspaceService {
     return this.withTaskLock(taskId, (lease) => this.cleanupOwned(taskId, { ...options, lease }));
   }
 
-  async removeClosedTaskArtifactsOwned(task, { registeredProjectRoot, lease } = {}) {
-    this.#assertAvailable("removeClosedTaskArtifactsOwned");
+  async planCloseArtifactsOwned(task, { registeredProjectRoot, lease } = {}) {
+    this.#assertAvailable("planCloseArtifactsOwned");
     await requiredGuardLease(lease).assertOwned();
     const id = normalizedTaskId(task.id);
     await this.#assertNoProcessTreeGuard(id);
@@ -7584,8 +7584,6 @@ export class TaskGitWorkspaceService {
       return true;
     };
 
-    const removed = { worktrees: [], branches: [] };
-    const custody = this.#claimNamespace(id);
     const present = await plainDirectory(root);
     const repositories = new Set((task.gitReferences ?? []).map(ref => canonicalPath(ref.projectRoot)));
     if (registeredProjectRoot) {
@@ -7602,7 +7600,30 @@ export class TaskGitWorkspaceService {
         repositories.add(repository);
       }
     }
-    for (const repository of repositories) {
+    return { repositories: [...repositories] };
+  }
+
+  async removeClosedTaskArtifactsOwned(task, { targets, lease } = {}) {
+    this.#assertAvailable("removeClosedTaskArtifactsOwned");
+    await requiredGuardLease(lease).assertOwned();
+    const id = normalizedTaskId(task.id);
+    await this.#assertNoProcessTreeGuard(id);
+    const root = path.join(this.taskWorktreesRoot, id);
+    const missing = error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    };
+    const plainDirectory = async directory => {
+      const info = await lstat(directory).catch(missing);
+      if (!info) return false;
+      if (!info.isDirectory() || info.isSymbolicLink() || !samePath(await realpath(directory), directory)) {
+        throw Error("Task cleanup path is not its managed directory");
+      }
+      return true;
+    };
+    const removed = { worktrees: [], branches: [] };
+    await plainDirectory(root);
+    for (const repository of targets.repositories) {
       if (!await lstat(repository).catch(missing)) continue;
       const key = taskRepositoryKey(repository);
       const directory = path.join(root, key);
@@ -7630,6 +7651,7 @@ export class TaskGitWorkspaceService {
       });
     }
     await lease.assertOwned();
+    const custody = this.#claimNamespace(id);
     if (custody && await plainDirectory(path.dirname(custody.namespace.root))) {
       // The deterministic custody directory is a private repository of this Task.
       await rm(path.dirname(custody.namespace.root), { recursive: true });

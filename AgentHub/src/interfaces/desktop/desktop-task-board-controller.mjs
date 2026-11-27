@@ -249,7 +249,7 @@ export class DesktopTaskBoardController {
     const parameters = {
       confirm_cleanup: params.confirmCleanup ?? Boolean(params.expectedCleanupToken),
       expected_cleanup_token: params.expectedCleanupToken ?? null,
-      completion_mode: params.retainArtifacts === true ? "archive" : "close",
+      completion_mode: params.completionMode === "archive" || params.retainArtifacts === true ? "archive" : "close",
       ...(params.retainArtifacts === true ? { retain_artifacts: true } : {}),
     };
     const run = () => this.taskLifecycle.complete({

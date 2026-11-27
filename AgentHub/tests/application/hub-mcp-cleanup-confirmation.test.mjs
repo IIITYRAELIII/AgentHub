@@ -110,7 +110,7 @@ test("absorbed preview preserves both Task bindings through omitted plan, reopen
   const ack = await call("hub_task_complete", { ...f.args, context_token: f.token(f.hub) });
   assert.equal(ack.structuredContent.taskOperation.status, "pending");
   await f.hub.call("hub_task_complete", { ...f.args, context_token: f.token(f.hub) });
-  const first = await f.read(f.hub, previewArgs);
+  const first = await f.read();
   assert.equal(first.result.previewOmitted, true);
   assert.deepEqual(first.result.absorption, { taskId: f.survivor.id, taskRevision: f.tasks.task(f.survivor.id).revision });
   assert.equal(first.result.task.id, f.task.id);
@@ -183,7 +183,7 @@ for (const toolName of ["hub_task_complete", "hub_task_delete"]) test(`${toolNam
   assert.equal(reply.structuredContent.taskOperation.status, "pending");
   // Join the existing admitted invocation; HTTP reply above intentionally contained no token.
   await f.hub.call(toolName, previewArgs);
-  const first = await f.read();
+  const first = await f.read(f.hub, previewArgs);
   assert.match(first.result.cleanupToken, /^[a-f0-9]{64}$/);
   assert.equal(first.result.action, toolName === "hub_task_complete" ? "complete" : "delete");
   assert.equal(first.result.task.id, f.task.id);

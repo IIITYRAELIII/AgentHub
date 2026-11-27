@@ -799,6 +799,7 @@ async function fixture(context, {
     }),
     cleanup: async () => ({ removed: 1 }),
     cleanupOwned: async (...args) => defaultTaskGitWorkspaces.cleanup(...args),
+    planCloseArtifactsOwned: async () => ({ repositories: [] }),
     removeClosedTaskArtifactsOwned: async () => ({ worktrees: [], branches: [] }),
   };
   const taskGitWorkspaces = taskGitWorkspacesFactory

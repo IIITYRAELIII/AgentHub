@@ -2385,20 +2385,26 @@ export class TaskLifecycleService {
       }
       const task = this.#task(taskId);
       const transition = this.taskBoard.lifecycleTransition?.(operationId);
-      const evidence = { directClose: true, originalArguments };
+      let evidence = transition?.evidence;
       if (transition) {
         if (transition.taskId !== task.id || transition.kind !== "complete" || transition.phase !== "cleanup"
-            || transition.expectedRevision !== task.revision || JSON.stringify(transition.evidence) !== JSON.stringify(evidence)) {
+            || transition.expectedRevision !== task.revision || evidence?.directClose !== true
+            || !Array.isArray(evidence.targets?.repositories)
+            || JSON.stringify(evidence.originalArguments) !== JSON.stringify(originalArguments)) {
           throw Error("Original Task close intent changed");
         }
       } else {
+        const targets = await this.taskGitWorkspaces.planCloseArtifactsOwned(task, {
+          registeredProjectRoot: this.#projectRoot(task), lease,
+        });
+        evidence = { directClose: true, originalArguments, targets };
         await this.#assertOwned(lease);
         await this.#mutation(() => this.taskBoard.beginLifecycleTransition({
           id: task.id, operationId, kind: "complete", expectedRevision: task.revision, evidence,
         }), operationId);
       }
       const removed = await this.taskGitWorkspaces.removeClosedTaskArtifactsOwned(task, {
-        registeredProjectRoot: this.#projectRoot(task), lease,
+        targets: evidence.targets, lease,
       });
       await this.#assertOwned(lease);
       return this.#mutation(() => this.taskBoard.finalizeCleanupTransition(operationId, {
