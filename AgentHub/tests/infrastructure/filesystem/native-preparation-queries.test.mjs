@@ -450,18 +450,20 @@ test("ordinary Await accepts the package version inherited by its exact committe
   const recordFile = nativeIntegrationRecordFile(dataDir, taskId, f.root, record.operationId);
   await mkdir(path.dirname(recordFile), { recursive: true });
   await writeFile(recordFile, JSON.stringify(record));
-  const writeOutcome = commit => {
+  const writeOutcome = (commit, { operationId = record.operationId, alreadyIntegrated = false, completedAt = 1 } = {}) => {
     const journal = new DatabaseSync(databaseFile);
     try {
       journal.prepare(`INSERT OR REPLACE INTO hub_task_lifecycle_outcomes
-        (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, ?, 'workflow', ?, 1)`)
-        .run(record.operationId, taskId, JSON.stringify({
+        (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, ?, 'workflow', ?, ?)`)
+        .run(operationId, taskId, JSON.stringify({
           task: { id: taskId, workflowStatus: "testing", gitReferences: [{ projectRoot: f.root, resultCommit: commit }] },
-          evidence: { outcome: "integrated", resultCommit: commit, devHeadCommit: testTarget },
-        }));
+          evidence: { outcome: "integrated", resultCommit: commit, devHeadCommit: testTarget,
+            response: { gitIntegration: { alreadyIntegrated } } },
+        }), completedAt);
     } finally { journal.close(); }
   };
   writeOutcome(resultCommit);
+  writeOutcome(resultCommit, { operationId: "reused-test", alreadyIntegrated: true, completedAt: 2 });
   const task = { taskId, taskRevision: 2, baseCommit: base, resultCommit };
   const historyAuthority = { dataDir, publishedHistoryBase: published, metadataBases: [published] };
   const history = { git: f.git, baseCommit: published, tasks: [task], historyAuthority, testRepositoryRoot: f.root };

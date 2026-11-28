@@ -3159,6 +3159,7 @@ export class TaskBoardStore {
     });
   }
 
+  // A Test already present in dev has a workflow outcome but no native journal.
   committedNativeTestForResult({ taskId, projectRoot, resultCommit, operationId = null }) {
     return this.#withDatabase(database => {
       const rows = database.prepare(`SELECT operation_id, result_json
@@ -3166,6 +3167,7 @@ export class TaskBoardStore {
         WHERE task_id = ? AND kind = 'workflow' ${operationId ? "AND operation_id = ?" : ""}
           AND json_extract(result_json, '$.task.workflowStatus') = 'testing'
           AND json_extract(result_json, '$.evidence.outcome') = 'integrated'
+          AND json_extract(result_json, '$.evidence.response.gitIntegration.alreadyIntegrated') IS NOT 1
           AND json_extract(result_json, '$.evidence.resultCommit') = ?
         ORDER BY completed_at_ms DESC, operation_id DESC`);
       const parameters = operationId ? [taskId, operationId, resultCommit] : [taskId, resultCommit];
