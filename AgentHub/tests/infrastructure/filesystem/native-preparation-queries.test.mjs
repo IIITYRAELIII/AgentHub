@@ -450,7 +450,8 @@ test("ordinary Await accepts the package version inherited by its exact committe
   const recordFile = nativeIntegrationRecordFile(dataDir, taskId, f.root, record.operationId);
   await mkdir(path.dirname(recordFile), { recursive: true });
   await writeFile(recordFile, JSON.stringify(record));
-  const writeOutcome = (commit, { operationId = record.operationId, alreadyIntegrated = false, completedAt = 1 } = {}) => {
+  const writeOutcome = (commit, { operationId = record.operationId, alreadyIntegrated = false,
+    completedAt = 1, recovered = false } = {}) => {
     const journal = new DatabaseSync(databaseFile);
     try {
       journal.prepare(`INSERT OR REPLACE INTO hub_task_lifecycle_outcomes
@@ -458,6 +459,9 @@ test("ordinary Await accepts the package version inherited by its exact committe
         .run(operationId, taskId, JSON.stringify({
           task: { id: taskId, workflowStatus: "testing", gitReferences: [{ projectRoot: f.root, resultCommit: commit }] },
           evidence: { outcome: "integrated", resultCommit: commit, devHeadCommit: testTarget,
+            ...(recovered ? { nativeTerminalRecovery: {
+              kind: "native-test-metadata-terminal-v1", sourceCommit: commit, devCommit: testTarget,
+            } } : {}),
             response: { gitIntegration: { alreadyIntegrated } } },
         }), completedAt);
     } finally { journal.close(); }
@@ -470,6 +474,8 @@ test("ordinary Await accepts the package version inherited by its exact committe
   let recheck;
   await assertNativeTaskHistories({ ...history, onVerified: verify => { recheck = verify; } });
   await recheck();
+  writeOutcome(resultCommit, { alreadyIntegrated: true, recovered: true });
+  await assertNativeTaskHistories(history);
 
   const service = new TaskIntegrationGitService({ dataDir, environment: { ...process.env, LOCALAPPDATA: localAppData } });
   const started = performance.now();

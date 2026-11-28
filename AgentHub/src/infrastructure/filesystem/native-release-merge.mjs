@@ -236,36 +236,40 @@ async function testedPublication({ git, task, taskBase, projectRoot, authority, 
     throw error;
   });
   if (!present) return null;
-  const readTest = operationId => {
+  const readTests = operationId => {
     const store = new TaskBoardStore({ databaseFile, readOnly: true });
-    try { return store.committedNativeTestForResult({ ...task, projectRoot, operationId }); }
+    try { return store.committedNativeTestsForResult({ ...task, projectRoot, operationId }); }
     finally { store.close(); }
   };
-  const test = readTest(null);
-  if (!test) return null;
-  const file = nativeIntegrationRecordFile(authority.dataDir, task.taskId, projectRoot, test.operationId);
-  const bytes = await readFile(file, "utf8").catch(error => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
-  const record = bytes && JSON.parse(bytes);
-  const metadata = record?.nativeHistoryAuthority?.publishedMetadata;
-  if (record?.version !== 1 || record.kind !== "native-task-integration-v1" || record.phase !== "prepared"
-      || record.operationId !== test.operationId || record.target !== test.devCommit
-      || record.snapshot?.taskId !== task.taskId || record.snapshot?.baseCommit !== taskBase
-      || record.snapshot?.headCommit !== task.resultCommit
-      || canonicalPath(record.snapshot?.repositoryRoot ?? "") !== canonicalPath(projectRoot)
-      || !metadata?.generation || !/^[a-f0-9]{64}$/u.test(metadata.recordHash ?? "")
-      || !/^[a-f0-9]{40}$/u.test(metadata.commit ?? "") || metadata.commit === published
-      || canonicalPath(metadata.repositoryRoot ?? "") !== canonicalPath(projectRoot)
-      || !await contains(metadata.commit, published) || !await contains(metadata.commit, task.resultCommit)
-      || await git(["rev-parse", `${metadata.commit}^{tree}`]) !== metadata.tree) return null;
-  evidence?.push(async () => {
-    if (await readFile(file, "utf8") !== bytes || readTest(test.operationId)?.devCommit !== test.devCommit) {
-      throw failure("Original Test publication evidence changed");
-    }
-  });
-  return metadata.commit;
+  // A repeated Test may reuse dev without writing a journal. A recovered
+  // original keeps its own journal even when it also reports already integrated.
+  for (const test of readTests(null)) {
+    const file = nativeIntegrationRecordFile(authority.dataDir, task.taskId, projectRoot, test.operationId);
+    const bytes = await readFile(file, "utf8").catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (bytes === null) continue;
+    const record = JSON.parse(bytes);
+    const metadata = record?.nativeHistoryAuthority?.publishedMetadata;
+    if (record?.version !== 1 || record.kind !== "native-task-integration-v1" || record.phase !== "prepared"
+        || record.operationId !== test.operationId || record.target !== test.devCommit
+        || record.snapshot?.taskId !== task.taskId || record.snapshot?.baseCommit !== taskBase
+        || record.snapshot?.headCommit !== task.resultCommit
+        || canonicalPath(record.snapshot?.repositoryRoot ?? "") !== canonicalPath(projectRoot)
+        || !metadata?.generation || !/^[a-f0-9]{64}$/u.test(metadata.recordHash ?? "")
+        || !/^[a-f0-9]{40}$/u.test(metadata.commit ?? "") || metadata.commit === published
+        || canonicalPath(metadata.repositoryRoot ?? "") !== canonicalPath(projectRoot)
+        || !await contains(metadata.commit, published) || !await contains(metadata.commit, task.resultCommit)
+        || await git(["rev-parse", `${metadata.commit}^{tree}`]) !== metadata.tree) continue;
+    evidence?.push(async () => {
+      if (await readFile(file, "utf8") !== bytes || readTests(test.operationId)[0]?.devCommit !== test.devCommit) {
+        throw failure("Original Test publication evidence changed");
+      }
+    });
+    return metadata.commit;
+  }
+  return null;
 }
 
 export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null,
