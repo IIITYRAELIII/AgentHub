@@ -848,7 +848,7 @@ export class TaskIntegrationGitService {
       const historyAuthority = await this.#nativeHistoryAuthority({ projectRoot, provenance: manifest.baseProvenance,
         planRevision, tasks, verifiedLocalSource: derived?.verified });
       await assertNativePreparedComposition({ git, baseCommit: source.baseCommit, tasks,
-        historyAuthority,
+        historyAuthority, testRepositoryRoot: projectRoot,
         merges: manifest.merges, head: source.preReleaseHead, tree: source.tree,
         identity: { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision, baseCommit: source.baseCommit, tasks },
         });
@@ -1482,6 +1482,7 @@ export class TaskIntegrationGitService {
           const authority = await this.#nativeHistoryAuthority({ projectRoot: initial.root, provenance,
             planRevision: revision, tasks });
           await assertNativePreparedComposition({ git, baseCommit, tasks, historyAuthority: authority,
+            testRepositoryRoot: initial.root,
             merges: manifest.merges, head: source.preReleaseHead, tree: source.tree,
             identity: { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks },
             });
@@ -1582,7 +1583,7 @@ export class TaskIntegrationGitService {
       const historyGit = (args, options) => git(["--no-replace-objects", ...args], options);
       let assertLegacyMetadataCurrent;
       await measureTaskOperation("native:task-histories", () => assertNativeTaskHistories({
-        git: historyGit, baseCommit, tasks, historyAuthority,
+        git: historyGit, baseCommit, tasks, historyAuthority, testRepositoryRoot: initial.root,
         onVerified: recheck => { assertLegacyMetadataCurrent = recheck; },
       }));
       const identity = { policy: NATIVE_RELEASE_POLICY, workspaceId, planRevision: revision, baseCommit, tasks };
@@ -1669,7 +1670,7 @@ export class TaskIntegrationGitService {
           tree: retained.tree, journalHash: sha256(bytes), mergesHash: taskGitIdentityHash(old.merges),
           verifyInRepository: retainedGit => assertNativePreparedComposition({ git: retainedGit, baseCommit,
             tasks: oldTasks, merges: old.merges, head: retained.preReleaseHead, tree: retained.tree,
-            identity: oldIdentity, historyAuthority: oldAuthority }),
+             identity: oldIdentity, historyAuthority: oldAuthority, testRepositoryRoot: initial.root }),
           unchanged: async () => sha256(await readFile(clone.checkpointFile)) === sha256(checkpointBytes)
             && sha256(await readFile(retained.manifestFile)) === retained.manifestHash };
       });

@@ -3159,6 +3159,28 @@ export class TaskBoardStore {
     });
   }
 
+  committedNativeTestForResult({ taskId, projectRoot, resultCommit, operationId = null }) {
+    return this.#withDatabase(database => {
+      const rows = database.prepare(`SELECT operation_id, result_json
+        FROM hub_task_lifecycle_outcomes
+        WHERE task_id = ? AND kind = 'workflow' ${operationId ? "AND operation_id = ?" : ""}
+          AND json_extract(result_json, '$.task.workflowStatus') = 'testing'
+          AND json_extract(result_json, '$.evidence.outcome') = 'integrated'
+          AND json_extract(result_json, '$.evidence.resultCommit') = ?
+        ORDER BY completed_at_ms DESC, operation_id DESC`);
+      const parameters = operationId ? [taskId, operationId, resultCommit] : [taskId, resultCommit];
+      for (const row of rows.iterate(...parameters)) {
+        const { task, evidence } = JSON.parse(row.result_json);
+        if (task.id === taskId && /^[a-f0-9]{40}$/u.test(evidence.devHeadCommit ?? "")
+            && task.gitReferences?.some(ref => ref.resultCommit === resultCommit
+              && sameResolvedPath(ref.projectRoot, projectRoot))) {
+          return { operationId: row.operation_id, devCommit: evidence.devHeadCommit };
+        }
+      }
+      return null;
+    });
+  }
+
   committedNativeTestForDev({ workspaceId, devCommit } = {}) {
     return this.#withDatabase(database => {
       const rows = database.prepare(`SELECT operation_id FROM hub_task_lifecycle_outcomes

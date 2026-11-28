@@ -405,3 +405,85 @@ test("historical Test preserves its verified published package version across a 
   assert.equal(checks[1].status,"fulfilled", checks[1].reason?.message);
   assert.equal(checks[1].value.status,"validated");
 });
+
+test("ordinary Await accepts the package version inherited by its exact committed Test", async t => {
+  const f = await fixture(t);
+  const lock = "nested/package-lock.json";
+  const writeVersion = version => f.save(lock, JSON.stringify({ version, packages: { "": { version } } }));
+  await f.git(["checkout", "--detach", f.base]);
+  await writeVersion("2.0.0");
+  const base = await f.commit();
+  await writeVersion("2.1.0");
+  const priorPublished = await f.commit();
+  const priorTree = await f.git(["rev-parse", priorPublished + "^{tree}"]);
+  await f.save("code.txt", "exact tested change\n");
+  const resultCommit = await f.commit();
+  await writeVersion("9.0.0");
+  const changedVersion = await f.commit();
+  await f.git(["checkout", "--detach", priorPublished]);
+  await writeVersion("2.2.0");
+  const published = await f.commit();
+  await f.git(["checkout", "-B", "main", published]);
+
+  const localAppData = path.join(f.root, ".git", "fixture-local");
+  const remote = path.join(f.root, ".git", "fixture-origin.git");
+  await f.git(["init", "--bare", "--initial-branch=main", remote]);
+  await f.git(["remote", "add", "origin", remote]);
+  await f.git(["push", "origin", "main"]);
+  await f.save(".git/fixture-local/AgentHub/publication-state.json", JSON.stringify({
+    generation: "current-publication", repositories: [{ root: f.root, revision: published }],
+  }));
+  const dataDir = path.join(f.root, ".git", "fixture-data");
+  const databaseFile = path.join(dataDir, "journal.sqlite");
+  new TaskBoardStore({ databaseFile }).close();
+  const taskId = "ordinary";
+  const testTarget = f.result;
+  const record = {
+    version: 1, kind: "native-task-integration-v1", phase: "prepared",
+    operationId: "ordinary-test", target: testTarget,
+    snapshot: { taskId, baseCommit: base, headCommit: resultCommit, repositoryRoot: f.root },
+    nativeHistoryAuthority: { publishedMetadata: {
+      commit: priorPublished, tree: priorTree, repositoryRoot: f.root,
+      generation: "earlier-publication", recordHash: "d".repeat(64),
+    } },
+  };
+  const recordFile = nativeIntegrationRecordFile(dataDir, taskId, f.root, record.operationId);
+  await mkdir(path.dirname(recordFile), { recursive: true });
+  await writeFile(recordFile, JSON.stringify(record));
+  const writeOutcome = commit => {
+    const journal = new DatabaseSync(databaseFile);
+    try {
+      journal.prepare(`INSERT OR REPLACE INTO hub_task_lifecycle_outcomes
+        (operation_id, task_id, kind, result_json, completed_at_ms) VALUES (?, ?, 'workflow', ?, 1)`)
+        .run(record.operationId, taskId, JSON.stringify({
+          task: { id: taskId, workflowStatus: "testing", gitReferences: [{ projectRoot: f.root, resultCommit: commit }] },
+          evidence: { outcome: "integrated", resultCommit: commit, devHeadCommit: testTarget },
+        }));
+    } finally { journal.close(); }
+  };
+  writeOutcome(resultCommit);
+  const task = { taskId, taskRevision: 2, baseCommit: base, resultCommit };
+  const historyAuthority = { dataDir, publishedHistoryBase: published, metadataBases: [published] };
+  const history = { git: f.git, baseCommit: published, tasks: [task], historyAuthority, testRepositoryRoot: f.root };
+  let recheck;
+  await assertNativeTaskHistories({ ...history, onVerified: verify => { recheck = verify; } });
+  await recheck();
+
+  const service = new TaskIntegrationGitService({ dataDir, environment: { ...process.env, LOCALAPPDATA: localAppData } });
+  const started = performance.now();
+  const candidate = await service.prepareCandidate({ planRevision: "ordinary-historical-test", projectRoot: f.root,
+    workspaceId: "workspace", approvedBaseCommit: published, frozenTasks: [task] });
+  t.diagnostic(`Candidate preparation with historical Test took ${Math.round(performance.now() - started)} ms`);
+  assert.equal(candidate.manifest.tasks[0].resultCommit, resultCommit);
+  assert.equal(JSON.parse(await readFile(path.join(candidate.releaseRoot, lock), "utf8")).version, "2.2.0");
+  assert.equal(await readFile(path.join(candidate.releaseRoot, "code.txt"), "utf8"), "exact tested change\n");
+
+  await rm(recordFile);
+  await assert.rejects(recheck(), { code: "ENOENT" });
+  await assert.rejects(assertNativeTaskHistories(history), /release-owned package-version/);
+  await writeFile(recordFile, JSON.stringify({ ...record, snapshot: { ...record.snapshot, headCommit: changedVersion } }));
+  await assert.rejects(assertNativeTaskHistories(history), /release-owned package-version/);
+  writeOutcome(changedVersion);
+  await assert.rejects(assertNativeTaskHistories({ ...history, tasks: [{ ...task, resultCommit: changedVersion }] }),
+    /release-owned package-version/);
+});
