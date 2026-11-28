@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readFile } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import { createSelectedGitBundle, hasExactGitCommitObjects } from "./selected-git-bundle.mjs";
 import { createHash } from "node:crypto";
 import { sourceBlobs } from "./local-source-baseline.mjs";
@@ -227,7 +227,53 @@ async function legacyPublishedMetadataBases({ git, task, taskBase, baseCommit, a
   return commits;
 }
 
-export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null, onVerified = null }) {
+async function testedPublication({ git, task, taskBase, projectRoot, authority, contains, evidence }) {
+  const published = authority?.publishedHistoryBase;
+  if (!projectRoot || !published || !authority.dataDir) return null;
+  const databaseFile = path.join(authority.dataDir, "journal.sqlite");
+  const present = await access(databaseFile).then(() => true, error => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  });
+  if (!present) return null;
+  const readTests = operationId => {
+    const store = new TaskBoardStore({ databaseFile, readOnly: true });
+    try { return store.committedNativeTestsForResult({ ...task, projectRoot, operationId }); }
+    finally { store.close(); }
+  };
+  // A repeated Test may reuse dev without writing a journal. A recovered
+  // original keeps its own journal even when it also reports already integrated.
+  for (const test of readTests(null)) {
+    const file = nativeIntegrationRecordFile(authority.dataDir, task.taskId, projectRoot, test.operationId);
+    const bytes = await readFile(file, "utf8").catch(error => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (bytes === null) continue;
+    const record = JSON.parse(bytes);
+    const metadata = record?.nativeHistoryAuthority?.publishedMetadata;
+    if (record?.version !== 1 || record.kind !== "native-task-integration-v1" || record.phase !== "prepared"
+        || record.operationId !== test.operationId || record.target !== test.devCommit
+        || record.snapshot?.taskId !== task.taskId || record.snapshot?.baseCommit !== taskBase
+        || record.snapshot?.headCommit !== task.resultCommit
+        || canonicalPath(record.snapshot?.repositoryRoot ?? "") !== canonicalPath(projectRoot)
+        || !metadata?.generation || !/^[a-f0-9]{64}$/u.test(metadata.recordHash ?? "")
+        || !/^[a-f0-9]{40}$/u.test(metadata.commit ?? "") || metadata.commit === published
+        || canonicalPath(metadata.repositoryRoot ?? "") !== canonicalPath(projectRoot)
+        || !await contains(metadata.commit, published) || !await contains(metadata.commit, task.resultCommit)
+        || await git(["rev-parse", `${metadata.commit}^{tree}`]) !== metadata.tree) continue;
+    evidence?.push(async () => {
+      if (await readFile(file, "utf8") !== bytes || readTests(test.operationId)[0]?.devCommit !== test.devCommit) {
+        throw failure("Original Test publication evidence changed");
+      }
+    });
+    return metadata.commit;
+  }
+  return null;
+}
+
+export async function assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority = null,
+  testRepositoryRoot = null, onVerified = null }) {
   const evidence = onVerified ? [] : null;
   const histories = [];
   const ancestry = new Map();
@@ -261,19 +307,28 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
       : [];
     const metadataBases = [...new Set([taskBase, ...(historyAuthority?.metadataBases ?? []),
       ...adopted.map(a => a.adoptedCommit), ...legacyBases])];
-    histories.push({ task, metadataBases, notes, packages });
-    if (notes.length || packages.length) {
-      for (const commit of [task.resultCommit, ...metadataBases]) {
+    const priorPublication = packages.length
+      ? await testedPublication({ git, task, taskBase, projectRoot: testRepositoryRoot,
+        authority: historyAuthority, contains, evidence })
+      : null;
+    const packageBases = priorPublication && !metadataBases.includes(priorPublication)
+      ? [...metadataBases, priorPublication] : metadataBases;
+    histories.push({ task, metadataBases, packageBases, notes, packages });
+    const addFiles = (commits, files) => {
+      if (!files.length) return;
+      for (const commit of commits) {
         if (!requests.has(commit)) requests.set(commit, new Set());
-        for (const file of [...notes, ...packages]) requests.get(commit).add(file);
+        for (const file of files) requests.get(commit).add(file);
       }
-    }
+    };
+    addFiles([task.resultCommit, ...metadataBases], notes);
+    addFiles([task.resultCommit, ...packageBases], packages);
   }
   const metadata = new Map();
   for (const [commit, files] of requests) metadata.set(commit, await readNativeMetadataEntries(git, commit, files));
   const packageObjects = new Map();
-  for (const { task, metadataBases, packages } of histories) {
-    for (const commit of [task.resultCommit, ...metadataBases]) {
+  for (const { task, packageBases, packages } of histories) {
+    for (const commit of [task.resultCommit, ...packageBases]) {
       for (const file of packages) {
         const entry = metadata.get(commit)?.get(file);
         if (entry?.type === "blob") packageObjects.set(entry.oid, entry);
@@ -298,7 +353,7 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
     if (entry.type !== "blob") throw failure("Native metadata lookup is malformed or ambiguous");
     return `${entry.mode} ${entry.oid}`;
   };
-  for (const { task, metadataBases, notes, packages } of histories) {
+  for (const { task, metadataBases, packageBases, notes, packages } of histories) {
     for (const file of notes) {
       const entry = changelogAt(task.resultCommit, file);
       const known = metadataBases.map(commit => changelogAt(commit, file));
@@ -306,7 +361,7 @@ export async function assertNativeTaskHistories({ git, baseCommit, tasks, histor
     }
     for (const file of packages) {
       const priors = [];
-      for (const commit of metadataBases) priors.push(await packageAt(commit, file));
+      for (const commit of packageBases) priors.push(await packageAt(commit, file));
       if (priors.every(bytes => bytes === null)) continue; // New packages are Task content.
       const nextBytes = await packageAt(task.resultCommit, file);
       const next = nextBytes === null ? null : JSON.parse(nextBytes);
@@ -848,8 +903,8 @@ async function verifyMergeStep(git, before, result, target, {
 
 // Verify an already accepted native candidate without composing another one.
 export async function assertNativePreparedComposition({ git, baseCommit, tasks, merges, head, tree,
-  identity = { policy: NATIVE_RELEASE_POLICY, baseCommit, tasks }, historyAuthority = null }) {
-  await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority });
+  identity = { policy: NATIVE_RELEASE_POLICY, baseCommit, tasks }, historyAuthority = null, testRepositoryRoot = null }) {
+  await assertNativeTaskHistories({ git, baseCommit, tasks, historyAuthority, testRepositoryRoot });
   return assertNativeMergedResults({ git, baseCommit, tasks, merges, head, tree, identity });
 }
 
